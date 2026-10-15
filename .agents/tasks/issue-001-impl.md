@@ -87,14 +87,14 @@ Port only what the game actually uses. Read the real sources:
   `getOrbitRad`, `getVecFromRad`, `getNormalized`, `getMagSquared`, `getRad`,
   `getDistEuclidean`, `zeroVec`. Provide a `Vec2` type (`f32` fields `x`,`y`)
   mirroring `sf::Vector2f` usage.
-- `src/SSVOpenHexagon/Utils/Color.hpp` — `getColorFromHue`, `transformHue`, and any
+- `include/SSVOpenHexagon/Utils/Color.hpp` — `getColorFromHue`, `transformHue`, and any
   hue math (port the formulas verbatim).
-- `src/SSVOpenHexagon/Utils/Geometry.hpp`/`.cpp` — `getLineCircleIntersection` and
+- `include/SSVOpenHexagon/Utils/Geometry.hpp` + `src/SSVOpenHexagon/Utils/Geometry.cpp` — `getLineCircleIntersection` and
   friends (exact return semantics: the int code and out-params).
-- `src/SSVOpenHexagon/Utils/Easing.hpp` — every curve used, verbatim.
-- `src/SSVOpenHexagon/Utils/MoveTowards.hpp`, `Split.hpp`, `String.hpp`,
-  `Concat.hpp`, `Timestamp.hpp`/`.cpp` (`formatTimepoint` uses `put_time` with
-  `%Y%m%d_%H%M%S`), `BuildPackId.hpp`/`.cpp`, `LevelValidator.hpp`.
+- `include/SSVOpenHexagon/Utils/Easing.hpp` — every curve used, verbatim.
+- `include/SSVOpenHexagon/Utils/MoveTowards.hpp`, `Split.hpp`, `String.hpp`,
+  `Concat.hpp`, `Timestamp.hpp` + `src/SSVOpenHexagon/Utils/Timestamp.cpp` (`formatTimepoint` uses `put_time` with
+  `%Y%m%d_%H%M%S`), `BuildPackId.hpp` + `src/.../BuildPackId.cpp`, `LevelValidator.hpp`.
 
 For each item: if the game does not use it, do not port it; say so in the report.
 
