@@ -40,4 +40,6 @@ library (vendored C++, third-party C++ dependency, or Rust crate), written from
 | `lib-discord.md` | Discord Game SDK | `Core/Discord.cpp` | (pending) |
 | `lib-rsfml.md` | rsfml (Rust) | crate source | (pending) |
 | `lib-mlua.md` | mlua (Rust) | crate source | (pending) |
+| `lib-jsoncpp.md` | JsonCpp fork (ssvuj reader/writer, comment + trailing-comma tolerance, `%#.16g` floats) | `include/SSVOpenHexagon/SSVUtilsJson/JsonCpp/{json.hpp,jsoncpp.inl}`, `Utils/Io.hpp` | issue 003 |
+| `lib-serde-json.md` | serde_json 1.0.154 (Value/from_str/Number f64-f32, float formatting vs JsonCpp) | `~/.cargo/registry/src/**/serde_json-1.0.154/src/` | issue 003 |
 | `...` | other Rust crates | crate source | (pending) |
