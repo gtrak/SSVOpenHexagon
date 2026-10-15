@@ -1,0 +1,12 @@
+[package]
+name = "oh-lua"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# mlua on the LuaJIT feature: the C++ build bundles LuaJIT
+# (see extlibs + CMakeLists.txt pin, and .agents/skills/lib-luajit.md).
+# `vendored` links the LuaJIT C source directly, matching the C++ build
+# which compiles LuaJIT into the binary (DECISIONS.md / skills).
+mlua = { version = "0.10", features = ["luajit", "vendored"] }
+thiserror = { workspace = true }
