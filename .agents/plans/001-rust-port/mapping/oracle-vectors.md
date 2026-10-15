@@ -103,7 +103,7 @@ compressed_bytes=76
 CZHEX=78da636560606003e292d4e292d4224b03063060638002265606264e6e20233fa3aca82c312f3327275100c84d2e4d4a8d378c4f2c48cd2cca4fcfcf633c7be68c3d5887c21a070042d611e8
 roundtrip_equal=1
 packet_bytes=92
-PHEX=54000000000000000500000006000000746573746572393000000000000006000000000000000002050002090b0000006f68767276616e696c6c6110000000637562655f315f61706569726f676f6e01cdcccc3f000000000020ac40
+PHEX=00000000000000540500000006000000746573746572393000000000000006000000000000000002050002090b0000006f68767276616e696c6c6110000000637562655f315f61706569726f676f6e01cdcccc3f000000000020ac40
 ```
 
 Decoded field layout (verified by parsing the hex above):
@@ -167,3 +167,27 @@ An `f32 1.6` prints `1.6` (not `1.60000002`); `3600.0` prints `3600`.
 `buildPackId` replaces space/newline/tab with `_` in each of
 disambiguator/author/name then joins with `_` and appends the int version.
 `getLevelValidator(levelId, diffMult)` = `concat(levelId, "_m_", diffMult)`.
+
+## SFML `Packet` encoding rules (verified from the fork source)
+
+Read from the pinned fork `vittorioromeo/SFML@dacceddbd1adee49c7bfd120266e200800550394`,
+`src/SFML/Network/Packet.cpp`:
+
+| type | bytes |
+|---|---|
+| `bool` | 1 (0/1) |
+| `int8`/`uint8` | 1 raw |
+| `int16`/`uint16` | 2 **big-endian** (`htons`) |
+| `int32`/`uint32` | 4 **big-endian** (`htonl`) |
+| `int64`/`uint64` | 8 **big-endian** (manual byte shifts) |
+| `float`/`double` | raw `memcpy` — **host-endian** (LE on x86), NOT byte-swapped |
+| `std::string` / `const char*` | u32 **big-endian** length, then raw bytes |
+| `append(data, n)` | raw bytes |
+
+**This is a trap:** the replay *file* format uses `std::memcpy` directly (host-endian
+little-endian), while the replay *packet* form goes through `sf::Packet`, which
+big-endian-encodes the u64 length prefix. So `HEX` starts `05000000` (LE u32) but
+`PHEX` starts `0000000000000054` (BE u64 = 84). The Rust port must use
+`to_le_bytes` for the file format and `to_be_bytes` for the packet format.
+
+Corrected `PHEX` (the packet form) is shown in the block above.
