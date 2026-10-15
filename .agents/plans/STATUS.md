@@ -17,8 +17,8 @@ Decisions log: `.agents/plans/001-rust-port/DECISIONS.md`
 | 02 | `oh-replay` byte-exact + zlib + packet codec | 01 | SPECD | — | `issue-002-impl.md` written; oracle pins ready |
 | 03 | `oh-data`: structs + comment-tolerant JSON loaders | 01 | LANDED | ec166f35 | gate 4/4; 17 tests incl. real _RELEASE parse; discrimination-verified; skills pending |
 | 04 | `oh-config`: all keys, binds, joystick | 01 | LANDED | b354e40d | gate 4/4; 20 tests incl. real config.json (101 keys) + all overrides; discrimination-verified |
-| 05 | `oh-assets`: pack/level discovery + asset registry | 01,03 | OPEN | — | discussed in mapping/data-json.md §4-5 |
-| 06 | `oh-lua` runtime: LuaContext analogue + conversions | 01 | OPEN | — | |
+| 05 | `oh-assets`: pack/level discovery + asset registry | 01,03 | LANDED | cfa5c896 | gate 4/4; 17 tests; counts independently re-derived (8 packs, 9 cube levels, 57 music+style, 37 levels) |
+| 06 | `oh-lua` runtime: LuaContext analogue + conversions | 01 | in-flight | 81479a5a (scaffold) | |
 | 07 | `oh-lua` game API: all globals + callbacks | 06,03,04 | OPEN | — | |
 | 08 | `oh-game` types: walls, player, custom walls, status | 01,02 | OPEN | — | mapping/gameplay.md §1-12 ready |
 | 09 | `oh-game` update loop (HGUpdate/HexagonGame) headless | 08,07 | OPEN | — | mapping/gameplay.md §13-15 ready |
