@@ -137,3 +137,33 @@ is `p << (u64)_data.size(); p.append(_data.data(), size)`.
 **Filename format** (`create_filename()`, from source):
 `{version}_{"%Y%m%d_%H%M%S"}_{player_name}_{level_id}_{difficulty_mult}x_{played_seconds}s.ohr`
 in UTC; numbers formatted via `ssvu::concat` (default ostream float formatting).
+
+## String formatting (`Utils::concat`, `buildPackId`, `getLevelValidator`)
+
+Replay filenames and validator strings embed `Utils::concat`'s float/double
+formatting (default `std::ostream <<`), so the Rust equivalent must match.
+
+Reproduce:
+```
+g++ -std=c++20 -Iinclude -I. -Iextlibs/vrm_pp/include -o concat_probe \
+    /tmp/ohoracle/concat_probe.cpp /tmp/ohoracle/stubs.cpp \
+    src/SSVOpenHexagon/Utils/BuildPackId.cpp src/SSVOpenHexagon/Utils/LevelValidator.cpp
+./concat_probe
+```
+
+```
+concat_float_1.6=1.6
+concat_float_9.45=9.45
+concat_double_3600=3600
+concat_int_5=5
+concat_mixed=v_n_1.35x60
+packid=ohvrvanilla_vittorio_romeo_base_1
+validator=ohvrvanilla_vittorio_romeo_cube_1_apeirogon_m_1.6
+```
+
+Behavior: `std::ostream <<` for `float`/`double` uses `%g`-like default precision
+(6 significant digits), drops trailing zeros and the decimal point when integral.
+An `f32 1.6` prints `1.6` (not `1.60000002`); `3600.0` prints `3600`.
+`buildPackId` replaces space/newline/tab with `_` in each of
+disambiguator/author/name then joins with `_` and appends the int version.
+`getLevelValidator(levelId, diffMult)` = `concat(levelId, "_m_", diffMult)`.
