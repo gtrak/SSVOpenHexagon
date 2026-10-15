@@ -1,0 +1,7 @@
+[package]
+name = "oh-rng"
+description = "Bit-exact port of SSVOpenHexagon's random_number_generator (pcg32_fast + libstdc++ uniform distributions)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

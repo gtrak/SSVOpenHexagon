@@ -1,0 +1,7 @@
+[package]
+name = "oh-math"
+description = "Pure math helpers ported from SSVOpenHexagon + SSVUtils/SSVStart (Vec2, FT, angles, easing, geometry, color/hue)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/oh-math",
+    "crates/oh-rng",
+]
+# Later issues add workspace members as they land (PLAN.md architecture
+# table): oh-timeline, oh-replay, oh-data, oh-config, oh-assets, oh-lua,
+# oh-game, oh-audio, oh-net, oh-menu-system, oh-render, oh-menu, oh-app,
+# oh-steam, oh-discord.
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+# Pinned for later issues (issue 02: flate2; issues 03+: serde, serde_json,
+# thiserror). Resolved workspace-wide; harmless while unused.
+[workspace.dependencies]
+flate2 = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+# Profile tuning is finalized by issue 22 (builds/CI). opt-level is the
+# default; recorded here so later issues have a place to change it.
+[profile.release]
+opt-level = 3
