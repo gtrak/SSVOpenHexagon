@@ -1,0 +1,14 @@
+[package]
+name = "oh-data"
+description = "Port of SSVOpenHexagon's Data/* structs and the SSVUtilsJson / LoadFromJson JSON loading stack (comment-tolerant)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# serde/serde_json are pinned in the root [workspace.dependencies] (issue 03
+# decision: serde_json behind a C++-fork comment-stripping pass — see
+# .agents/skills/lib-jsoncpp.md and lib-serde-json.md).
+serde_json = { workspace = true }
+oh-math = { path = "../oh-math" }
+
+[dev-dependencies]
