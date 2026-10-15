@@ -26,7 +26,7 @@ Decisions log: `.agents/plans/001-rust-port/DECISIONS.md`
 | 11 | `oh-render` graphics: stages, draw methods, cameras | 10,08 | LANDED | cd0a4748, d30f1363 | gate 4/4 (285 tests, +33: 63 lib + 12 draw + golden guard); RenderStage order + per-stage shader binding asserted; golden-frame guard skips-with-reason headless (D-011); free-function port, no oh-render→oh-game dep; 009 wiring TODO seams marked |
 | 12 | `oh-menu-system`: SSVMenuSystem analogue | 01 | LANDED | 232a868c | gate 4/4; 252 tests; contract's Controller claim corrected from source |
 | 13 | `oh-menu` MenuGame: all states, dialog box | 11,12,07 | LANDED | a406f5a8 | gate 4/4; MenuGame ported (4.3k lines) + tests fixed against the C++ source (dialog centre uses `calculateFMaxAndWAndH`; `diffMultIdx` = index of the 1.0× mult; raw `++` on right). Filled a real gap: the `getSaveLastLoginUsername() ? getLastLoginUsername() : ""` branch (`MenuGame.cpp:6152-6154`) |
-| 14 | Lua console overlay + `-printLuaDocs` | 13,07 | OPEN | — | |
+| 14 | Lua console overlay + `-printLuaDocs` | 13,07 | SPECD | — | contract corrected from source (D-021..D-024); split: 14a headless core (docs + `produce-lua-metadata` feature + console state machine, spec `issue-014a-lua-console-core.md`), 14b egui overlay with issue 15 |
 | 15 | `oh-app`: boot, game loop, CLI, modes | 13,11,09 | OPEN | — | |
 | 16 | `oh-net` protocol: packets, sodium, shared codecs | 01,02 | OPEN | — | packet encoding rules in oracle-vectors.md |
 | 17 | `oh-net` client + LeaderboardCache + SQLite DB | 16,15 | OPEN | — | |
