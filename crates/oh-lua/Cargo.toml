@@ -18,3 +18,13 @@ oh-game = { path = "../oh-game" }
 oh-data = { path = "../oh-data" }
 oh-math = { path = "../oh-math" }
 oh-rng = { path = "../oh-rng" }
+
+[features]
+# C++ `SSVOH_PRODUCE_LUA_METADATA` (D-023/D-024): the shipped C++ build has
+# the flag OFF (`CMakeLists.txt` sets it through a literal `if(FALSE)`), so
+# the default build records no metadata at all: `print_docs` emits the 11
+# category headers and nothing else, `get_all_function_names()` is empty,
+# and `get_docs_for_function` returns `"UNKNOWN FUNCTION"`. Enabling the
+# feature mirrors the flag-ON build (the `LuaMetadataProxy` destructor
+# records the entry).
+produce-lua-metadata = []

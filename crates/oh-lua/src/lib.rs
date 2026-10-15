@@ -19,6 +19,8 @@
 //! * [`convert`] — the exact C++ `_push`/`_read` conversion rules
 //! * [`error`] — the `Lua::` exception hierarchy as `LuaError`
 //! * [`metadata`] — `LuaMetadata` / `LuaMetadataProxy` (`addLuaFn` docs)
+//! * [`docs`] — the `LuaScripting.cpp:1613-1688` docs readers
+//!   (`print_docs`, `get_all_function_names`, `get_docs_for_function`)
 //! * [`sandbox`] — `redefine_io_open`, `redefine_random`,
 //!   `destroy_malicious_functions` (verbatim C++ Lua snippets)
 //! * [`api`] — the complete game API (issue 007): all 285 registered global
@@ -35,6 +37,7 @@
 pub mod api;
 mod context;
 mod convert;
+pub mod docs;
 mod error;
 mod metadata;
 mod sandbox;

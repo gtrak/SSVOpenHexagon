@@ -21,8 +21,15 @@
 //! (and logs) when an argument name is missing (`std::vector::at` throws) or
 //! a `$N` index is out of range. The port is lenient there: missing names
 //! become empty strings and unresolvable `$N` stay literal, so a docs entry
-//! is never lost. The C++ `SSVOH_PRODUCE_LUA_METADATA` compile gate is not
-//! replicated — the collector is always active.
+//! is never lost.
+//!
+//! The C++ `SSVOH_PRODUCE_LUA_METADATA` compile gate is replicated as the
+//! cargo feature `produce-lua-metadata` (D-023/D-024): the shipped C++ build
+//! has the flag OFF (`CMakeLists.txt` literal `if(FALSE)`), so the DEFAULT
+//! build's `Drop for LuaMetadataProxy` is the C++ `#else {}` empty body
+//! (no entry is ever recorded — `arg()`/`doc()` keep accumulating on the
+//! proxy exactly as in C++, where their bodies are no-ops but the proxy
+//! still exists); with the feature ON the drop records the entry.
 
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
@@ -184,8 +191,14 @@ pub struct FnMeta {
 /// with the `$N` placeholders in the docs resolved to the Nth argument name.
 #[derive(Debug)]
 pub struct LuaMetadataProxy {
+    // The flag-off build (the shipped one, D-023) never reads these in the
+    // empty `drop` (the C++ `#else {}`); they exist on the proxy exactly as
+    // in C++, where the members are declared regardless of the flag.
+    #[cfg_attr(not(feature = "produce-lua-metadata"), allow(dead_code))]
     name: String,
+    #[cfg_attr(not(feature = "produce-lua-metadata"), allow(dead_code))]
     ret: &'static str,
+    #[cfg_attr(not(feature = "produce-lua-metadata"), allow(dead_code))]
     arg_types: &'static [&'static str],
     arg_names: Vec<String>,
     docs: String,
@@ -223,6 +236,10 @@ impl LuaMetadataProxy {
 /// `"type name, type name"` for more. Missing `.arg()` names (C++:
 /// `vector::at` throws -> entry dropped + logged) become empty strings here
 /// so the entry is still recorded.
+#[cfg_attr(
+    not(feature = "produce-lua-metadata"),
+    allow(dead_code)
+)] // the flag-off build never calls this (the drop body is `#else {}`)
 fn make_args_string(arg_types: &[&str], arg_names: &[String]) -> String {
     if arg_types.is_empty() {
         return String::new();
@@ -243,6 +260,10 @@ fn make_args_string(arg_types: &[&str], arg_names: &[String]) -> String {
 /// that argument name. A bare `$` (no digits) selects argument 0, exactly
 /// like the C++ parser (`indexAcc` stays 0). Out-of-range indices (C++:
 /// `vector::at` throws -> entry dropped) are left as the literal `$N`.
+#[cfg_attr(
+    not(feature = "produce-lua-metadata"),
+    allow(dead_code)
+)] // the flag-off build never calls this (the drop body is `#else {}`)
 fn resolve_arg_names(docs: &str, arg_names: &[String]) -> String {
     let chars: Vec<char> = docs.chars().collect();
     let mut result = String::with_capacity(docs.len() + arg_names.len() * 4);
@@ -277,12 +298,24 @@ fn resolve_arg_names(docs: &str, arg_names: &[String]) -> String {
 }
 
 impl Drop for LuaMetadataProxy {
-    /// C++ `~LuaMetadataProxy`: appends the entry (or logs + drops it on
-    /// failure; the Rust version cannot fail, see module docs).
+    /// C++ `~LuaMetadataProxy` (LuaMetadataProxy.cpp:160-179): with
+    /// `SSVOH_PRODUCE_LUA_METADATA` on the destructor appends the entry
+    /// (or logs + drops it on failure; the Rust version cannot fail, see
+    /// module docs); the shipped build has the flag off, where the
+    /// destructor body is the empty `#else {}` (LuaMetadataProxy.cpp:176-178)
+    /// — no entry is recorded.
     fn drop(&mut self) {
-        let args = make_args_string(self.arg_types, &self.arg_names);
-        let docs = resolve_arg_names(&self.docs, &self.arg_names);
-        get_metadata().add_fn_entry(self.ret, &self.name, &args, &docs);
+        #[cfg(feature = "produce-lua-metadata")]
+        {
+            let args = make_args_string(self.arg_types, &self.arg_names);
+            let docs = resolve_arg_names(&self.docs, &self.arg_names);
+            get_metadata().add_fn_entry(self.ret, &self.name, &args, &docs);
+        }
+
+        #[cfg(not(feature = "produce-lua-metadata"))]
+        {
+            // C++ `#else {}` — the flag-off destructor records nothing.
+        }
     }
 }
 
@@ -331,6 +364,24 @@ mod tests {
     }
 
     #[test]
+    fn make_args_string_matches_cpp() {
+        // Both modes: the helper is the (flag-on) recording path's args
+        // formatter; pinned here so the flag-off build keeps it live.
+        assert_eq!(make_args_string(&[], &[]), "");
+        assert_eq!(make_args_string(&["int"], &["n".to_string()]), "int n");
+        assert_eq!(
+            make_args_string(
+                &["int", "float"],
+                &["a".to_string(), "b".to_string()]
+            ),
+            "int a, float b"
+        );
+        // Missing name -> empty string (the port's leniency, module docs).
+        assert_eq!(make_args_string(&["int"], &[]), "int ");
+    }
+
+    #[cfg(feature = "produce-lua-metadata")]
+    #[test]
     fn entry_recorded_on_drop() {
         {
             let mut meta = get_metadata();
@@ -349,5 +400,27 @@ mod tests {
         assert_eq!(entry.fn_name, "u_testFn");
         assert_eq!(entry.fn_args, "int lower, float ");
         assert_eq!(entry.fn_docs, "does lower things");
+    }
+
+    #[cfg(not(feature = "produce-lua-metadata"))]
+    #[test]
+    fn entry_not_recorded_on_drop_in_default_mode() {
+        // D-023: the shipped build (feature off) never records — the
+        // default-mode lib test binary has no other store writer, so the
+        // store stays empty after a registration.
+        {
+            let mut meta = get_metadata();
+            meta.clear();
+        }
+        {
+            let mut proxy = LuaMetadataProxy::new("u_testFn", "int", &["int", "float"]);
+            proxy.arg("lower").doc("does $0 things");
+        }
+        let meta = get_metadata();
+        assert!(
+            meta.entries().iter().all(|bucket| bucket.is_empty()),
+            "default-mode store must stay empty (the flag-off destructor is \
+             the C++ `#else {{}}`)"
+        );
     }
 }

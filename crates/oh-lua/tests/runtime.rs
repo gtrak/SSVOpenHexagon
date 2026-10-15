@@ -649,6 +649,7 @@ fn write_variable_stores_functions() {
 // 4b. Metadata collector (addLuaFn doc/arg builder)
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "produce-lua-metadata")]
 #[test]
 fn metadata_entries_recorded_with_docs_and_args() {
     {
@@ -687,4 +688,52 @@ fn metadata_entries_recorded_with_docs_and_args() {
         entry.fn_docs,
         "Return a random integer number in the [lower; upper] range."
     );
+}
+
+// D-023/D-024: the DEFAULT build (feature off) mirrors the shipped C++
+// build, where the metadata flag is OFF (`CMakeLists.txt` literal
+// `if(FALSE)`): the proxy's drop is the empty `#else {}`, so registering a
+// function records NOTHING. The default-mode test binary has no other store
+// writer (no proxy records, no direct seed), so the store stays empty after
+// clearing.
+#[cfg(not(feature = "produce-lua-metadata"))]
+#[test]
+fn metadata_store_stays_empty_in_default_mode() {
+    {
+        let mut meta = get_metadata();
+        meta.clear();
+    }
+    let lua = new_ctx();
+    {
+        let mut proxy = oh_lua::add_lua_fn!(
+            &lua,
+            "u_testDefaultOff",
+            oh_lua::FnMeta {
+                ret: "float",
+                arg_types: &["int", "int"],
+            },
+            |lower: i32, upper: i32| {
+                let _ = (lower, upper);
+                0.5f32
+            }
+        )
+        .unwrap();
+        proxy.arg("lower").arg("upper");
+        proxy.doc("Return a random integer number in the [$0; $1] range.");
+    }
+    // Scope the guard: the `docs::*` readers below re-acquire the store's
+    // (non-reentrant) lock, so the guard must be dropped first.
+    {
+        let meta = get_metadata();
+        assert!(
+            meta.entries().iter().all(|bucket| bucket.is_empty()),
+            "default-mode store must stay empty after a registration"
+        );
+    }
+    // The presentation side agrees (D-023): unknown function, empty list.
+    assert_eq!(
+        oh_lua::docs::get_docs_for_function("u_testDefaultOff"),
+        "UNKNOWN FUNCTION"
+    );
+    assert!(oh_lua::docs::get_all_function_names().is_empty());
 }
