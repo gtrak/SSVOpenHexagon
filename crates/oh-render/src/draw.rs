@@ -169,6 +169,13 @@ impl VertexBatch {
         &self.verts
     }
 
+    /// Mutable vertex access (the 3D-layer position/colour rewrite in
+    /// `draw_frame`).
+    #[must_use]
+    pub fn as_slice_mut(&mut self) -> &mut [Vertex] {
+        &mut self.verts
+    }
+
     /// C++ `clear()`.
     pub fn clear(&mut self) {
         self.verts.clear();
@@ -197,6 +204,13 @@ impl VertexBatch {
     /// C++ `unsafe_emplace_back(pos, color)` — append one vertex.
     pub fn push(&mut self, vertex: Vertex) {
         self.verts.push(vertex);
+    }
+
+    /// Append `vertices` in order (the `oh-game` → draw-layer seam helper:
+    /// copy a scene batch in one flush-preserving pass; the C++
+    /// `unsafe_emplace_other` bulk form).
+    pub fn push_vertices(&mut self, vertices: &[Vertex]) {
+        self.verts.extend_from_slice(vertices);
     }
 
     /// C++ `unsafe_emplace_back(position, color)`.
