@@ -20,7 +20,7 @@ Decisions log: `.agents/plans/001-rust-port/DECISIONS.md`
 | 05 | `oh-assets`: pack/level discovery + asset registry | 01,03 | LANDED | cfa5c896 | gate 4/4; 17 tests; counts independently re-derived (8 packs, 9 cube levels, 57 music+style, 37 levels) |
 | 06 | `oh-lua` runtime: LuaContext analogue + conversions | 01 | in-flight | 81479a5a (scaffold) | |
 | 07 | `oh-lua` game API: all globals + callbacks | 06,03,04 | OPEN | — | |
-| 08 | `oh-game` types: walls, player, custom walls, status | 01,02 | OPEN | — | mapping/gameplay.md §1-12 ready |
+| 08 | `oh-game` types: walls, player, custom walls, status | 01,02 | LANDED | 65f0a9cc | gate 4/4 on a clean checkout; 24 tests; oracle vectors + discrimination-verified |
 | 09 | `oh-game` update loop (HGUpdate/HexagonGame) headless | 08,07 | OPEN | — | mapping/gameplay.md §13-15 ready |
 | 10 | `oh-render` backend (window/input/vertex/shader/font) | 01 | OPEN | — | key/button enums in oracle-vectors.md |
 | 11 | `oh-render` graphics: stages, draw methods, cameras | 10,08 | OPEN | — | |
