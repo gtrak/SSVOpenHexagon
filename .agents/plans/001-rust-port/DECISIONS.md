@@ -608,3 +608,21 @@ console's `?fn` command and `!help`'s doc lookup are inert as shipped.
 - **Rule:** a divergence found while preparing an issue belongs in that issue's
   record (D-012 family) as long as it is proven not to affect landed work. This one
   is recorded rather than fixed so the finding is not lost.
+
+## D-025 — Worktree lanes land as SQUASHED single commits; harvest the branch ref immediately on completion
+
+- **User directive (2024): "squash don't merge"** for landing worker lanes. Each
+  worktree lane's branch is squashed into ONE commit on master (the lane's
+  internal milestone commits remain visible in the worker's report; master gets
+  a single reviewed, gated commit). First applied to the 15c wiring lane
+  (`e2f4f49b`, squashed from `69166be6..5973df02`).
+- **Runner ref-cleanup hazard (observed twice):** when a worktree run ends —
+  success OR failure — the runner deletes the worktree AND its branch ref. On
+  failure that destroys uncommitted work permanently; on success the commits
+  survive only as dangling objects (worktrees share the main object DB). Both
+  times `git cat-file -t <hash>` + `git merge-base --is-ancestor` + ff/merge
+  recovered the work. RULE: on every worker completion notification, harvest
+  the reported commit hashes IMMEDIATELY (`git cat-file -t`, then
+  `git merge --squash`).
+- Timeouts: the config default (30 min) killed five lanes with uncommitted
+  work; all dispatches now pass explicit `timeoutMs: 5400000`.
