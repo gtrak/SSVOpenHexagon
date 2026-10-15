@@ -21,4 +21,5 @@
 
 pub mod packet;
 pub mod protocol;
+pub mod shared;
 pub mod sodium;

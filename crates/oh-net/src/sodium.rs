@@ -25,14 +25,14 @@
 //! `.agents/plans/001-rust-port/mapping/networking.md` (corrections).
 //!
 //! **Nonces are random, not counters.** `generateNonce()`
-//! (`Sodium.cpp:13-17`) fills all 24 bytes with `randombytes_buf` for every
+//! (`Sodium.cpp:14-19`) fills all 24 bytes with `randombytes_buf` for every
 //! encrypted message, and the nonce travels in the packet itself
 //! (`PEncryptedMsg.nonce`). Byte-exact cross-implementation vectors must
 //! therefore fix the nonce (the pinned oracle envelope carries its nonce at
 //! a fixed offset — `tests/wire.rs`).
 //!
 //! **`sodium_hash` is keyed-BLAKE2b with an all-zero 32-byte key.** C++
-//! (`Sodium.cpp:47-56`) passes `crypto_generichash_KEYBYTES` (32) zero bytes
+//! (`Sodium.cpp:62-74`) passes `crypto_generichash_KEYBYTES` (32) zero bytes
 //! as the key — that is *not* the same as a keyless BLAKE2b (the key length
 //! is part of the BLAKE2b parameter block), so the Rust call passes the
 //! zero key explicitly.
@@ -82,14 +82,14 @@ fn ensure_initialized() {
 }
 
 /// C++ `getCiphertextLength(messageLength)`
-/// (`Sodium.hpp:30-33`): `crypto_secretbox_MACBYTES + messageLength` (the
+/// (`Sodium.hpp:29-33`): `crypto_secretbox_MACBYTES + messageLength` (the
 /// easy-mode ciphertext is tag-prefixed).
 #[must_use]
 pub const fn get_ciphertext_length(message_length: u64) -> u64 {
     SODIUM_MAC_BYTES as u64 + message_length
 }
 
-/// C++ `generateNonce()` (`Sodium.cpp:13-17`) — 24 fresh random bytes
+/// C++ `generateNonce()` (`Sodium.cpp:14-19`) — 24 fresh random bytes
 /// (`randombytes_buf`); **not** derived from a counter.
 #[must_use]
 pub fn generate_nonce() -> SodiumNonceArray {
@@ -99,7 +99,7 @@ pub fn generate_nonce() -> SodiumNonceArray {
     nonce
 }
 
-/// C++ `SodiumPSKeys` (`Sodium.hpp:44-47`).
+/// C++ `SodiumPSKeys` (`Sodium.hpp:37-41`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SodiumPsKeys {
     /// C++ `keyPublic`.
@@ -108,7 +108,7 @@ pub struct SodiumPsKeys {
     pub key_secret: SodiumSecretKeyArray,
 }
 
-/// C++ `SodiumRTKeys` (`Sodium.hpp:49-52`).
+/// C++ `SodiumRTKeys` (`Sodium.hpp:43-47`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SodiumRtKeys {
     /// C++ `keyReceive` — the session key this side *decrypts* with.
@@ -117,7 +117,7 @@ pub struct SodiumRtKeys {
     pub key_transmit: SodiumTransmitKeyArray,
 }
 
-/// C++ `generateSodiumPSKeys()` (`Sodium.cpp:19-23`) — `crypto_kx_keypair`.
+/// C++ `generateSodiumPSKeys()` (`Sodium.cpp:21-26`) — `crypto_kx_keypair`.
 #[must_use]
 pub fn generate_sodium_ps_keys() -> SodiumPsKeys {
     ensure_initialized();
@@ -135,7 +135,7 @@ pub fn generate_sodium_ps_keys() -> SodiumPsKeys {
 }
 
 /// C++ `calculateServerSessionSodiumRTKeys(serverPSKeys, clientPublicKey)`
-/// (`Sodium.cpp:25-40`) — `crypto_kx_server_session_keys(keyReceive,
+/// (`Sodium.cpp:28-42`) — `crypto_kx_server_session_keys(keyReceive,
 /// keyTransmit, serverPublic, serverSecret, clientPublic)`.
 ///
 /// Returns `None` exactly where C++ returns `std::nullopt` (the session-key
@@ -158,7 +158,7 @@ pub fn calculate_server_session_sodium_rt_keys(
 }
 
 /// C++ `calculateClientSessionSodiumRTKeys(clientPSKeys, serverPublicKey)`
-/// (`Sodium.cpp:42-57`) — `crypto_kx_client_session_keys(keyReceive,
+/// (`Sodium.cpp:44-58`) — `crypto_kx_client_session_keys(keyReceive,
 /// keyTransmit, clientPublic, clientSecret, serverPublic)`.
 #[must_use]
 pub fn calculate_client_session_sodium_rt_keys(
@@ -176,7 +176,7 @@ pub fn calculate_client_session_sodium_rt_keys(
     })
 }
 
-/// C++ `sodiumKeyToString` (`Sodium.hpp:59-70`) — each byte rendered as its
+/// C++ `sodiumKeyToString` (`Sodium.hpp:60-71`) — each byte rendered as its
 /// **decimal** string, concatenated with no separator
 /// (e.g. `[3, 200, 1]` → `"32001"`). The format is unambiguous nowhere; it
 /// is only a stable DB/log representation (the client and server both use
@@ -186,7 +186,7 @@ pub fn sodium_key_to_string(key: &[u8]) -> String {
     key.iter().map(|b| b.to_string()).collect()
 }
 
-/// C++ `sodiumHash(s)` (`Sodium.cpp:63-73`) — `crypto_generichash`
+/// C++ `sodiumHash(s)` (`Sodium.cpp:62-74`) — `crypto_generichash`
 /// (BLAKE2b) with the default 32-byte output and the all-zero 32-byte key
 /// (see the module docs for why the zero key is not a no-op).
 ///
@@ -203,7 +203,7 @@ pub fn sodium_hash(input: &[u8]) -> [u8; 32] {
         .expect("digest is 32 bytes (out_len = Some(32))")
 }
 
-/// C++ `randomUInt64()` (`Sodium.cpp:75-79`) — 8 random bytes reinterpreted
+/// C++ `randomUInt64()` (`Sodium.cpp:76-79`) — 8 random bytes reinterpreted
 /// as a host-endian `uint64_t` (`randombytes_buf(&result, 8)`).
 #[must_use]
 pub fn random_uint64() -> u64 {

@@ -2,11 +2,11 @@
 //! `GameVersion` half of `Global/Version.hpp` (the half the wire protocol
 //! uses — the header's game-version bytes and the `STCPServerStatus` field).
 
-/// C++ `hg::ProtocolVersion` (`Global/ProtocolVersion.hpp:13`):
+/// C++ `hg::ProtocolVersion` (`Global/ProtocolVersion.hpp:11`):
 /// `using ProtocolVersion = std::uint8_t`.
 pub type ProtocolVersion = u8;
 
-/// C++ `hg::PROTOCOL_VERSION` (`Global/ProtocolVersion.hpp:15`) — fixed at 0.
+/// C++ `hg::PROTOCOL_VERSION` (`Global/ProtocolVersion.hpp:13`) — fixed at 0.
 /// A received header with any other value is rejected by the decode path
 /// (`shared::decode_*_packet`), mirroring
 /// `verifyReceivedPacketPreambleAndProtocolVersionAndGameVersion`
