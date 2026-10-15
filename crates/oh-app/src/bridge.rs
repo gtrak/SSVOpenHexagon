@@ -232,11 +232,7 @@ impl AppDraw {
 /// `HexagonGame<GameApiState>` is the composition's concrete store; the
 /// lib stays agnostic so pure-`SharedState` engines draw too — and so
 /// `oh-app`'s lib does not depend on `oh-lua`).
-pub fn draw<S: SharedStore>(
-    game: &HexagonGame<S>,
-    app: &mut AppDraw,
-    target: &mut impl DrawTarget,
-) {
+pub fn draw<S: SharedStore>(game: &HexagonGame<S>, app: &mut AppDraw, target: &mut dyn DrawTarget) {
     // C++ `HGGraphics.cpp:54` — first conjunct. The engine's `window` ctor
     // flag IS the C++ `window != nullptr` (no window → no cameras → the
     // C++ early-returns before anything is observed). The second conjunct

@@ -31,6 +31,7 @@ oh-data = { path = "../oh-data" }
 # coupling to the Lua backend; the composition crate legitimately does.
 oh-lua = { path = "../oh-lua" }
 oh-assets = { path = "../oh-assets" }
+oh-menu = { path = "../oh-menu" }
 oh-replay = { path = "../oh-replay" }
 oh-rng = { path = "../oh-rng" }
 

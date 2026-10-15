@@ -333,7 +333,7 @@ pub fn draw_text_time_and_status(
     offset_color: Color,
     must_show_replay_ui: bool,
     states: RenderStates,
-    target: &mut impl DrawTarget,
+    target: &mut dyn DrawTarget,
 ) {
     if config.get_draw_text_outlines() {
         state.time_text.set_outline_color(offset_color);
@@ -456,7 +456,7 @@ pub fn draw_text_message(
     color_text: Color,
     offset_color: Color,
     states: RenderStates,
-    target: &mut impl DrawTarget,
+    target: &mut dyn DrawTarget,
 ) {
     draw_text_message_pb_impl(
         &mut state.message_text,
@@ -480,7 +480,7 @@ pub fn draw_text_personal_best(
     color_text: Color,
     offset_color: Color,
     states: RenderStates,
-    target: &mut impl DrawTarget,
+    target: &mut dyn DrawTarget,
 ) {
     draw_text_message_pb_impl(
         &mut state.pb_text,
@@ -506,7 +506,7 @@ pub fn draw_text(
     color_text: Color,
     must_show_replay_ui: bool,
     states: RenderStates,
-    target: &mut impl DrawTarget,
+    target: &mut dyn DrawTarget,
 ) {
     let offset_color = if config.get_black_and_white() || background_colors.is_empty() {
         Color::BLACK

@@ -1130,6 +1130,146 @@ impl MenuGame {
         s.char_sizes = sizes;
     }
 
+    // ---- boot (C++ `init` / `loadCommandLineLevel` / `returnToLevelSelection`) ----
+
+    /// C++ `init(mError)` (MenuGame.cpp:791-811):
+    ///
+    /// ```cpp
+    /// steamManager.set_rich_presence_in_menu();      // issue 20 (absent)
+    /// steamManager.update_hardcoded_achievements();  // issue 20 (absent)
+    /// discordManager.set_rich_presence_in_menu();    // issue 21 (absent)
+    /// audio.stopMusic();
+    /// audio.stopSounds();
+    /// if(error) playSoundOverride("error.ogg"); else playSoundOverride("select.ogg");
+    /// ```
+    ///
+    /// The Steam/Discord lines are their null equivalents (the managers do
+    /// not exist in this port — issues 20/21). The C++'s commented-out
+    /// `Online::setForceLeaderboardRefresh(true)` stays unported (dead in
+    /// the C++).
+    pub fn init(&self, error: bool) {
+        let mut s = self.shared.borrow_mut();
+        s.audio.stop_all(); // C++ `audio.stopMusic(); audio.stopSounds();`
+        s.play_sound_override(if error { "error.ogg" } else { "select.ogg" });
+    }
+
+    /// C++ `init(mError, pack, level)` (MenuGame.cpp:813-819): runs
+    /// `init(error)` then `loadCommandLineLevel(pack, level)` — the
+    /// `-p -l` boot (`main.cpp:510`).
+    ///
+    /// (Rust has no overloading: the C++'s `init(bool, string, string)`
+    /// overload lands under this name.)
+    pub fn init_command_line_level(&self, error: bool, pack: &str, level: &str) {
+        self.init(error);
+        self.load_command_line_level(pack, level);
+    }
+
+    /// C++ `loadCommandLineLevel(pack, level)` (MenuGame.cpp:1688-1775),
+    /// ported over the `MenuAssets` seam. The C++ `lvlSlct.levelDataIds`
+    /// is a POINTER into `assets.getLevelIdsByPack`; the port's drawer owns
+    /// the copy (the seam returns an owned `Vec`), as in every other
+    /// drawer port. The C++ channel name (sic `Menugame`) is kept.
+    pub fn load_command_line_level(&self, pack: &str, level: &str) -> bool {
+        // C++ MenuGame.cpp:1695-1710: scan `getPackDatas()` for the pack
+        // whose NAME matches the argument.
+        let pack_id = self.shared.borrow().assets().find_pack_id_by_name(pack);
+        let Some(pack_id) = pack_id else {
+            println!(
+                "[hg::Menugame::MenuGame()] Invalid pack name '{pack}' command line parameter, aborting boot level load"
+            );
+            return false;
+        };
+
+        // C++ MenuGame.cpp:1713-1719.
+        if !self.shared.borrow().assets().pack_has_levels(&pack_id) {
+            println!(
+                "[hg::Menugame::MenuGame()] Pack '{pack}' has no levels, aborting boot level load"
+            );
+            return false;
+        }
+
+        // C++ MenuGame.cpp:1722-1755: find the menu pack index and the
+        // level's index in the pack's level list.
+        let level_id = format!("{pack_id}_{level}");
+        let (packs, levels_list) = {
+            let s = self.shared.borrow();
+            (
+                s.assets().selectable_pack_ids(),
+                s.assets().level_ids_for_pack(&pack_id),
+            )
+        };
+        // Both lookups are against the SAME pack's list, so `zip` (both
+        // `Some`) is exactly the C++'s nested-loop break-on-match.
+        let found = packs
+            .iter()
+            .position(|p| p == &pack_id)
+            .zip(levels_list.iter().position(|l| l == &level_id));
+        let Some((i, pos)) = found else {
+            println!(
+                "[hg::Menugame::MenuGame()] Invalid level name '{level}' command line parameter, aborting boot level load"
+            );
+            return false;
+        };
+        {
+            let mut s = self.shared.borrow_mut();
+            s.lvl_slct.pack_idx = i as i32;
+            s.lvl_slct.level_data_ids = levels_list.clone();
+            s.set_index(pos as i32);
+        }
+
+        // C++ MenuGame.cpp:1756-1773 — "Do the sequence of actions user
+        // would have to do manually to get to the desired level".
+        self.shared.borrow_mut().play_locally(); // go to profile selection screen
+        if self.state() == States::ETLPNew {
+            // C++ MenuGame.cpp:1760-1765. Verbatim: `playLocally` only ever
+            // sets `ETLPNewBoot` / `SLPSelectBoot`, so this branch is
+            // unreachable in the C++ too — kept for verbatimness.
+            println!(
+                "[hg::Menugame::MenuGame()] No player profiles exist, aborting boot level load"
+            );
+            return false;
+        }
+        // C++ MenuGame.cpp:1769-1770: `enteredStr =
+        // assets.getLocalProfileNames()[0]; assets.pSetCurrent(enteredStr);`
+        // — the C++ `[0]` is UB on an empty list (a shipped `_RELEASE` has
+        // no `Profiles/` folder, so the empty case is the reachable one);
+        // the port takes the first-or-empty instead of crashing.
+        let first_profile = self
+            .shared
+            .borrow()
+            .assets()
+            .profile_names()
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+        {
+            let mut s = self.shared.borrow_mut();
+            s.assets().profile_set_current(&first_profile);
+            s.change_state_to(States::SMain);
+            s.reset_level_names_scrolls(); // C++ `resetNamesScrolls()`
+            s.change_state_to(States::LevelSelection);
+        }
+        true
+    }
+
+    /// C++ `returnToLevelSelection()` (MenuGame.cpp:3365-3370):
+    ///
+    /// ```cpp
+    /// adjustLevelsOffset();
+    /// lvlDrawer->XOffset = 0.f;
+    /// setIgnoreAllInputs(1); // otherwise you go back to the main menu
+    /// ```
+    ///
+    /// `lvlDrawer` is `&lvlSlct` (MenuGame.cpp:241 — the non-favorites
+    /// drawer). Called by the C++ `main.cpp:458` `fnGoToMenu` before
+    /// `mg->init(error)`.
+    pub fn return_to_level_selection(&self) {
+        let mut s = self.shared.borrow_mut();
+        s.adjust_levels_offset();
+        s.lvl_slct.x_offset = 0.0;
+        s.set_ignore_all_inputs(1);
+    }
+
     // ---- navigation (§11.8) ----
 
     /// C++ `upAction()`.
@@ -1637,6 +1777,24 @@ impl MenuGame {
     #[must_use]
     pub fn selected_level_index(&self) -> i32 {
         self.shared.borrow().lvl_slct.current_index
+    }
+
+    /// `lvlSlct.XOffset` — exposed so [`Self::return_to_level_selection`]'s
+    /// "force the drawer offset to 0" contract is assertable (the C++ member
+    /// is private).
+    #[must_use]
+    pub fn lvl_slct_x_offset(&self) -> f32 {
+        self.shared.borrow().lvl_slct.x_offset
+    }
+
+    /// C++ `window->stop()` request flag (the main-menu / welcome "EXIT"
+    /// items set `quit_requested`; the C++ calls `window->stop()` directly,
+    /// the ported flag is consumed by the windowed loop, issue 15 step
+    /// (c)) — exposed so the loop can translate it to
+    /// `GameEngine::stop()`.
+    #[must_use]
+    pub fn quit_requested(&self) -> bool {
+        self.shared.borrow().quit_requested
     }
 
     #[must_use]

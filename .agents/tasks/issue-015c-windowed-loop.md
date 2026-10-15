@@ -30,20 +30,30 @@ windowed path so `open-hexagon` (no args) actually runs the game.
    `pollEvents` (events already folded in by `RunHandler`).
 3. `extlibs/SSVStart/include/SSVStart/GameSystem/GameEngine.hpp` —
    `setGameState`/`updateFromTimer(FT)`/`draw`/state has-bools.
-4. `include/SSVOpenHexagon/Global/Config.hpp:23-28` — `TICKS_PER_SECOND =
+4. `include/SSVOpenHexagon/Global/Config.hpp:25-27` — `TICKS_PER_SECOND =
    240.f`, `TIME_STEP = TIME_SLICE = 60/240`.
-5. `src/SSVOpenHexagon/Core/main.cpp:326-345` — window setup order (title,
-   size, pixelMult, fullscreen, antialiasing, vsync, FPS-limited, maxFPS,
-   icon, `setTimer<TimerStatic>(TIME_STEP, TIME_SLICE)`, the SIGINT handler
-   `:347-357` calling `window->stop()`).
-6. `src/SSVOpenHexagon/Core/main.cpp:425-486` — the MenuGame↔HexagonGame
-   callbacks: `fnHGTriggerRefresh`, `fnHGNewGame` (calls
-   `hg.newGame(...)` then `window->setGameState(hg.getGame())`),
-   `fnHGUpdateRichPresenceCallbacks`, `fnGoToMenu` (menu `init(error)` +
-   `setGameState(mg->getGame())`), the boot dispatch `:488-525` (`gotoMenu`,
-   `-p/-l` via `mg->init(false, *cliLevelPack, *cliLevelName)`, the
-   drag&drop compressed-replay path `gotoGameCompressedReplay`), and
-   `window->run()` `:590-592`.
+5. `src/SSVOpenHexagon/Core/main.cpp:297-350` — window setup order (title
+   `:303`, size `:304`, pixelMult `:305`, fullscreen `:306`,
+   antialiasing `:307`, vsync `:308`, FPS-limited `:309`, maxFPS `:310`,
+   icon `:312-328`, `setTimer<TimerStatic>(TIME_STEP, TIME_SLICE)`
+   `:331-332`, the SIGINT handler `:335-350` calling `window->stop()`
+   `:347`).
+6. `src/SSVOpenHexagon/Core/main.cpp:413-463` — the engine (`:413-421`),
+   the MenuGame construction (`:426-434`) and the
+   MenuGame↔HexagonGame callbacks: `fnHGTriggerRefresh` `:436-440`,
+   `fnHGNewGame` (calls `hg.newGame(...)` `:446` then
+   `window->setGameState(hg.getGame())` `:448`) `:442-449`,
+   `fnHGUpdateRichPresenceCallbacks` `:451-454`, `fnGoToMenu`
+   `:456-462` (menu `returnToLevelSelection()` `:458` + `init(error)`
+   `:459` + `setGameState(mg->getGame())` `:461`), the boot dispatch
+   `:472-535` (`gotoMenu` `:476-480`, `-p/-l` via
+   `mg->init(false, *cliLevelPack, *cliLevelName)` `:507-511`, the
+   drag&drop compressed-replay path `gotoGameCompressedReplay`
+   `:482-503` — note: the C++ `return`s on decompress-failure `:491` with
+   NO state set, and the `-p -l` path sets no state either (null
+   `gameState` → first-frame `assert(isValid())`); the port points the
+   window at the menu on both paths — documented deviation), and
+   `window->run()` `:588-592`.
 
 ## Scope
 

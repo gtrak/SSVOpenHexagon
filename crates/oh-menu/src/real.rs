@@ -8,6 +8,7 @@
 //! Packs / levels / styles / load-results are fully backed.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use oh_assets::Assets;
 use oh_math::hg::color::Color;
@@ -15,17 +16,27 @@ use oh_math::hg::color::Color;
 use crate::seams::{LevelInfo, LoadResults, MenuAssets};
 
 /// `MenuAssets` over a loaded `oh_assets::Assets`.
+///
+/// `Arc`-shared: the windowed app builds ONE `Assets` and shares it between
+/// the engine composition and this seam (the C++ shares one `HGAssets`
+/// between `HexagonGame` and `MenuGame`, main.cpp:381/:434).
 #[derive(Debug)]
 pub struct RealMenuAssets {
-    pub assets: Assets,
+    pub assets: Arc<Assets>,
 }
 
 impl RealMenuAssets {
     /// Load `_RELEASE`-style assets (headless, full).
     pub fn new(root: impl AsRef<Path>) -> Result<Self, oh_assets::FatalLoadError> {
         Ok(Self {
-            assets: Assets::new(root, true, false)?,
+            assets: Arc::new(Assets::new(root, true, false)?),
         })
+    }
+
+    /// Wrap an already-loaded `Assets` (no second load).
+    #[must_use]
+    pub fn from_arc(assets: Arc<Assets>) -> Self {
+        Self { assets }
     }
 }
 
@@ -117,4 +128,19 @@ impl MenuAssets for RealMenuAssets {
     fn profile_create(&self, _name: &str) {}
     fn profile_remove(&self, _name: &str) {}
     fn reload_assets(&self, _entire_pack: bool, _current_level_id: &str) {}
+    fn find_pack_id_by_name(&self, name: &str) -> Option<String> {
+        // C++ `loadCommandLineLevel` (MenuGame.cpp:1696-1703): iterate
+        // `assets.getPackDatas()` (an `unordered_map`) for the first
+        // `d.second.name == pack` — the port's `get_pack_datas()` is a
+        // `HashMap`, so (as in the C++) a shared pack name resolves in
+        // unspecified iteration order.
+        self.assets
+            .get_pack_datas()
+            .iter()
+            .find(|(_id, d)| d.name == name)
+            .map(|(id, _)| id.clone())
+    }
+    fn pack_has_levels(&self, pack_id: &str) -> bool {
+        self.assets.pack_has_levels(pack_id)
+    }
 }

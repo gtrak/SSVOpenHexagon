@@ -109,6 +109,15 @@ pub trait MenuAssets {
     fn profile_remove(&self, name: &str);
     /// `reloadAssets(reloadEntirePack)` (F3/F4, debug only).
     fn reload_assets(&self, entire_pack: bool, current_level_id: &str);
+    // ---- command-line boot (C++ `loadCommandLineLevel`, MenuGame.cpp:1688+)
+    /// The C++ iterates `assets.getPackDatas()` (an `unordered_map`) and
+    /// takes the FIRST entry whose `name` equals `mPack` (MenuGame.cpp:
+    /// 1696-1703) — the port mirrors that scan; when two packs share a
+    /// name the winner is iteration-order-dependent in BOTH (the C++
+    /// `unordered_map` and the port's `HashMap`).
+    fn find_pack_id_by_name(&self, name: &str) -> Option<String>;
+    /// C++ `assets.packHasLevels(packID)` (MenuGame.cpp:1709).
+    fn pack_has_levels(&self, pack_id: &str) -> bool;
 }
 
 /// The config surface `MenuGame` reads/writes. Every key maps 1:1 to a C++
@@ -336,6 +345,9 @@ pub struct FakeAssets {
 
 pub struct FakeAssetsInner {
     pub packs: Vec<String>,
+    /// pack id → pack `name` (the C++ `PackData.name` — the `-p` CLI
+    /// argument matches on THIS, not the id).
+    pub pack_names: std::collections::BTreeMap<String, String>,
     pub levels_by_pack: std::collections::BTreeMap<String, Vec<String>>,
     pub levels: std::collections::BTreeMap<String, LevelInfo>,
     pub colors: std::collections::BTreeMap<String, Vec<Color>>,
@@ -353,6 +365,7 @@ impl FakeAssets {
         Rc::new(Self {
             inner: RefCell::new(FakeAssetsInner {
                 packs: Vec::new(),
+                pack_names: std::collections::BTreeMap::new(),
                 levels_by_pack: std::collections::BTreeMap::new(),
                 levels: std::collections::BTreeMap::new(),
                 colors: std::collections::BTreeMap::new(),
@@ -368,9 +381,14 @@ impl FakeAssets {
 
     /// Registers a pack, its levels, and a default level/style per level
     /// (2-color style so `set_index`'s color derivation is observable).
+    /// The pack's `name` defaults to its id (the C++ `PackData.name` is
+    /// distinct from the id; override with [`Self::set_pack_name`]).
     pub fn add_pack(&self, pack_id: &str, level_names: &[&str]) {
         let mut inner = self.inner.borrow_mut();
         inner.packs.push(pack_id.to_string());
+        inner
+            .pack_names
+            .insert(pack_id.to_string(), pack_id.to_string());
         let mut ids = Vec::new();
         for name in level_names {
             let id = format!("{pack_id}_{name}");
@@ -401,6 +419,15 @@ impl FakeAssets {
 
     pub fn add_profile(&self, name: &str) {
         self.inner.borrow_mut().profiles.push(name.to_string());
+    }
+
+    /// Sets the pack's `name` (the C++ `PackData.name` the `-p` argument
+    /// matches on; distinct from the pack id).
+    pub fn set_pack_name(&self, pack_id: &str, name: &str) {
+        self.inner
+            .borrow_mut()
+            .pack_names
+            .insert(pack_id.to_string(), name.to_string());
     }
 }
 
@@ -475,6 +502,21 @@ impl MenuAssets for FakeAssets {
             .borrow_mut()
             .reload_log
             .push((entire_pack, current_level_id.to_string()));
+    }
+    fn find_pack_id_by_name(&self, name: &str) -> Option<String> {
+        let inner = self.inner.borrow();
+        inner
+            .packs
+            .iter()
+            .find(|id| inner.pack_names.get(*id).is_some_and(|n| n == name))
+            .cloned()
+    }
+    fn pack_has_levels(&self, pack_id: &str) -> bool {
+        self.inner
+            .borrow()
+            .levels_by_pack
+            .get(pack_id)
+            .is_some_and(|levels| !levels.is_empty())
     }
 }
 

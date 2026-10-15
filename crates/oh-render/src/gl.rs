@@ -147,14 +147,10 @@ impl GlParts {
     /// a live GL context renders and is readable. Returns the read-back RGBA.
     #[must_use]
     pub fn clear_and_read_center(&self, color: [f32; 4]) -> Option<[u8; 4]> {
+        self.clear(color);
         let gl = &self.gl;
         let w = self.width as i32;
         let h = self.height as i32;
-        unsafe {
-            gl.viewport(0, 0, w, h);
-            gl.clear_color(color[0], color[1], color[2], color[3]);
-            gl.clear(glow::COLOR_BUFFER_BIT);
-        }
         let mut pixel = [0u8; 4];
         unsafe {
             gl.read_pixels(
@@ -168,5 +164,18 @@ impl GlParts {
             );
         }
         Some(pixel)
+    }
+
+    /// C++ `renderWindow.clear(mColor)` (GameWindow.hpp:157-160) — the
+    /// per-frame pre-update clear `GameWindow::run` performs (`this->clear()`
+    /// at GameWindow.hpp:126, default `sf::Color::Transparent`), and the
+    /// `window->clear(sf::Color::Black)` the game's `draw()` performs
+    /// (HGGraphics.cpp:83) go through the same GL call.
+    pub fn clear(&self, color: [f32; 4]) {
+        let gl = &self.gl;
+        unsafe {
+            gl.clear_color(color[0], color[1], color[2], color[3]);
+            gl.clear(glow::COLOR_BUFFER_BIT);
+        }
     }
 }

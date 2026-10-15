@@ -275,6 +275,18 @@ pub struct Window {
     title: String,
     width_px: u32,
     height_px: u32,
+    /// C++ `GameWindow::pixelMult` (GameWindow.hpp:37, default 1.f) — the
+    /// system pixels-per-logical-pixel multiplier `mainClient` sets from
+    /// `Config::getPixelMultiplier()` (main.cpp:305). The C++ applies it at
+    /// window (re)creation (`recreateWindow`, GameWindow.hpp:93: the render
+    /// window is sized `width * pixelMult × height * pixelMult` while the
+    /// logical `width`/`height` members stay logical); the port applies it
+    /// once, at `create` (the caller passes the PHYSICAL size), and records
+    /// the value here for `get_pixel_mult` (the winit window is not
+    /// recreated at runtime, so a later `set_pixel_mult` records but does
+    /// not resize — the C++'s `mustRecreate` deferral has no port
+    /// equivalent).
+    pixel_mult: f32,
     fullscreen: bool,
     antialiasing_level: u32,
     vsync: bool,
@@ -322,6 +334,7 @@ impl Window {
             title: title.to_string(),
             width_px: width,
             height_px: height,
+            pixel_mult: 1.0,
             fullscreen: false,
             antialiasing_level: 3,
             vsync: false,
@@ -382,6 +395,19 @@ impl Window {
     pub fn set_size(&mut self, width: u32, height: u32) {
         self.width_px = width;
         self.height_px = height;
+    }
+
+    /// C++ `setPixelMult` (GameWindow.hpp:197-201) — see the `pixel_mult`
+    /// field docs: the port applies the multiplier at creation; this records
+    /// the value the C++ `mainClient` sets (main.cpp:305).
+    pub fn set_pixel_mult(&mut self, pixel_mult: f32) {
+        self.pixel_mult = pixel_mult;
+    }
+
+    /// C++ `GameWindow::pixelMult` (GameWindow.hpp:37).
+    #[must_use]
+    pub fn get_pixel_mult(&self) -> f32 {
+        self.pixel_mult
     }
 
     /// `setTitle`.

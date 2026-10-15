@@ -3,11 +3,11 @@
 //!
 //! C++ oracle (D-014, verified):
 //!
-//! * `GameWindow::setGameState(GameState&)` (GameWindow.hpp:185-188) just
+//! * `GameWindow::setGameState(GameState&)` (GameWindow.hpp:222-225) just
 //!   forwards to `GameEngine::setGameState` (GameEngine.hpp:109-111), which
 //!   stores a `GameState*` — the pointer the loop's
 //!   `updateFromTimer` / `drawFromTimer` then route through:
-//!   `GameEngine::updateFromTimer(mFT)` (GameEngine.hpp:40-51) `assert`s
+//!   `GameEngine::updateFromTimer(mFT)` (GameEngine.hpp:40-50) `assert`s
 //!   the state is set and calls the CURRENT state's `update(mFT)`;
 //!   `GameEngine::drawFromTimer()` (GameEngine.hpp:52-56, reached via
 //!   `TimerBase::runDraw`, `TimerBase.inl:10-13`) calls the current
@@ -20,11 +20,15 @@
 //!   `setGameState(mg->getGame())` main.cpp:460,478,497,505,525,532).
 //!
 //! The port keeps the states `Rc`-shared and the switching surface
-//! single-threaded (the C++ raw pointers are single-threaded too): the one
-//! crossing into the engine's `Send + Sync` world — the C++
+//! single-threaded (the C++ raw pointers are single-threaded too): the C++
 //! `fnGoToMenu` member (`HexagonGame.hpp` "std::function<void(const bool)>
-//! fnGoToMenu", main.cpp:457-462) — writes the current-slot atomic
-//! directly; [`GameEngine::set_game_state`] writes the same store.
+//! fnGoToMenu", main.cpp:456-462) is `Send + Sync` (the engine is
+//! `Arc<dyn GameApi>`), so the windowed composition's callback only sets a
+//! thread-atomic signal that the game state adapter consumes at the start
+//! of the next tick (the C++ switch lands in the same inter-tick gap —
+//! `oh_app::windowed` documents the one error-path exception); the switch
+//! itself goes through [`GameEngine::set_game_state`], which writes the
+//! same current-slot atomic.
 
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -47,26 +51,34 @@ pub enum GameSlot {
 /// thread (the loop's tick/draw, and the menu's in-thread callbacks),
 /// exactly like the C++ single-threaded `GameState*`.
 pub trait GameState {
-    /// C++ `GameState::update(mFT)` (GameState.hpp:54-56) — routed via
-    /// `GameEngine::updateFromTimer` (GameEngine.hpp:40-51).
+    /// C++ `GameState::update(mFT)` (GameState.hpp:39-42) — routed via
+    /// `GameEngine::updateFromTimer` (GameEngine.hpp:40-50).
     fn update_from_timer(&self, ft: f32);
 
-    /// C++ `GameState::draw()` (GameState.hpp:58-60) — routed via
+    /// C++ `GameState::draw()` (GameState.hpp:44-47) — routed via
     /// `GameEngine::drawFromTimer` (GameEngine.hpp:52-56 →
     /// `TimerBase::runDraw`, TimerBase.inl:10-13).
     fn draw(&self, target: &mut dyn DrawTarget);
+
+    /// C++ `ssvs::GameState::onPostUpdate` delegate (GameState.hpp:60) —
+    /// fires once per frame AFTER the timer's update burst, from
+    /// `GameEngine::runUpdate` (GameEngine.hpp:86: `gameState->onPostUpdate()`
+    /// after `timer->runUpdate()`). Default: the empty delegate (the C++
+    /// `ssvu::Delegate` default — `MenuGame` registers nothing; `HexagonGame`
+    /// registers `postUpdate`, HexagonGame.cpp:331).
+    fn on_post_update(&self) {}
 }
 
 /// C++ `ssvs::GameEngine`'s state pointer + `stop` / `isRunning`
-/// (GameEngine.hpp:16-124) — the minimal switching surface.
+/// (GameEngine.hpp:20-124) — the minimal switching surface.
 pub struct GameEngine {
     /// The two registered states, indexed by `GameSlot` — set ONCE at
     /// construction (the C++ `mainClient` owns both `ssvs::GameState`s for
     /// the whole scope; `setGameState` only points between them).
     states: [Option<Rc<dyn GameState>>; 2],
-    /// C++ `GameState* gameState` (GameEngine.hpp:19) — the current state.
+    /// C++ `GameState* gameState` (GameEngine.hpp:30) — the current state.
     current: AtomicU8,
-    /// C++ `bool running{true}` (GameEngine.hpp:23).
+    /// C++ `bool running{true}` (GameEngine.hpp:32).
     running: AtomicBool,
 }
 
@@ -82,14 +94,16 @@ impl GameEngine {
     }
 
     /// C++ `GameEngine::setGameState(GameState&)` (GameEngine.hpp:109-111;
-    /// reached through `window->setGameState`, GameWindow.hpp:185-188).
+    /// reached through `window->setGameState`, GameWindow.hpp:222-225).
     ///
-    /// The C++ `fnGoToMenu` callback (main.cpp:457-462) fires this from
-    /// INSIDE the engine's `goToMenu`; the engine's callback store is
-    /// `Send + Sync`, so that callback writes the current-slot atomic
-    /// directly — the same store this method writes (same effect: every
-    /// subsequent `updateFromTimer` / `drawFromTimer` routes to the new
-    /// state).
+    /// The C++ `fnGoToMenu` callback (main.cpp:456-462) fires this from
+    /// INSIDE the engine's `goToMenu` — in the ported windowed composition
+    /// the stored callback only sets a thread-atomic signal (the callback
+    /// is `Send + Sync`; the `Rc`-based menu calls are performed by the
+    /// game state adapter, `oh_app::windowed`), which calls this method
+    /// with the menu slot — the same store this method writes (same
+    /// effect: every subsequent `updateFromTimer` / `drawFromTimer`
+    /// routes to the new state).
     pub fn set_game_state(&self, slot: GameSlot) {
         self.current.store(slot as u8, Ordering::SeqCst);
     }
@@ -103,7 +117,7 @@ impl GameEngine {
         }
     }
 
-    /// C++ `GameEngine::updateFromTimer(mFT)` (GameEngine.hpp:40-51) —
+    /// C++ `GameEngine::updateFromTimer(mFT)` (GameEngine.hpp:40-50) —
     /// `assert(isValid())` (the port `expect`s: the windowed boot dispatch
     /// always points the window at a state before `window->run()`,
     /// main.cpp:488-537), then the CURRENT state's `update(mFT)`.
@@ -130,6 +144,18 @@ impl GameEngine {
         state.draw(target);
     }
 
+    /// C++ `GameEngine::runUpdate`'s tail (GameEngine.hpp:80-87:
+    /// `gameState->onPostUpdate()` after `timer->runUpdate()`) — the
+    /// CURRENT state's `onPostUpdate` delegate, once per frame, AFTER the
+    /// whole timer update burst (the C++ `HexagonGame::postUpdate`,
+    /// HexagonGame.cpp:331; the menu state's delegate is empty).
+    pub fn on_post_update(&self) {
+        let state = self
+            .state()
+            .expect("game state set (C++ GameEngine::assert(isValid()))");
+        state.on_post_update();
+    }
+
     /// The current state object (the slot's `Rc` clone — the guard-free
     /// form of the C++ `gameState` pointer dereference; callers must not
     /// hold it across anything that re-enters this engine).
@@ -137,9 +163,9 @@ impl GameEngine {
         self.states[self.current() as usize].clone()
     }
 
-    /// C++ `GameEngine::stop()` (GameEngine.hpp:76-79) — called by the
+    /// C++ `GameEngine::stop()` (GameEngine.hpp:75-78) — called by the
     /// window's SIGINT handler (main.cpp:340-352) and by the window's
-    /// `stop()` (GameWindow.hpp:153-156).
+    /// `stop()` (GameWindow.hpp:151-155).
     pub fn stop(&self) {
         self.running.store(false, Ordering::SeqCst);
     }
@@ -202,6 +228,11 @@ mod tests {
         fn draw(&self, _target: &mut dyn DrawTarget) {
             self.log.borrow_mut().push(format!("{}:draw", self.name));
         }
+        fn on_post_update(&self) {
+            self.log
+                .borrow_mut()
+                .push(format!("{}:post_update", self.name));
+        }
     }
 
     fn harness() -> (GameEngine, Rc<RefCell<Vec<String>>>) {
@@ -227,7 +258,7 @@ mod tests {
     }
 
     /// `setGameState` + `updateFromTimer` route the update to the state
-    /// that is CURRENT at call time (GameEngine.hpp:40-51: the C++ reads
+    /// that is CURRENT at call time (GameEngine.hpp:40-50: the C++ reads
     /// the `gameState` pointer per call).
     #[test]
     fn update_routes_to_the_current_state() {
@@ -274,7 +305,7 @@ mod tests {
         engine.draw(&mut target);
 
         // Mid-frame switch to the game (the C++ `fnHGNewGame` does
-        // `newGame` + `setGameState` inside a menu tick — main.cpp:441-447).
+        // `newGame` + `setGameState` inside a menu tick — main.cpp:442-449).
         engine.set_game_state(GameSlot::Game);
         // Frame 2 (game): the remaining tick + the draw route to the game.
         engine.update_from_timer(0.25);
@@ -292,7 +323,30 @@ mod tests {
         );
     }
 
-    /// `stop()` flips the C++ `running` flag (GameEngine.hpp:76-79,119-122)
+    /// A frame's update tail routes to the state current at call time —
+    /// the C++ `runUpdate` order (GameEngine.hpp:80-87): the timer burst
+    /// (N×`updateFromTimer`) THEN one `onPostUpdate`, each read through the
+    /// pointer at its own call site.
+    #[test]
+    fn on_post_update_routes_to_the_current_state_after_the_burst() {
+        let (engine, log) = harness();
+        engine.update_from_timer(0.25);
+        engine.on_post_update();
+        engine.set_game_state(GameSlot::Game);
+        engine.update_from_timer(0.25);
+        engine.on_post_update();
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                "menu:update(0.25)",
+                "menu:post_update",
+                "game:update(0.25)",
+                "game:post_update",
+            ]
+        );
+    }
+
+    /// `stop()` flips the C++ `running` flag (GameEngine.hpp:75-78,119-122)
     /// — the `while(isRunning())` condition the window loop checks.
     #[test]
     fn stop_flips_is_running() {

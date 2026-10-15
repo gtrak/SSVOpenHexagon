@@ -403,6 +403,11 @@ pub(crate) struct Inner<S: SharedStore> {
     pub(crate) renderer: Option<Arc<dyn Renderer + 'static>>,
     // C++ `std::function<void(const replay_file&)> onDeathReplayCreated`.
     pub(crate) on_death_replay_created: std::sync::RwLock<Option<DeathReplayCallback>>,
+    // C++ `std::function<void(const bool)> fnGoToMenu` (HexagonGame.hpp:445)
+    // — the app-level "back to menu" callback, assigned by `mainClient`
+    // AFTER construction (main.cpp:456-462) and called at the tail of
+    // `goToMenu` (HexagonGame.cpp:1277-1280).
+    pub(crate) fn_go_to_menu: std::sync::RwLock<Option<GoToMenuCallback>>,
     pub(crate) est: ReentrantMutex<EngineState>,
 }
 
@@ -430,6 +435,17 @@ impl<S: SharedStore> DerefMut for SharedGuard<'_, S> {
 /// C++ `std::function<void(const replay_file&)>` capture (type alias so the
 /// `Inner` field stays under clippy's type-complexity budget).
 pub type DeathReplayCallback = Arc<dyn Fn(&ReplayFile) + Send + Sync + 'static>;
+
+/// C++ `std::function<void(const bool)>` capture (type alias so the
+/// `Inner` field stays under clippy's type-complexity budget). `Send +
+/// Sync` (the engine is `Arc<dyn GameApi>`, so its members must be):
+/// the windowed `fnGoToMenu` closure (main.cpp:456-462) therefore only
+/// sets a thread-atomic signal (an `Arc<AtomicU8>` — `Send + Sync`);
+/// the `Rc`-based menu calls (`returnToLevelSelection` / `init`) +
+/// `setGameState` are performed by the composition's game state adapter,
+/// which consumes the signal at the start of the next tick (see
+/// `oh_app::windowed`).
+pub type GoToMenuCallback = Arc<dyn Fn(bool) + Send + Sync>;
 
 /// C++ `HexagonGame::SaveScoreIfNeededResult` (private enum).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -580,6 +596,7 @@ impl<S: SharedStore> HexagonGame<S> {
             window,
             renderer,
             on_death_replay_created: std::sync::RwLock::new(None),
+            fn_go_to_menu: std::sync::RwLock::new(None),
             est: ReentrantMutex::new(est),
         }))
     }
@@ -1400,6 +1417,20 @@ impl<S: SharedStore> HexagonGame<S> {
             .expect("on_death_replay_created poisoned") = Some(cb);
     }
 
+    /// C++ `hg.fnGoToMenu = ...` (main.cpp:456-462) — the app-level
+    /// "back to menu" callback, invoked at the tail of [`Self::go_to_menu`]
+    /// (HexagonGame.cpp:1277-1280: `if(fnGoToMenu) fnGoToMenu(mError);`).
+    /// The C++ assigns it after construction, so the port sets it the same
+    /// way (the member is unset — `std::function` default-empty — until
+    /// then).
+    pub fn set_fn_go_to_menu(&self, cb: Arc<dyn Fn(bool) + Send + Sync>) {
+        *self
+            .0
+            .fn_go_to_menu
+            .write()
+            .expect("fn_go_to_menu poisoned") = Some(cb);
+    }
+
     /// C++ `executeRandomInputs` test flag.
     pub fn set_execute_random_inputs(&self, value: bool) {
         self.est().execute_random_inputs = value;
@@ -1521,7 +1552,21 @@ impl<S: SharedStore> HexagonGame<S> {
             self.host_call_void("onUnload", self.0.script_host.run_on_unload());
         }
 
-        // C++ `if(fnGoToMenu) fnGoToMenu(mError);` — unset in this port.
+        // C++ `if(fnGoToMenu) fnGoToMenu(mError);` (HexagonGame.cpp:1277-1280)
+        // — the app-level callback (main.cpp:456-462: `returnToLevelSelection`
+        // + `init(error)` + `window->setGameState(mg->getGame())`). Unset in
+        // the headless compositions (the C++'s default-empty `std::function`
+        // guard). The `Arc` is cloned and the read-lock guard drops BEFORE
+        // the call (the callback never re-locks this engine).
+        if let Some(cb) = self
+            .0
+            .fn_go_to_menu
+            .read()
+            .expect("fn_go_to_menu poisoned")
+            .clone()
+        {
+            cb(m_error);
+        }
     }
 
     /// C++ `saveReplay()` (verbatim).

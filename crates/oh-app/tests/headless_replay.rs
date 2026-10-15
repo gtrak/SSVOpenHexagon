@@ -1,6 +1,9 @@
 //! Issue 15 step (b): the headless client run (C++ `mainClient`'s headless
 //! branch, main.cpp:540-581) — pinned by running the REAL `open-hexagon`
-//! binary against a sandbox data root, plus the step-(c) windowed stub.
+//! binary against a sandbox data root. (The step-(c) windowed wiring is
+//! pinned at the library level in `tests/windowed.rs` — the real GL +
+//! winit run is MANUAL, spec §5: running the binary's windowed path in a
+//! unit test would hang on a machine WITH a display.)
 //!
 //! # The cross-check (spec §6, corrected — D-014)
 //!
@@ -336,18 +339,9 @@ fn headless_missing_replay_file_logs_and_falls_through_to_exit_0() {
     );
 }
 
-/// Spec §5: the windowed client path (no `-headless`) is the
-/// step-(c) stub — unmistakable stderr + non-zero exit. The C++ would
-/// create the window, init the menu (consuming `-p`/`-l` at
-/// main.cpp:495-505) and `window->run()` — 15c replaces this.
-#[test]
-fn windowed_mode_is_the_documented_not_ported_stub() {
-    let sandbox = Sandbox::new("windowed");
-    let out = run_binary(sandbox.path(), &["-p", "cube", "-l", "apeirogon"]);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(out.status.code(), Some(1), "the stub exits non-zero");
-    assert!(
-        stderr.contains("Windowed mode is not yet ported (issue 15 step c)\n"),
-        "stderr:\n{stderr}"
-    );
-}
+// The step-(c) windowed stub this file used to pin (exit 1 +
+// "Windowed mode is not yet ported") is gone with the wiring: the
+// windowed path now boots for real (`oh_app::windowed::WindowedClient`).
+// Its headless-first tests live in `tests/windowed.rs` (fake window;
+// the real GL + winit run is MANUAL — spec §5: running the binary's
+// windowed path in a unit test would hang on a machine WITH a display).

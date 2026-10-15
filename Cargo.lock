@@ -1384,6 +1384,7 @@ dependencies = [
  "oh-game",
  "oh-lua",
  "oh-math",
+ "oh-menu",
  "oh-render",
  "oh-replay",
  "oh-rng",

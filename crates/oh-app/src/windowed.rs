@@ -1,0 +1,1408 @@
+//! The C++ `mainClient` windowed path (issue 15 step (c)) — in the C++
+//! order:
+//!
+//! * window creation + config setters + title + timer install
+//!   (`main.cpp:297-332`);
+//! * engine + MenuGame + the four `fnHG*` / `fnGoToMenu` links
+//!   (`main.cpp:413-463`);
+//! * the boot dispatch — `gotoMenu` / `-p -l` / compressed-replay
+//!   drag&drop (`main.cpp:471-537`);
+//! * `window->run()` + `Finished` (`main.cpp:588-595`).
+//!
+//! # Per-frame order (the C++ `GameWindow::run()` body, GameWindow.hpp:117-150)
+//!
+//! ```text
+//! while(gameEngine->isRunning()) {
+//!     [mustRecreate → recreateWindow]     // not ported: created once
+//!     renderWindow.setActive(true)        // the GL context is current by construction
+//!     this->clear()                       // sf::Color::Transparent (GameWindow.hpp:126,157-160)
+//!     gameEngine->refreshTimer()          // GameTimer::refresh no-op (GameTimer.hpp:26-37)
+//!     runEvents()                         // poll → inputState + per-event handleEvent
+//!     gameEngine->runUpdate()             // refreshInput → timer->runUpdate (N×update) → onPostUpdate
+//!     gameEngine->runDraw()               // timer->runDraw → the current state's draw
+//!     renderWindow.display()              // the swap (winit at event-loop end)
+//!     gameEngine->runFPS()                // runFrameTime + runFPS (GameEngine.hpp:96-101)
+//! }
+//! ```
+//!
+//! [`frame`] is that body for one frame (the state-switching tests drive it
+//! directly with fake states + the REAL [`oh_render::timer::TimerStatic`]);
+//! [`WindowedClient::tick`] wraps it with the port's draw target and the
+//! loop-exit translation.
+//!
+//! # Documented gaps (each a C++ line, none silently faked)
+//!
+//! * **Icon** — C++ `main.cpp:312-328` loads `Assets/icon.png` via
+//!   `sf::Image` and sets the window icon (re-applied on recreation).
+//!   `oh-assets` does not decode PNGs yet, so the icon stays the platform
+//!   default. `TODO(issue-15c-icon)`.
+//! * **SIGINT** — C++ `main.cpp:334-357` installs a `SIGINT` handler that
+//!   stops the engine. EXCLUDED from this issue's scope (no signal
+//!   handling); the window's `Closed` event and the menu's EXIT item still
+//!   end the loop (below).
+//! * **Input management** — the C++ per-frame `refreshInput` +
+//!   per-tick `updateInput` run the SSVStart `InputManager`
+//!   (GameEngine.hpp:84; GameState.hpp:49-57), which maps the keyboard
+//!   binds (`Config::getTrigger(Tid::...)`, HexagonGame.cpp:352-365) onto
+//!   the states' actions. The SSVStart input manager is not ported, so the
+//!   window's input state is current (winit folds every event into
+//!   `Window::input`) but no trigger→action wiring exists yet: the windowed
+//!   build runs the timer / update / draw / state-switching loop but
+//!   keyboard play is not yet available. The per-event
+//!   `gameEngine->handleEvent` (GameWindow.hpp:79 → GameEngine.hpp:58-62)
+//!   is a no-op for both states here: the C++ `HexagonGame`'s `onAnyEvent`
+//!   is `Imgui::processEvent` (HexagonGame.cpp:335 — the ImGui console,
+//!   unported) and `MenuGame` registers none.
+//! * **fnHGTriggerRefresh** — C++ `main.cpp:436-440`
+//!   (`hg.refreshTrigger(trigger, bindId)`): the `HexagonGame::refreshTrigger`
+//!   (SSVStart input manager) is unported with the input management above;
+//!   the wired closure documents the no-op.
+//! * **fnHGUpdateRichPresenceCallbacks** — C++ `main.cpp:451-454`
+//!   (`hg.updateRichPresenceCallbacks()`): Steam (issue 20) is absent; the
+//!   wired closure documents the no-op.
+//! * **MenuGame `draw`** — C++ `MenuGame.cpp:259`
+//!   (`game.onDraw += [this] { draw(); }`): `MenuGame::draw` is not
+//!   ported yet, so the menu state's `GameState::draw` is an explicit
+//!   no-op (the menu's UPDATE is wired — its state machine runs on the
+//!   real timer). `TODO(issue-13-menu-draw)`.
+//! * **fnGoToMenu timing** — C++ `main.cpp:456-462` runs
+//!   `returnToLevelSelection` + `init(error)` + `setGameState(menu)`
+//!   synchronously at the tail of `HexagonGame::goToMenu`. The engine's
+//!   callback member must be `Send` (the engine is `Send` — its timeline
+//!   actions are), so the wired closure only sets a thread-atomic flag;
+//!   the game state's `update_from_timer` consumes it at the START of the
+//!   NEXT tick. Between a tick's `goToMenu` and the next tick nothing
+//!   routes differently (the switch lands in the same gap the C++ switch
+//!   lands in), EXCEPT the rare `goToMenu` from the `onRenderStage`
+//!   Lippincott error path (during `draw`, `HGGraphics.cpp:74-77`): there
+//!   the port's switch lands at the start of the next frame's first tick
+//!   instead of mid-draw — a ≤1-frame difference on an error path no
+//!   shipped level takes.
+//! * **Boot-dispatch null states** — the C++ `-p -l` path
+//!   (`main.cpp:507-511`: `mg->init` only) and the replay decompress-failure
+//!   path (`main.cpp:488-492`: log + `return`) NEVER call
+//!   `window->setGameState`, leaving the engine's `gameState` null — the
+//!   first frame's `assert(isValid())` (GameEngine.hpp:41) then fires. The
+//!   port points the window at the MENU state on both paths (documented
+//!   deviation: the C++'s null-state crash is not reproduced).
+//! * **GL surface** — the [`GlDrawTarget`] clears the real framebuffer and
+//!   uploads the scene vertex batches (walls / player) through
+//!   [`oh_render::batching::GlBatchUploader`]; the sprite / text /
+//!   rectangle passes and the screenshot save are documented no-ops (the
+//!   texture/font GL uploads are issue 10's surface; screenshots are
+//!   outside this issue).
+
+use std::cell::RefCell;
+use std::path::Path;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, RwLock};
+
+use oh_config::{Config, TIME_SLICE, TIME_STEP};
+use oh_game::hexagon_game::HexagonGame;
+use oh_game::seams::NullProfiles;
+use oh_lua::api::state::GameApiState;
+use oh_menu::layout::LinearFontHeight;
+use oh_menu::seams::{NewGameCallback, RichPresenceCallback, TriggerRefreshCallback};
+use oh_menu::{AudioSink, MenuConfig, MenuGame, NoopNetwork, RealMenuAssets};
+use oh_render::batching::GlBatchUploader;
+use oh_render::draw::{RenderStates, Vertex};
+use oh_render::font::{Font, Text};
+use oh_render::graphics::DrawTarget;
+use oh_render::texture::Sprite;
+use oh_render::timer::TimerStatic;
+use oh_render::types::RectangleShape;
+use oh_render::view::View;
+use oh_render::window::Window;
+use oh_render::GlParts;
+
+use crate::bridge::AppDraw;
+use crate::compose::compose_with;
+use crate::game_state::{GameEngine, GameSlot, GameState};
+
+/// The C++ `hg::Audio` (main.cpp:392-401) is not ported (issue 17 owns
+/// the audio port; the engine is composed with a `None` audio). The
+/// menu's audio calls go through this no-op sink.
+struct NoopAudio;
+
+impl AudioSink for NoopAudio {
+    fn play_sound(&self, _asset_id: &str) {}
+    fn stop_all(&self) {}
+}
+
+/// `MenuConfig` over the REAL `oh_config::Config` (the C++ menu reads
+/// `hg::Config` directly; the port's seam is the same object the engine
+/// composition uses — one `Config`, shared by `Arc<RwLock<...>>`).
+pub struct ConfigMenuAdapter {
+    config: Arc<RwLock<Config>>,
+}
+
+impl ConfigMenuAdapter {
+    #[must_use]
+    pub fn new(config: Arc<RwLock<Config>>) -> Self {
+        Self { config }
+    }
+}
+
+/// C++ `sf::Color::Transparent` (the `GameWindow::run` pre-update clear's
+/// default, GameWindow.hpp:126,157).
+const COLOR_TRANSPARENT: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
+
+impl MenuConfig for ConfigMenuAdapter {
+    // --- layout / sizing ---
+    fn size_x(&self) -> f32 {
+        self.config.read().expect("config poisoned").get_size_x()
+    }
+    fn size_y(&self) -> f32 {
+        self.config.read().expect("config poisoned").get_size_y()
+    }
+    fn zoom_factor(&self) -> f32 {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_zoom_factor()
+    }
+    fn first_time_playing(&self) -> bool {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_first_time_playing()
+    }
+    fn set_first_time_playing(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_first_time_playing(value);
+    }
+    fn show_login_at_startup(&self) -> bool {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_show_login_at_startup()
+    }
+    fn set_show_login_at_startup(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_show_login_at_startup(value);
+    }
+    fn black_and_white(&self) -> bool {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_black_and_white()
+    }
+    fn set_black_and_white(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_black_and_white(value);
+    }
+    fn official(&self) -> bool {
+        self.config.read().expect("config poisoned").get_official()
+    }
+    fn set_official(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_official(value);
+    }
+    fn debug(&self) -> bool {
+        self.config.read().expect("config poisoned").get_debug()
+    }
+    fn set_debug(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_debug(value);
+    }
+    fn joystick_deadzone(&self) -> f32 {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_joystick_deadzone()
+    }
+    fn set_joystick_deadzone(&self, value: f32) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_joystick_deadzone(value);
+    }
+
+    // --- gameplay ---
+    fn auto_restart(&self) -> bool {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_auto_restart()
+    }
+    fn set_auto_restart(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_auto_restart(value);
+    }
+    fn rotate_to_start(&self) -> bool {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_rotate_to_start()
+    }
+    fn set_rotate_to_start(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_rotate_to_start(value);
+    }
+    fn invincible(&self) -> bool {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_invincible()
+    }
+    fn set_invincible(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_invincible(value);
+    }
+    fn timescale(&self) -> f32 {
+        self.config.read().expect("config poisoned").get_timescale()
+    }
+    fn set_timescale(&self, value: f32) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_timescale(value);
+    }
+    fn save_last_username(&self) -> bool {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_save_last_login_username()
+    }
+    fn set_save_last_username(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_save_last_login_username(value);
+    }
+    fn last_login_username(&self) -> String {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_last_login_username()
+            .to_string()
+    }
+    fn set_last_login_username(&self, value: &str) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_last_login_username(value);
+    }
+    fn reset_config_to_defaults(&self) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .reset_config_to_defaults();
+    }
+    fn reset_binds_to_defaults(&self) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .reset_binds_to_defaults();
+    }
+    fn refresh_binds(&self) {
+        // C++ `MenuGame::refreshBinds()` (MenuGame.cpp:3373-3387): the
+        // trigger-refresh loop (`game.refreshTrigger` + `fnHGTriggerRefresh`)
+        // is the unported SSVStart input manager (module docs), and
+        // `Config::loadAllJoystickBinds` (Config.hpp:228) is unported —
+        // no-op.
+    }
+    fn set_fullscreen(&self, value: bool) {
+        // C++ `Config::setFullscreen(window, value)` (MenuGame.cpp:1374-1379)
+        // also recreates the window; the port's winit window is not
+        // recreated at runtime (module docs: `set_pixel_mult` note) — the
+        // config value is set, the recreation is the documented gap.
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_fullscreen(value);
+    }
+    fn set_resolution(&self, w: u32, h: u32) {
+        // C++ `changeResolutionTo` → `Config::setCurrentResolution`.
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_current_resolution(w, h);
+    }
+    fn set_resolution_auto(&self) {
+        // C++ "automatically set resolution" item (MenuGame.cpp:1321-1323)
+        // → the `windowedAutoResolution` / `fullscreenAutoResolution` flags
+        // + `reapplyResolution`; the port's `Config` keeps the flags but
+        // `set_current_resolution_auto` needs the desktop size, which this
+        // seam does not hold — documented no-op.
+    }
+    fn resolution_modes(&self) -> Vec<(u32, u32)> {
+        // C++ builds the RESOLUTION submenus from
+        // `sf::VideoMode::getFullscreenModes()` (MenuGame.cpp:1332-1363) —
+        // display-dependent runtime data; the port's winit/monitor-mode
+        // equivalent is unported, so (as with `FakeConfig`) the list is
+        // empty: the "automatically set resolution" / "go windowed" /
+        // "go fullscreen" items still work.
+        Vec::new()
+    }
+
+    // --- graphics / text ---
+    fn draw_text_outlines(&self) -> bool {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_draw_text_outlines()
+    }
+    fn set_draw_text_outlines(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_draw_text_outlines(value);
+    }
+    fn text_padding(&self) -> i32 {
+        // C++ `Config::getTextPadding()` is a float; the port's seam takes
+        // an int (the C++ value is integral in all shipped configs).
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_text_padding() as i32
+    }
+    fn set_text_padding(&self, value: i32) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_text_padding(value as f32);
+    }
+    fn text_scaling(&self) -> f32 {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_text_scaling()
+    }
+    fn set_text_scaling(&self, value: f32) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_text_scaling(value);
+    }
+    fn antialiasing(&self) -> u32 {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_antialiasing_level()
+    }
+    fn set_antialiasing(&self, value: u32) {
+        // C++ `Config::setAntialiasingLevel(window, n)` (MenuGame.cpp:1452-1464)
+        // also recreates the window with the new MSAA level — the runtime
+        // recreation is the documented gap; the config value is set.
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_antialiasing_level(value);
+    }
+    fn darken_uneven_background_chunk(&self) -> bool {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_darken_uneven_background_chunk()
+    }
+    fn set_darken_uneven_background_chunk(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_darken_uneven_background_chunk(value);
+    }
+
+    // --- HUD toggles ---
+    fn show_key_icons(&self) -> bool {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_show_key_icons()
+    }
+    fn set_show_key_icons(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_show_key_icons(value);
+    }
+    fn key_icons_scale(&self) -> f32 {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_key_icons_scale()
+    }
+    fn set_key_icons_scale(&self, value: f32) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_key_icons_scale(value);
+    }
+    fn show_level_info(&self) -> bool {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_show_level_info()
+    }
+    fn set_show_level_info(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_show_level_info(value);
+    }
+    fn show_timer(&self) -> bool {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_show_timer()
+    }
+    fn set_show_timer(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_show_timer(value);
+    }
+    fn show_status_text(&self) -> bool {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_show_status_text()
+    }
+    fn set_show_status_text(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_show_status_text(value);
+    }
+
+    // --- 3D / fx ---
+    fn three_d(&self) -> bool {
+        self.config.read().expect("config poisoned").get_3d()
+    }
+    fn set_three_d(&self, value: bool) {
+        self.config.write().expect("config poisoned").set_3d(value);
+    }
+    fn shaders(&self) -> bool {
+        self.config.read().expect("config poisoned").get_shaders()
+    }
+    fn set_shaders(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_shaders(value);
+    }
+    fn no_pulse(&self) -> bool {
+        self.config.read().expect("config poisoned").get_no_pulse()
+    }
+    fn set_no_pulse(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_no_pulse(value);
+    }
+    fn no_rotation(&self) -> bool {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_no_rotation()
+    }
+    fn set_no_rotation(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_no_rotation(value);
+    }
+    fn no_background(&self) -> bool {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_no_background()
+    }
+    fn set_no_background(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_no_background(value);
+    }
+    fn flash(&self) -> bool {
+        self.config.read().expect("config poisoned").get_flash()
+    }
+    fn set_flash(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_flash(value);
+    }
+    fn camera_shake_multiplier(&self) -> f32 {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_camera_shake_multiplier()
+    }
+    fn set_camera_shake_multiplier(&self, value: f32) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_camera_shake_multiplier(value);
+    }
+    fn angle_tilt_intensity(&self) -> f32 {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_angle_tilt_intensity()
+    }
+    fn set_angle_tilt_intensity(&self, value: f32) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_angle_tilt_intensity(value);
+    }
+
+    // --- player trail / swap fx ---
+    fn show_player_trail(&self) -> bool {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_show_player_trail()
+    }
+    fn set_show_player_trail(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_show_player_trail(value);
+    }
+    fn player_trail_alpha(&self) -> u32 {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_player_trail_alpha()
+    }
+    fn set_player_trail_alpha(&self, value: u32) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_player_trail_alpha(value);
+    }
+    fn player_trail_scale(&self) -> f32 {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_player_trail_scale()
+    }
+    fn set_player_trail_scale(&self, value: f32) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_player_trail_scale(value);
+    }
+    fn player_trail_decay(&self) -> f32 {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_player_trail_decay()
+    }
+    fn set_player_trail_decay(&self, value: f32) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_player_trail_decay(value);
+    }
+    fn player_trail_has_swap_color(&self) -> bool {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_player_trail_has_swap_color()
+    }
+    fn set_player_trail_has_swap_color(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_player_trail_has_swap_color(value);
+    }
+    fn show_swap_particles(&self) -> bool {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_show_swap_particles()
+    }
+    fn set_show_swap_particles(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_show_swap_particles(value);
+    }
+    fn show_swap_blinking_effect(&self) -> bool {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_show_swap_blinking_effect()
+    }
+    fn set_show_swap_blinking_effect(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_show_swap_blinking_effect(value);
+    }
+
+    // --- audio / misc ---
+    fn vsync(&self) -> bool {
+        self.config.read().expect("config poisoned").get_vsync()
+    }
+    fn set_vsync(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_vsync(value);
+    }
+    fn limit_fps(&self) -> bool {
+        self.config.read().expect("config poisoned").get_limit_fps()
+    }
+    fn set_limit_fps(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_limit_fps(value);
+    }
+    fn max_fps(&self) -> u32 {
+        self.config.read().expect("config poisoned").get_max_fps()
+    }
+    fn set_max_fps(&self, value: u32) {
+        // C++ `Config::setMaxFPS(window, n)` (MenuGame.cpp:1431) also applies
+        // the limit to the live window — the runtime re-apply is the
+        // documented recreation gap; the config value is set.
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_max_fps(value);
+    }
+    fn show_fps(&self) -> bool {
+        self.config.read().expect("config poisoned").get_show_fps()
+    }
+    fn set_show_fps(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_show_fps(value);
+    }
+    fn no_sound(&self) -> bool {
+        self.config.read().expect("config poisoned").get_no_sound()
+    }
+    fn set_no_sound(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_no_sound(value);
+    }
+    fn no_music(&self) -> bool {
+        self.config.read().expect("config poisoned").get_no_music()
+    }
+    fn set_no_music(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_no_music(value);
+    }
+    fn sound_volume(&self) -> u32 {
+        // C++ `Config::getSoundVolume()` is a float (Config.cpp:309); the
+        // port's seam takes a u32 (the shipped value, 100.f, is integral).
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_sound_volume() as u32
+    }
+    fn set_sound_volume(&self, value: u32) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_sound_volume(value as f32);
+    }
+    fn music_volume(&self) -> u32 {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_music_volume() as u32
+    }
+    fn set_music_volume(&self, value: u32) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_music_volume(value as f32);
+    }
+    fn music_speed_dm_sync(&self) -> bool {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_music_speed_dm_sync()
+    }
+    fn set_music_speed_dm_sync(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_music_speed_dm_sync(value);
+    }
+    fn music_speed_multiplier(&self) -> f32 {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_music_speed_mult()
+    }
+    fn set_music_speed_multiplier(&self, value: f32) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_music_speed_mult(value);
+    }
+    fn play_swap_ready_sound(&self) -> bool {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_play_swap_ready_sound()
+    }
+    fn set_play_swap_ready_sound(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_play_swap_ready_sound(value);
+    }
+    fn use_lua_file_cache(&self) -> bool {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_use_lua_file_cache()
+    }
+    fn set_use_lua_file_cache(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_use_lua_file_cache(value);
+    }
+    fn clear_lua_file_cache(&self) {
+        // C++ "clear lua file cache" advanced item → the per-assets
+        // `getLuaFileCache()` map; the composition's host owns the
+        // equivalent map (compose.rs) and exposes no clear — documented
+        // no-op (the cache is per-process, so a new run clears it).
+    }
+    fn disable_game_rendering(&self) -> bool {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_disable_game_rendering()
+    }
+    fn set_disable_game_rendering(&self, value: bool) {
+        self.config
+            .write()
+            .expect("config poisoned")
+            .set_disable_game_rendering(value);
+    }
+}
+
+/// `DrawTarget` over a live [`GlParts`] context (the windowed loop's real
+/// target). `clear_black` is a real `glClear`; `draw_vertices` submits the
+/// scene batches through [`GlBatchUploader`]; the sprite / text / rectangle
+/// passes and the screenshot save are documented no-ops (module docs:
+/// GL surface / issue 10). `'a` is the window's borrow (the `GlParts`
+/// lives inside the `WindowedClient`'s window for the whole loop).
+pub struct GlDrawTarget<'a> {
+    parts: &'a GlParts,
+    uploader: Option<GlBatchUploader>,
+    uploader_failed: bool,
+    view: View,
+}
+
+impl<'a> GlDrawTarget<'a> {
+    /// `parts` must outlive the target (the `WindowedClient`'s window does
+    /// — the target is a per-frame scratch built and dropped in `tick`).
+    #[must_use]
+    pub fn new(parts: &'a GlParts) -> Self {
+        Self {
+            parts,
+            uploader: None,
+            uploader_failed: false,
+            view: View::new(
+                oh_math::ssvs::Vec2::new(parts.width as f32 / 2.0, parts.height as f32 / 2.0),
+                oh_math::ssvs::Vec2::new(parts.width as f32, parts.height as f32),
+            ),
+        }
+    }
+}
+
+impl DrawTarget for GlDrawTarget<'_> {
+    fn clear_black(&mut self) {
+        // C++ `window->clear(sf::Color::Black)` (HGGraphics.cpp:83).
+        self.parts.clear([0.0, 0.0, 0.0, 1.0]);
+    }
+
+    fn set_view(&mut self, view: View) {
+        self.view = view;
+    }
+
+    fn draw_vertices(&mut self, vertices: &[Vertex], _states: RenderStates) {
+        if vertices.is_empty() {
+            return;
+        }
+        // The per-stage `RenderStates` (shaders) are the issue-10 GL
+        // surface; the batch uploads with the default program.
+        match &mut self.uploader {
+            Some(u) => u.draw(&self.parts.gl, vertices, self.view),
+            None if !self.uploader_failed => match GlBatchUploader::new(&self.parts.gl) {
+                Ok(u) => {
+                    let mut u = u;
+                    u.draw(&self.parts.gl, vertices, self.view);
+                    self.uploader = Some(u);
+                }
+                Err(e) => {
+                    // Documented: the scene batch is not submitted (the GL
+                    // program could not be created on this context).
+                    eprintln!("[GlDrawTarget] GL batch uploader unavailable: {e}");
+                    self.uploader_failed = true;
+                }
+            },
+            None => {}
+        }
+    }
+
+    fn draw_sprite(&mut self, _sprite: &Sprite) {
+        // TODO(issue-10): the key-icon / particle sprites need texture
+        // uploads + a textured draw pass — the GL surface's remainder.
+    }
+
+    fn draw_text(&mut self, _text: &Text, _states: RenderStates) {
+        // TODO(issue-10): the text pass (font-atlas glyphs) is the GL
+        // surface's remainder.
+    }
+
+    fn draw_rectangle(&mut self, _rect: &RectangleShape, _states: RenderStates) {
+        // TODO(issue-10): the level-info rectangle pass is the GL
+        // surface's remainder.
+    }
+
+    fn save_screenshot(&mut self, _path: &str) {
+        // C++ `window->saveScreenshot` — screenshots are outside this
+        // issue's scope (hard exclusion: no screenshot/PNG).
+    }
+}
+
+/// A no-op target (headless windows / GL-less fallback): the C++'s
+/// `window == nullptr` equivalent — the game bridge's
+/// `window_present()` guard is what actually no-ops the game draw; this
+/// exists so the loop's `engine.draw(target)` always has a target.
+pub struct NullDrawTarget;
+
+impl DrawTarget for NullDrawTarget {
+    fn clear_black(&mut self) {}
+    fn set_view(&mut self, _view: View) {}
+    fn draw_vertices(&mut self, _vertices: &[Vertex], _states: RenderStates) {}
+    fn draw_sprite(&mut self, _sprite: &Sprite) {}
+    fn draw_text(&mut self, _text: &Text, _states: RenderStates) {}
+    fn draw_rectangle(&mut self, _rect: &RectangleShape, _states: RenderStates) {}
+    fn save_screenshot(&mut self, _path: &str) {}
+}
+
+/// The C++ `hg` (`HexagonGame`) `GameState` (main.cpp:448 `hg.getGame()`):
+/// the engine's `update(mFT, 1.f)` / `postUpdate()` / `draw()` (the D-020
+/// bridge) — plus the C++ `fnGoToMenu` consumption (module docs: timing).
+struct GameSlotAdapter {
+    game: Rc<HexagonGame<GameApiState>>,
+    menu: Rc<MenuGame>,
+    app_draw: Rc<RefCell<AppDraw>>,
+    /// The C++ `fnGoToMenu` signal (0 = none, 1 = no-error, 2 = error):
+    /// set by the engine's stored callback, consumed at the start of the
+    /// next tick (module docs: fnGoToMenu timing).
+    return_to_menu: Arc<AtomicU8>,
+    /// `window->setGameState(mg->getGame())` (main.cpp:461) — resolved
+    /// through the shared state-switch slot (the engine is built from this
+    /// adapter, so it cannot be captured directly; the `WindowedClient`
+    /// fills the slot before `boot` and keeps the engine alive).
+    engine_slot: Rc<RefCell<Option<Rc<GameEngine>>>>,
+}
+
+impl GameState for GameSlotAdapter {
+    fn update_from_timer(&self, ft: f32) {
+        // C++ `fnGoToMenu` (main.cpp:456-462) — consumed at the START of
+        // the tick (the C++ switch lands in the same inter-tick gap).
+        match self.return_to_menu.load(Ordering::SeqCst) {
+            0 => {}
+            v => {
+                self.return_to_menu.store(0, Ordering::SeqCst);
+                let error = v == 2;
+                // C++ main.cpp:458-461.
+                self.menu.return_to_level_selection();
+                self.menu.init(error);
+                if let Some(engine) = self.engine_slot.borrow().clone() {
+                    engine.set_game_state(GameSlot::Menu);
+                }
+            }
+        }
+        // C++ `HexagonGame.cpp:328-330` (`game.onUpdate += [this](mFT)
+        // { update(mFT, 1.f); }`).
+        self.game.update(ft, 1.0);
+    }
+
+    fn on_post_update(&self) {
+        // C++ `HexagonGame.cpp:331` (`game.onPostUpdate += [this]
+        // { postUpdate(); }`).
+        self.game.post_update();
+    }
+
+    fn draw(&self, target: &mut dyn DrawTarget) {
+        // C++ `HexagonGame.cpp:333` (`game.onDraw += [this] { draw(); }`)
+        // — the D-020 bridge (`bridge::draw`).
+        crate::bridge::draw(&self.game, &mut self.app_draw.borrow_mut(), target);
+    }
+}
+
+/// The C++ `mg->getGame()` `GameState` (main.cpp:461/479/505/532): the
+/// menu's `update(mFT)` is wired (MenuGame.cpp:257); its `draw` is not
+/// ported (module docs: MenuGame draw).
+struct MenuSlotAdapter {
+    menu: Rc<MenuGame>,
+}
+
+impl GameState for MenuSlotAdapter {
+    fn update_from_timer(&self, ft: f32) {
+        // C++ MenuGame.cpp:257 (`game.onUpdate += [this](mFT) {
+        // update(mFT); }`).
+        self.menu.update(ft);
+    }
+
+    fn draw(&self, _target: &mut dyn DrawTarget) {
+        // C++ MenuGame.cpp:259 (`game.onDraw += [this] { draw(); }`) —
+        // `MenuGame::draw` is not ported yet: explicit no-op, NOT faked.
+        // TODO(issue-13-menu-draw)
+    }
+
+    // C++ `MenuGame` registers no `onPostUpdate` (only `onUpdate` /
+    // `onDraw`, MenuGame.cpp:257-259) — the trait default (empty delegate).
+}
+
+/// The C++ `mainClient` windowed client: the window + the `GameEngine`
+/// state switcher + the 240 Hz timer + both states, in the C++'s
+/// single-threaded scope (main.cpp:297-535).
+///
+/// Drop order is part of the `SharedLua` contract (compose.rs): the
+/// states' `Rc<HexagonGame>` clones (held by the adapters, dropped with
+/// `engine`) all drop BEFORE `composed` (the last field), which owns the
+/// heap-pinned `LuaContext` every host closure points into.
+#[allow(dead_code)] // `menu` / `game` are read by the tests + the loop exit
+pub struct WindowedClient {
+    pub window: Window,
+    pub engine: Rc<GameEngine>,
+    pub timer: TimerStatic,
+    /// C++ `mg` (main.cpp:427-434).
+    pub menu: Rc<MenuGame>,
+    /// C++ `hg` (main.cpp:414-421) — the composition's engine handle.
+    pub game: Rc<HexagonGame<GameApiState>>,
+    /// The C++ post-construction state-switch slot (main.cpp:442-462):
+    /// the `fnHGNewGame` closure and the `GameSlotAdapter`'s `fnGoToMenu`
+    /// consumption both resolve `window->setGameState(...)` through it —
+    /// it is filled with the engine right after the engine is built (the
+    /// C++'s raw `window` pointer exists for the whole scope; the port
+    /// fills the slot before any callback can fire — `boot` runs first).
+    engine_slot: Rc<RefCell<Option<Rc<GameEngine>>>>,
+    // Held for drop order (the adapters live in `engine`; the `AppDraw`
+    // holds the fonts — both must drop before `composed`).
+    _app_draw: Rc<RefCell<AppDraw>>,
+    composed: crate::compose::Composed,
+}
+
+impl WindowedClient {
+    /// C++ `mainClient`'s windowed pieces up to (not including) the boot
+    /// dispatch (main.cpp:297-463) — timer + engine + MenuGame + the four
+    /// callback links. `window` is created by the caller (the C++ creates
+    /// it in `mainClient`, main.cpp:297-332 — see [`create_window`]; tests
+    /// pass a headless `Window` so no display / GL / event loop is
+    /// touched — the spec's "real windowed run = MANUAL").
+    pub fn build(
+        window: Window,
+        config: Arc<RwLock<Config>>,
+        assets: Arc<oh_assets::Assets>,
+        base_dir: &Path,
+    ) -> Result<Self, String> {
+        // ------------------------------------------------------------------
+        // C++ main.cpp:330-332 — `window->setTimer<ssvs::TimerStatic>(
+        // hg::Config::TIME_STEP, hg::Config::TIME_SLICE);` ("240 ticks per
+        // second"). The C++ template's `maxLoops` argument defaults to
+        // 50.f (TimerStatic.hpp:24).
+        // (The C++ SIGINT handler at :334-357 is EXCLUDED from this issue's
+        // scope — no signal handling; the loop still ends on the window's
+        // `Closed` event and the menu's EXIT item.)
+        let timer = TimerStatic::new(TIME_STEP, TIME_SLICE, 50.0);
+
+        // ------------------------------------------------------------------
+        // C++ main.cpp:413-421 — the engine (`window` = true). The profile
+        // editor surface is issue 17 (`NullProfiles`), the audio / client
+        // / steam / discord null equivalents are the composition's.
+        let composed = compose_with(
+            assets.clone(),
+            base_dir.to_path_buf(),
+            true, /* window */
+            Arc::new(NullProfiles),
+        );
+
+        // The C++ `initText` fonts (HexagonGame.cpp:289-290:
+        // `Assets/OpenSquare-Regular.ttf` / `OpenSquare-Bold.ttf`).
+        let assets_dir = base_dir.join("Assets");
+        let font = Font::load(&assets_dir.join("OpenSquare-Regular.ttf"))
+            .map_err(|e| format!("failed to load Assets/OpenSquare-Regular.ttf: {e}"))?;
+        let font_bold = Font::load(&assets_dir.join("OpenSquare-Bold.ttf"))
+            .map_err(|e| format!("failed to load Assets/OpenSquare-Bold.ttf: {e}"))?;
+        let app_draw = Rc::new(RefCell::new(AppDraw::new(
+            &config.read().expect("config poisoned"),
+            font,
+            font_bold,
+        )));
+
+        // ------------------------------------------------------------------
+        // C++ main.cpp:427-434 — the MenuGame (the Steam / Discord /
+        // HexagonClient arguments are their null equivalents: issues
+        // 20/21/17; `NoopNetwork` / `NoopAudio` / the real `Assets` via
+        // `RealMenuAssets` — one `_RELEASE` load shared with the engine,
+        // as the C++ shares one `HGAssets`).
+        let game = Rc::new(composed.game.clone());
+        let engine_slot: Rc<RefCell<Option<Rc<GameEngine>>>> = Rc::new(RefCell::new(None));
+
+        // C++ main.cpp:442-449 — `fnHGNewGame`: `hg.newGame(...)` +
+        // `window->setGameState(hg.getGame())`.
+        let new_game_cb: Option<NewGameCallback> = {
+            let g = game.clone();
+            let slot = engine_slot.clone();
+            Some(Box::new(
+                move |pack_id, level_id, first_play, diff_mult, execute_last_replay| {
+                    g.new_game(
+                        pack_id,
+                        level_id,
+                        first_play,
+                        diff_mult,
+                        execute_last_replay,
+                    );
+                    if let Some(e) = slot.borrow().clone() {
+                        e.set_game_state(GameSlot::Game);
+                    }
+                },
+            ))
+        };
+
+        // C++ main.cpp:436-440 — `fnHGTriggerRefresh`: `hg.refreshTrigger`
+        // is the unported SSVStart input manager (module docs) — the
+        // wired closure documents the no-op.
+        let trigger_refresh_cb: Option<TriggerRefreshCallback> =
+            Some(Box::new(|_trigger, _bind_id| {
+                // TODO(input-manager): C++ main.cpp:439 `hg.refreshTrigger`
+            }));
+
+        // C++ main.cpp:451-454 — `fnHGUpdateRichPresenceCallbacks`:
+        // `hg.updateRichPresenceCallbacks()` is Steam (issue 20, absent) —
+        // the wired closure documents the no-op.
+        let rich_presence_cb: Option<RichPresenceCallback> = Some(Box::new(|| {
+            // TODO(issue-20): C++ main.cpp:453 `hg.updateRichPresenceCallbacks`
+        }));
+
+        let menu = Rc::new(MenuGame::new(
+            Rc::new(RealMenuAssets::from_arc(assets)),
+            Rc::new(ConfigMenuAdapter::new(config.clone())),
+            Rc::new(NoopNetwork),
+            Rc::new(NoopAudio),
+            new_game_cb,
+            trigger_refresh_cb,
+            rich_presence_cb,
+            Rc::new(LinearFontHeight),
+        ));
+
+        // ------------------------------------------------------------------
+        // The two `GameState` adapters + the `GameEngine` switcher
+        // (main.cpp:448/461/479/502: `window->setGameState` — the
+        // `-p -l` path sets NO state in the C++; the port's documented
+        // deviation, module docs).
+        let return_to_menu = Arc::new(AtomicU8::new(0));
+        let menu_adapter: Rc<dyn GameState> = Rc::new(MenuSlotAdapter { menu: menu.clone() });
+        let game_adapter: Rc<dyn GameState> = Rc::new(GameSlotAdapter {
+            game: game.clone(),
+            menu: menu.clone(),
+            app_draw: app_draw.clone(),
+            return_to_menu: return_to_menu.clone(),
+            engine_slot: engine_slot.clone(),
+        });
+        let engine = Rc::new(GameEngine::new(menu_adapter, game_adapter));
+        // The C++'s `window` pointer exists before the callbacks are wired
+        // (main.cpp:297 vs :436-462); the port fills the slot the moment
+        // the engine exists — before `boot` / `run` / any callback can
+        // fire (the callbacks are only invoked by the loop / the engine).
+        *engine_slot.borrow_mut() = Some(engine.clone());
+
+        // C++ main.cpp:456-462 — `hg.fnGoToMenu`: the engine's callback
+        // must be `Send` (module docs: fnGoToMenu timing), so it only
+        // signals; the `GameSlotAdapter` performs the C++'s three calls.
+        {
+            let flag = return_to_menu.clone();
+            game.set_fn_go_to_menu(Arc::new(move |error| {
+                flag.store(if error { 2 } else { 1 }, Ordering::SeqCst);
+            }));
+        }
+
+        Ok(Self {
+            window,
+            engine: engine.clone(),
+            timer,
+            menu,
+            game,
+            engine_slot,
+            _app_draw: app_draw,
+            composed,
+        })
+    }
+
+    /// C++ `main.cpp:471-537` — the boot dispatch (module docs: the two
+    /// null-state deviations).
+    pub fn boot(
+        &self,
+        cli_level_pack: Option<&str>,
+        cli_level_name: Option<&str>,
+        compressed_replay_filename: Option<&str>,
+    ) {
+        // C++ main.cpp:476-480 — `gotoMenu`.
+        let goto_menu = || {
+            self.menu.init(false); // C++ `mg->init(false /* mError */)`
+            self.engine.set_game_state(GameSlot::Menu); // `window->setGameState(mg->getGame())`
+        };
+
+        // C++ main.cpp:482-503 — `gotoGameCompressedReplay`.
+        let goto_game_compressed_replay = |crf: &oh_replay::CompressedReplayFile| {
+            match oh_replay::decompress_replay_file(crf) {
+                None => {
+                    // C++ main.cpp:490-491.
+                    eprintln!("Could not decompress replay file");
+                    // DOCUMENTED DEVIATION (module docs): the C++ `return`s
+                    // here with NO state set (the first frame's
+                    // `assert(isValid())` would fire); the port points the
+                    // window at the menu instead.
+                    goto_menu();
+                }
+                Some(replay) => {
+                    // C++ main.cpp:496-502.
+                    self.game.set_last_replay(replay.clone());
+                    self.game.new_game(
+                        &replay.pack_id,
+                        &replay.level_id,
+                        replay.first_play,
+                        replay.difficulty_mult,
+                        true, /* mExecuteLastReplay */
+                    );
+                    self.engine.set_game_state(GameSlot::Game);
+                }
+            }
+        };
+
+        match compressed_replay_filename {
+            None => {
+                if let (Some(pack), Some(level)) = (cli_level_pack, cli_level_name) {
+                    // C++ main.cpp:509-510 — `mg->init(false, *cliLevelPack,
+                    // *cliLevelName)`.
+                    self.menu.init_command_line_level(false, pack, level);
+                    // DOCUMENTED DEVIATION (module docs): the C++ sets no
+                    // state here either (null `gameState` → first-frame
+                    // assert); the port points the window at the menu (the
+                    // `loadCommandLineLevel` tail left it in
+                    // `LevelSelection`, MenuGame.cpp:1773).
+                    self.engine.set_game_state(GameSlot::Menu);
+                } else {
+                    // C++ main.cpp:514-515 — "Start game as normal".
+                    goto_menu();
+                }
+            }
+            Some(filename) => {
+                let mut crf = oh_replay::CompressedReplayFile::default();
+                if crf.deserialize_from_file(filename) {
+                    // C++ main.cpp:523-524.
+                    println!("[Replay] Playing compressed replay file '{filename}'");
+                    goto_game_compressed_replay(&crf);
+                } else {
+                    // C++ main.cpp:530-531.
+                    println!("[Replay] Failed to read compressed replay file '{filename}'");
+                    // C++ main.cpp:533.
+                    goto_menu();
+                }
+            }
+        }
+    }
+
+    /// C++ `main.cpp:588-592` — `window->run()`: drive the winit loop, one
+    /// frame per [`Self::tick_fields`]. Consumes the client (the `Window`
+    /// is moved into the loop, as the C++'s `GameWindow::run` owns its
+    /// loop); drop order is preserved (`composed` — the `LuaContext` —
+    /// is declared FIRST in the destructuring, so it drops LAST, after the
+    /// states' `Rc<HexagonGame>` clones).
+    pub fn run(self) {
+        // Declaration order = reverse drop order: `composed` first ⇒
+        // dropped last (the `SharedLua` contract, compose.rs).
+        let WindowedClient {
+            composed,
+            window,
+            engine,
+            timer,
+            menu,
+            game: _game,
+            engine_slot: _engine_slot,
+            _app_draw,
+        } = self;
+        let _ = &composed; // keep it alive until the end of the scope
+        let mut timer = timer;
+        window.run(|window| Self::tick_fields(window, &mut timer, &engine, &menu));
+        // C++ main.cpp:594-595 — the `main_client` caller prints the
+        // "Finished" line (the ported `main_client` does, after this
+        // returns).
+    }
+
+    /// One frame — the C++ `GameWindow::run` body (GameWindow.hpp:117-150)
+    /// with the port's target + exit translation (module docs).
+    pub fn tick(&self, window: &mut Window, timer: &mut TimerStatic) {
+        Self::tick_fields(window, timer, &self.engine, &self.menu)
+    }
+
+    /// The frame body over the client's pieces (the `tick` wrapper is the
+    /// `&self` convenience; `run` calls this with the moved-out fields).
+    fn tick_fields(
+        window: &mut Window,
+        timer: &mut TimerStatic,
+        engine: &Rc<GameEngine>,
+        menu: &Rc<MenuGame>,
+    ) {
+        // C++ `if(mustRecreate) recreateWindow();` (GameWindow.hpp:123) —
+        // the port creates the window once (no runtime recreation; module
+        // docs).
+        // C++ `renderWindow.setActive(true);` (GameWindow.hpp:125) — the
+        // GL context is current by construction (glutin).
+        // C++ `this->clear();` (GameWindow.hpp:126; `clear` at :157-160,
+        // default `sf::Color::Transparent`) — the per-frame pre-update
+        // clear of the default framebuffer.
+        if let Some(gl) = window.gl() {
+            gl.clear(COLOR_TRANSPARENT);
+        }
+        // C++ `gameEngine->refreshTimer();` (GameWindow.hpp:128 →
+        // GameEngine.hpp:34-37 → GameTimer::refresh, GameTimer.hpp:26-37):
+        // the next-impl swap is a no-op — `mainClient` installs the timer
+        // exactly once before `run()` (main.cpp:330-332).
+        // C++ `runEvents();` (GameWindow.hpp:42-83) — the winit handler
+        // already folded the queued window events into `window.input`
+        // (Closed → `window.close()`; the C++'s per-event
+        // `gameEngine->handleEvent` is the documented no-op, module docs).
+        // C++ `gameEngine->runUpdate();` (GameWindow.hpp:133 →
+        // GameEngine.hpp:80-86): `refreshInput` (the documented
+        // input-manager gap) → `timer->runUpdate()` (N×`updateFromTimer` on
+        // the CURRENT state) → `onPostUpdate`.
+        timer.run_update(|ft| engine.update_from_timer(ft));
+        engine.on_post_update();
+        // C++ `gameEngine->runDraw();` + `renderWindow.display();`
+        // (GameWindow.hpp:141-143) — the current state's `draw`, then the
+        // swap (winit displays at event-loop end). The target is a
+        // per-frame scratch (the concrete type — no `'static` erasure):
+        // the `GlParts` lives in the client's window for the whole loop.
+        if let Some(gl) = window.gl() {
+            let mut target = GlDrawTarget::new(gl);
+            engine.draw(&mut target);
+        } else {
+            let mut target = NullDrawTarget;
+            engine.draw(&mut target);
+        }
+        // C++ `gameEngine->runFPS();` (GameWindow.hpp:148 →
+        // GameEngine.hpp:96-101): `runFrameTime` (the next frame's
+        // `frameTime`, TimerBase.hpp:40-43) then `runFPS`
+        // (TimerBase.hpp:45-48).
+        timer.run_frame_time();
+        timer.run_fps();
+
+        // Loop-exit translation — the C++ `while(gameEngine->isRunning())`
+        // (GameWindow.hpp:121) sees `false` from:
+        // (a) the window's `Closed` event → C++ `gameEngine->stop()`
+        //     (GameWindow.hpp:53);
+        // (b) the menu's EXIT item → C++ `window->stop()` →
+        //     `gameEngine->stop()` (GameWindow.hpp:151-155).
+        if !window.is_open() || (engine.current() == GameSlot::Menu && menu.quit_requested()) {
+            engine.stop();
+        }
+    }
+}
+
+/// C++ `main.cpp:297-332` — the window (the C++ creates it in
+/// `mainClient`, BEFORE the assets at :381; the order is behaviorally
+/// irrelevant — neither reads the other — so the ported shared-assets load
+/// in `main_client` stays where it is).
+///
+/// `Window::create` degrades to a headless window (`gl() == None`) when no
+/// display / GPU is available; the windowed loop then runs its frames on
+/// the `NullDrawTarget` (no GL). Production passes the result to
+/// [`WindowedClient::build`]; tests pass a `Window::headless` instead (the
+/// spec's "real windowed run = MANUAL").
+#[must_use]
+pub fn create_window(config: &Config) -> Window {
+    let logical_w = config.get_width() as f32;
+    let logical_h = config.get_height() as f32;
+    let pixel_mult = config.get_pixel_multiplier() as f32;
+    // C++ `recreateWindow` (GameWindow.hpp:89-93): the render window is
+    // sized `width * pixelMult × height * pixelMult`; the logical members
+    // stay logical. The port applies this once, at creation.
+    let physical_w = (logical_w * pixel_mult) as u32;
+    let physical_h = (logical_h * pixel_mult) as u32;
+    // C++ `makeWindowTitle()` (main.cpp:139-143) with `GAME_VERSION_STR`
+    // (Version.hpp:47).
+    let title = "Open Hexagon 2.1.7 - by Vittorio Romeo - https://vittorioromeo.info";
+
+    let mut window = Window::create(physical_w.max(1), physical_h.max(1), title);
+    // Restore the logical size members (the C++ `setSize(logical)`).
+    window.set_size(logical_w as u32, logical_h as u32);
+
+    // C++ main.cpp:305-310 (the setters, in the C++ order).
+    window.set_pixel_mult(pixel_mult);
+    window.set_fullscreen(config.get_fullscreen());
+    window.set_antialiasing_level(config.get_antialiasing_level());
+    window.set_vsync(config.get_vsync());
+    window.set_fps_limited(config.get_limit_fps());
+    window.set_max_fps(config.get_max_fps() as f32);
+
+    // TODO(issue-15c-icon): C++ main.cpp:312-328 — `Assets/icon.png` via
+    // `sf::Image` + `setIcon` (re-applied on `onRecreation`). `oh-assets`
+    // does not decode PNGs yet; the icon stays the platform default.
+
+    window
+}
+
+/// The C++ `GameWindow::run` per-frame body (GameWindow.hpp:117-150) as a
+/// free function over the composition's pieces — the state-switching
+/// tests drive THIS with fake states + the real [`TimerStatic`] (the
+/// spec's §5 harness); [`WindowedClient::tick`] is the client-level
+/// wrapper (target + exit translation) around it.
+///
+/// The C++ order, exactly:
+/// 1. `clear` (the pre-update framebuffer clear — headless: no-op);
+/// 2. `runEvents` (the caller's event loop / the test's no-op — the
+///    window's `InputState` is current by then);
+/// 3. `runUpdate`: `timer->runUpdate` (N× the CURRENT state's
+///    `update_from_timer`) then `onPostUpdate` (GameEngine.hpp:80-86);
+/// 4. `runDraw`: the CURRENT state's `draw` (GameEngine.hpp:89-94 →
+///    TimerBase::runDraw, TimerBase.inl:10-13);
+/// 5. `runFPS`: `runFrameTime` + `runFPS` (GameEngine.hpp:96-101).
+pub fn frame(
+    window: &mut Window,
+    engine: &GameEngine,
+    timer: &mut TimerStatic,
+    target: &mut dyn DrawTarget,
+) {
+    if let Some(gl) = window.gl() {
+        gl.clear(COLOR_TRANSPARENT); // C++ `this->clear()` (GameWindow.hpp:126)
+    }
+    // C++ `runUpdate` (GameEngine.hpp:80-86) — `refreshInput` is the
+    // documented input-manager gap (module docs).
+    timer.run_update(|ft| engine.update_from_timer(ft));
+    engine.on_post_update();
+    // C++ `runDraw` (GameEngine.hpp:89-94).
+    engine.draw(target);
+    // C++ `runFPS` (GameEngine.hpp:96-101).
+    timer.run_frame_time();
+    timer.run_fps();
+}

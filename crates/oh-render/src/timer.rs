@@ -4,7 +4,7 @@
 //!
 //! Fidelity notes (D-014 — verified against the header line by line):
 //!
-//! * `runUpdate()` (`TimerStatic.hpp:34-45`) is `loops = 0; time +=
+//! * `runUpdate()` (`TimerStatic.hpp:36-47`) is `loops = 0; time +=
 //!   frameTime; while(time >= timeSlice && loops < maxLoops) {
 //!   updateFromTimer(step); time -= timeSlice; ++loops; }` — the loop
 //!   RESTARTS `loops` every call (it counts "ticks this frame", not a
@@ -22,11 +22,11 @@
 //!   `gameEngine.updateFromTimer(step)` directly (`TimerStatic.hpp:20,41`).
 //!   The port takes that engine call as a per-call `FnMut(f32)` (the
 //!   engine's `updateFromTimer`, which routes to the CURRENT game state's
-//!   `update(ft)` — `GameEngine.hpp:40-51`): same call, same argument,
+//!   `update(ft)` — `GameEngine.hpp:40-50`): same call, same argument,
 //!   same loop; the timer stays a pure accumulator and the game-state
 //!   switching lives in the composition (D-013/D-020: `oh-render` must
 //!   not depend on the game/menu crates).
-//! * The C++ `GameTimer::refresh` timer-swap (`GameTimer.hpp:24-35`) is
+//! * The C++ `GameTimer::refresh` timer-swap (`GameTimer.hpp:26-37`) is
 //!   NOT ported: `mainClient` installs the timer exactly once before
 //!   `run()` (`main.cpp:330-331`), so no next-impl swap can ever happen.
 //! * The C++ `TimerBase::runDraw` (`TimerBase.inl:10-13` →
@@ -57,7 +57,7 @@ pub struct TimerStatic {
 
 impl TimerStatic {
     /// C++ `TimerStatic(mGameEngine, mStep = 1.f, mTimeSlice = 1.f,
-    /// mMaxLoops = 50.f)` (TimerStatic.hpp:20-26).
+    /// mMaxLoops = 50.f)` (TimerStatic.hpp:24-29).
     #[must_use]
     pub fn new(step: f32, time_slice: f32, max_loops: f32) -> Self {
         Self {
@@ -82,9 +82,9 @@ impl TimerStatic {
         self.frame_time = secs * 60.0; // ssvu::getSecondsToFT
     }
 
-    /// C++ `TimerStatic::runUpdate` (TimerStatic.hpp:34-45).
+    /// C++ `TimerStatic::runUpdate` (TimerStatic.hpp:36-47).
     /// `update_from_timer` is the C++ `gameEngine.updateFromTimer` call
-    /// (GameEngine.hpp:40-51) — it routes to the current game state's
+    /// (GameEngine.hpp:40-50) — it routes to the current game state's
     /// `update(mFT)`.
     pub fn run_update(&mut self, mut update_from_timer: impl FnMut(f32)) {
         self.loops = 0.0;
@@ -104,14 +104,14 @@ impl TimerStatic {
         self.fps = 60.0 / self.frame_time;
     }
 
-    /// C++ `TimerStatic::reset` (TimerStatic.hpp:29-32): zeroes both
+    /// C++ `TimerStatic::reset` (TimerStatic.hpp:31-34): zeroes both
     /// `time` and `loops` (NOT `frameTime` — the C++ touches only the two).
     pub fn reset(&mut self) {
         self.time = 0.0;
         self.loops = 0.0;
     }
 
-    /// C++ `setStep` (TimerStatic.hpp:47-50).
+    /// C++ `setStep` (TimerStatic.hpp:49-52).
     pub fn set_step(&mut self, step: f32) {
         self.step = step;
     }
@@ -204,7 +204,7 @@ mod tests {
     }
 
     /// One frame of exactly one slice → exactly one update at `step`
-    /// (TimerStatic.hpp:34-45 with the game's step/slice:
+    /// (TimerStatic.hpp:36-47 with the game's step/slice:
     /// TIME_STEP = TIME_SLICE = 60/240, Config.hpp:23-25).
     #[test]
     fn one_slice_one_update() {
@@ -290,7 +290,7 @@ mod tests {
         assert_eq!(t.get_loops(), 1.0, "per-frame count, not cumulative");
     }
 
-    /// `reset()` zeroes BOTH `time` and `loops` (TimerStatic.hpp:29-32) —
+    /// `reset()` zeroes BOTH `time` and `loops` (TimerStatic.hpp:31-34) —
     /// and nothing else: step/slice/maxLoops/frameTime survive.
     #[test]
     fn reset_zeroes_time_and_loops_only() {

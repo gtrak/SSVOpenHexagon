@@ -385,7 +385,7 @@ pub struct FrameInput<'a> {
 ///
 /// `TODO(issue-009-wiring)`: called from `HexagonGame`'s `onDraw`
 /// (`game.onDraw += [this] { draw(); }`).
-pub fn draw_frame(state: &mut DrawState, input: &mut FrameInput, target: &mut impl DrawTarget) {
+pub fn draw_frame(state: &mut DrawState, input: &mut FrameInput, target: &mut dyn DrawTarget) {
     let config = input.config;
 
     if config.get_disable_game_rendering() {
@@ -777,7 +777,7 @@ pub fn death_flash_effect(
 // ---------------------------------------------------------------------------
 
 /// C++ `HexagonGame::drawParticles` (overlay camera; default states).
-pub fn draw_particles(particles: &[Particle], target: &mut impl DrawTarget) {
+pub fn draw_particles(particles: &[Particle], target: &mut dyn DrawTarget) {
     for p in particles {
         target.draw_sprite(&p.sprite);
     }
@@ -785,14 +785,14 @@ pub fn draw_particles(particles: &[Particle], target: &mut impl DrawTarget) {
 
 /// C++ `HexagonGame::drawTrailParticles` (background camera; default
 /// states).
-pub fn draw_trail_particles(particles: &[TrailParticle], target: &mut impl DrawTarget) {
+pub fn draw_trail_particles(particles: &[TrailParticle], target: &mut dyn DrawTarget) {
     for p in particles {
         target.draw_sprite(&p.sprite);
     }
 }
 
 /// C++ `HexagonGame::drawSwapParticles` (background camera; default states).
-pub fn draw_swap_particles(particles: &[SwapParticle], target: &mut impl DrawTarget) {
+pub fn draw_swap_particles(particles: &[SwapParticle], target: &mut dyn DrawTarget) {
     for p in particles {
         target.draw_sprite(&p.sprite);
     }
@@ -1175,7 +1175,7 @@ pub fn draw_key_icons(
     input_focused: bool,
     input_swap: bool,
     must_show_replay_ui: bool,
-    target: &mut impl DrawTarget,
+    target: &mut dyn DrawTarget,
 ) {
     const OFF_OPACITY: u8 = 90;
     const ON_OPACITY: u8 = 255;
@@ -1358,7 +1358,7 @@ pub fn update_level_info(
 
 /// C++ `HexagonGame::drawLevelInfo(mStates)` (mapping §3.7) — rectangle +
 /// the five text lines, all with the given (Text-stage) states.
-pub fn draw_level_info(state: &mut DrawState, states: RenderStates, target: &mut impl DrawTarget) {
+pub fn draw_level_info(state: &mut DrawState, states: RenderStates, target: &mut dyn DrawTarget) {
     target.draw_rectangle(&state.level_info_rectangle, states);
     target.draw_text(&state.level_info_text_level, states);
     target.draw_text(&state.level_info_text_pack, states);
