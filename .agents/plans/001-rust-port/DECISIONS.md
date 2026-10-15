@@ -101,3 +101,28 @@ fork is `include/SSVOpenHexagon/SSVUtilsJson/JsonCpp/jsoncpp.inl` (pinned).
 - **Decision:** keep the stricter Rust behaviour for 1–2 (no shipped file exercises
   them), pin 3–5 with tests, and treat 6 as a hard rule for any future write path.
 - **Landed by:** issue 003; recorded here so later config/profile writers comply.
+
+## D-009 — Lua number→string spelling is `%.14g`, not Rust's default
+
+- **Decision:** number→string conversion in `oh-lua` re-implements C `%.14g`
+  (`lua_number2str`), and must NOT use Rust's `f64::to_string` or LuaJIT's
+  Lua-side `tostring`.
+- **Evidence:** the pinned LuaJIT (`vittorioromeo/LuaJIT@4dc5ffb`,
+  `src/luaconf.h:120`) defines `LUA_NUMBER_FMT "%.14g"` and
+  `lua_number2str(s,n) = sprintf(s, LUA_NUMBER_FMT, n)`. Verified against gcc:
+  `1e20→"1e+20"`, `1.0/3.0→"0.33333333333333"`, `1e15→"1e+15"`,
+  `1234567890123456→"1.2345678901235e+15"`. LuaJIT's Lua-side `tostring` prints
+  17 significant digits and would diverge (`1e+20` vs `100000000000000000000`).
+- **Landed by:** issue 006 (`crates/oh-lua/src/convert.rs::lua_number2str`, test
+  `lua_number2str_matches_c_g14`).
+
+## D-010 — `LuaContext::writeVariable("a.b.c")` does NOT create intermediates
+
+- **Decision:** a dotted write whose table part does not exist **throws
+  `VariableDoesntExist`**; it does not create intermediate tables. (The issue-006
+  contract's summary wording said "creates intermediate tables" — the C++ does not,
+  so the C++ wins per the spec's own Exactness clause.)
+- **Evidence:** `src/SSVOpenHexagon/Utils/LuaWrapper.cpp:167-205` — `_setGlobal`
+  splits on the last `.`, calls `_getGlobal(tableName)`, and throws
+  `VariableDoesntExistException` if that is not a table.
+- **Landed by:** issue 006 (`crates/oh-lua/src/context.rs`).
