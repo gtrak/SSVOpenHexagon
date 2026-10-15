@@ -16,10 +16,14 @@
 //! - [`bridge`] — `AppDraw` (the per-frame draw state + scratch) and
 //!   `draw()` (the `HexagonGame::draw` bridge).
 //!
-//! Out of scope for step (a) (steps (b)/(c)): the `main.rs` binary,
-//! argument parsing, `-printLuaDocs`, the winit/glow window + event pump,
-//! MenuGame↔HexagonGame switching, signals, the FPS text timing loop, and
-//! the egui console overlay (issue 14 step (b)).
+//! Issue 15 step (b): the `open-hexagon` binary pieces — [`args`] (the
+//! `main.cpp:80-154` CLI surface); the composition / lifecycle / mode
+//! modules land with the later step-(b) milestones.
+//!
+//! Out of scope for step (b) (step (c)): the winit/glow window + event
+//! pump, MenuGame↔HexagonGame switching, signals, the FPS text timing loop,
+//! and the egui console overlay (issue 14 step (b)).
 
+pub mod args;
 pub mod bridge;
 pub mod camera;
