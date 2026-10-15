@@ -434,3 +434,34 @@ fork is `include/SSVOpenHexagon/SSVUtilsJson/JsonCpp/jsoncpp.inl` (pinned).
   by the script itself, and a level with no custom walls reproduced nothing).
   The `lua = Lua::LuaContext{}` difference (`:731`) is real and still worth
   modelling, but it is **not** the cause of this failure.
+
+## D-020 — Where the `Renderer`-contract wiring lives: an `oh-render → oh-game` adapter (issue 15), not issue 09
+
+- **Context:** issue 09's contract says "Provide a `Renderer` trait ... so `oh-game`
+  does not depend on the render backend (issue 10); `oh-render` implements it."
+  `oh-game` has the trait (`crates/oh-game/src/renderer.rs`: `Renderer` +
+  `RecordingRenderer`), and the engine consumes it where the loop needs a draw
+  sink (flash batch, touch positions, FPS). What is NOT done is the other
+  direction: nothing implements `oh_game::renderer::Renderer` for the real stack,
+  and nobody drives `oh_render::graphics::draw_frame` from `HexagonGame::draw()`.
+- **Why it cannot go in `oh-game`:** the dependency must stay `oh-game → (nothing
+  render-y)`; `oh-render` already exists with `oh-config`/`oh-math` only, and
+  `oh-game` must not gain `oh-render`. The adapter therefore belongs in a crate
+  that depends on BOTH — i.e. the composition.
+- **Why it cannot go in `oh-render` alone:** `draw_frame` needs the game's
+  per-frame inputs (config, `status`, `levelStatus`, `styleData`, the Lua
+  `onRenderStage` hook, the non-game RNG, particle state). Issue 11 encoded that
+  as `DrawState` + `FrameInput` and left explicit `TODO(issue-009-wiring)` markers
+  naming the exact C++ call sites (`graphics.rs:258, 384, 386, 701, 804, 1063,
+  1108, 1245, 1374`; `batching.rs:20`). `oh-render` should not depend on
+  `oh-game` either (that would invert the layering the plan chose).
+- **Decision:** the wiring is the **composition's** job and lands with issue 15
+  (`oh-app`, which already depends on 09 + 11 and owns the app wiring), as an
+  adapter crate/module implementing `oh_game::renderer::Renderer` by filling
+  `FrameInput`/`DrawState` from the engine and calling `draw_frame`. It can be
+  pulled forward into a dedicated issue if issue 15 turns out too large.
+- **Consequence for issue 09's status:** 09 is LANDED for its own scope (the
+  update loop + its verification harnesses). The un-wired `TODO(issue-009-wiring)`
+  markers are the *integration* debt they name, tracked against 15 — they are not
+  a defect in the loop, and no `oh-game` behaviour depends on them (headless
+  determinism is unaffected, which is why the D-019 bug was findable at all).
