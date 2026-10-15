@@ -19,18 +19,23 @@
 //! - [`polygon`] — §12 `pointInPolygon` / `pointInFourVertexPolygon`
 //! - [`clock`] — `HRTimePoint` alias (game-time marker)
 
+pub mod camera;
 pub mod clock;
 pub mod custom_timeline;
 pub mod custom_wall;
 pub mod custom_wall_manager;
+pub mod hexagon_game;
 pub mod level_status;
 pub mod lua_state;
 pub mod player;
 pub mod polygon;
+pub mod renderer;
+pub mod seams;
 pub mod speed_data;
 pub mod status;
 pub mod ticker;
 pub mod timeline;
+pub mod update;
 pub mod vertex_batch;
 pub mod wall;
 
@@ -39,10 +44,11 @@ pub use custom_timeline::{CustomTimeline, CustomTimelineHandle, CustomTimelineMa
 pub use custom_wall::CCustomWall;
 pub use custom_wall_manager::CCustomWallManager;
 pub use level_status::LevelStatus;
-pub use lua_state::{GameApi, ReentrantMutex, SharedState};
+pub use lua_state::{GameApi, ReentrantMutex, SharedState, SharedStore};
 pub use player::CPlayer;
 pub use speed_data::SpeedData;
-pub use status::HexagonGameStatus;
+pub use status::{HexagonGameStatus, StateChange};
 pub use ticker::Ticker;
 pub use timeline::{Timeline2, Timeline2Runner};
+pub use vertex_batch::FastVertexVectorTris;
 pub use wall::CWall;

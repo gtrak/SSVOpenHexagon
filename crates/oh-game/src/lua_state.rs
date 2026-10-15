@@ -47,6 +47,33 @@ use crate::{
     Timeline2,
 };
 
+/// The state-store bound of `HexagonGame<S>` (DECISIONS.md D-013, point 3;
+/// accessor form per D-015 — NO `Deref` supertrait, NO reflexive
+/// `Deref<Target = Self>` impl, which is the E0055 trap).
+///
+/// `Send` (not `Sync`) is the exact requirement: the engine stores the
+/// store inside `Arc<ReentrantMutex<S>>`, and `ReentrantMutex`'s manual
+/// `Sync` impl is granted from `T: Send` alone (the reentrant lock is the
+/// synchronization boundary; the store must never be observed unlocked).
+pub trait SharedStore: Send + 'static {
+    /// The shared gameplay store (D-015 accessor).
+    fn shared(&self) -> &SharedState;
+    /// Mutable access to the shared gameplay store (D-015 accessor).
+    fn shared_mut(&mut self) -> &mut SharedState;
+}
+
+/// The bare shared store IS its own accessor: `HexagonGame<SharedState>`
+/// (pure headless, no Lua) uses this impl.
+impl SharedStore for SharedState {
+    fn shared(&self) -> &SharedState {
+        self
+    }
+
+    fn shared_mut(&mut self) -> &mut SharedState {
+        self
+    }
+}
+
 /// C++ `HexagonGame` operations the API lambdas perform (mapping
 /// `lua-api.md` §1 semantics are the spec). Issue 009 implements this
 /// against the real game loop; tests implement it with a recording mock.

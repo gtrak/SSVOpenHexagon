@@ -279,3 +279,60 @@ fork is `include/SSVOpenHexagon/SSVUtilsJson/JsonCpp/jsoncpp.inl` (pinned).
 - **Also verified accurate in the same pass:** the `death_shakeCamera` errata
   (`HexagonGame.cpp:822-853`: `status.cameraShake = 45.f * multiplier`, no
   `preShakeCenters`) and `death_flashEffect` being unconditional.
+
+## D-015 — A reflexive `Deref<Target = Self>` impl is a bug, not a trick
+
+- **What happened:** issue 009's WIP added
+  `impl Deref for SharedState { type Target = Self; fn deref(&self) -> &Self { self } }`
+  (plus `DerefMut`) so that `SharedState` itself would satisfy the engine's
+  `S: Deref<Target = SharedState>` bound. Two methods
+  (`get_dependent_script_filename` → `self.get_dependent_asset_filename(...)`,
+  `lua_state.rs:347-355`) then failed with
+  `E0055: reached the recursion limit while auto-dereferencing \`SharedState\``.
+- **Mechanism (reproduced in a minimal scratch crate):** with a reflexive `Deref`
+  in scope, a method call on `self` that could also resolve through `Deref`
+  enters autoref-deref search, which follows the impl into itself — infinitely.
+  Removing the impl compiled immediately. **UFCS (`SharedState::inner(self, ..)`)
+  does NOT avoid it**; the impl itself is the defect.
+- **Fix:** delete the reflexive impl and give the engine a dedicated accessor
+  trait (`fn shared(&self) -> &SharedState` / `shared_mut`) implemented for both
+  `SharedState` and the real wrapper. A *wrapper's* `Deref<Target = SharedState>`
+  (e.g. `GameApiState`'s) is fine — it is the self-targeting impl that is broken.
+- **General rule:** never `impl Deref for T { type Target = Self }`. If a type must
+  satisfy a "derefs to X" bound *as itself*, express that with an accessor trait.
+- **Landed by:** issue 009.
+
+## D-016 — Concurrency: one subagent at a time (user directive, 2026-10-15)
+
+- **Decision:** run **one** implementation worker at a time from now on, not two.
+  (The two in flight at the time of the directive — issue 009's fix pass and issue
+  013 — are allowed to finish; the next dispatch is single.)
+- **Why it matters here:** every workspace-wide signal becomes ambiguous with two
+  writers — the gate is red from whichever lane's uncommitted WIP happens to be in
+  the tree, so each worker needs the clean-checkout technique
+  (`git archive HEAD | tar -x -C /tmp/vN`) to get an honest result, and every
+  "the build is broken" report has to be triaged by crate before it means anything.
+  One writer per tree also removes the class of mistake where a worker proposes
+  moving a sibling's live files.
+- **Sequencing consequence:** the plan's issue graph still allows parallel lanes
+  (03/04/05, 16/17, etc.), but they will be run in sequence. Expect longer wall
+  clock; the compensating benefit is that each commit is individually verified on a
+  clean checkout without cross-lane contamination.
+
+## D-017 — Committing another lane's work in a live tree: stage only that lane's paths
+
+- **Situation:** a worker timed out leaving a whole new crate untracked
+  (`crates/oh-menu/`, 4,295 lines) while ANOTHER worker was still live in the same
+  working tree with its own uncommitted edit (`crates/oh-game/src/lib.rs`).
+  The untracked work had to be preserved, but its author was gone.
+- **What is safe:** `git add <exact paths>` for the dead lane only, then commit.
+  A commit does not modify the working tree, and an index operation that never
+  names the live lane's file leaves that file byte-identical. Verified after the
+  commit: `git status` still showed the live worker's `M crates/oh-game/src/lib.rs`
+  and its edit was intact.
+- **What is NOT safe:** `git add -A` / `git add .` (it would stage the live lane's
+  in-progress file), `git stash` (removes it from the tree entirely — this nearly
+  destroyed a worker's work in an earlier session), `git checkout <ref> -- <paths>`,
+  and `git clean`.
+- **General rule:** in a shared tree, the orchestrator's write operations may only
+  name paths owned by a *dead* lane. Never a glob, never a stash, never a checkout.

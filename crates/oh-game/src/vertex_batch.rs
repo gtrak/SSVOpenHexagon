@@ -149,4 +149,10 @@ impl FastVertexVectorTris {
     pub fn as_slice(&self) -> &[Vertex] {
         &self.vertices
     }
+
+    /// The ordered vertex sequence for mutation (C++ `getVertices()`
+    /// iteration by non-const reference in `updateFlash`).
+    pub fn as_mut_slice(&mut self) -> &mut [Vertex] {
+        &mut self.vertices
+    }
 }

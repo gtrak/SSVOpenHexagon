@@ -43,7 +43,9 @@ use crate::LuaContext;
 
 /// Re-exports of the D-013 shared-state building blocks (the pre-009
 /// import path `oh_lua::api::state::*` keeps working).
-pub use oh_game::lua_state::{GameApi, ReentrantMutex, ReentrantMutexGuard, SharedState};
+pub use oh_game::lua_state::{
+    GameApi, ReentrantMutex, ReentrantMutexGuard, SharedState, SharedStore,
+};
 
 /// C++ `ssvu::getFTToSeconds(ft)`: frametime (1.0 = 1/60 s) -> seconds.
 #[must_use]
@@ -195,6 +197,21 @@ impl Deref for GameApiState {
 
 impl DerefMut for GameApiState {
     fn deref_mut(&mut self) -> &mut SharedState {
+        &mut self.shared
+    }
+}
+
+/// The D-015 engine accessor: the composition's wrapper is a REAL
+/// (non-reflexive) wrapper, so its `SharedStore` impl just points at the
+/// inner `SharedState`. `HexagonGame<GameApiState>` uses `shared()`/
+/// `shared_mut()` for all engine access; the `Deref` impls above only
+/// serve the 007 lambdas (`lock(&st).level_status.x`).
+impl SharedStore for GameApiState {
+    fn shared(&self) -> &SharedState {
+        &self.shared
+    }
+
+    fn shared_mut(&mut self) -> &mut SharedState {
         &mut self.shared
     }
 }

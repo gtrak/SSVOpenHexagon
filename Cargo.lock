@@ -1409,6 +1409,16 @@ name = "oh-math"
 version = "0.1.0"
 
 [[package]]
+name = "oh-menu"
+version = "0.1.0"
+dependencies = [
+ "oh-assets",
+ "oh-data",
+ "oh-math",
+ "oh-menu-system",
+]
+
+[[package]]
 name = "oh-menu-system"
 version = "0.1.0"
 dependencies = [

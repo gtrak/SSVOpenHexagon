@@ -15,13 +15,13 @@ type Duration = std::time::Duration;
 /// `Utils::action` (the `std::variant` of the four action kinds).
 pub enum Action {
     /// `action_do { std::function<void()> }`.
-    Do(Box<dyn Fn() + Send>),
+    Do(Box<dyn Fn() + Send + 'static>),
     /// `action_wait_for { duration }`.
     WaitFor(Duration),
     /// `action_wait_until { time_point }`.
     WaitUntil(HRTimePoint),
     /// `action_wait_until_fn { std::function<time_point()> }`.
-    WaitUntilFn(Box<dyn Fn() -> HRTimePoint + Send>),
+    WaitUntilFn(Box<dyn Fn() -> HRTimePoint + Send + 'static>),
 }
 
 /// `class timeline2` — an ordered list of actions.

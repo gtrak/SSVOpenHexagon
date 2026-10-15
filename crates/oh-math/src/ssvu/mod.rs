@@ -4,3 +4,6 @@
 pub mod containers;
 pub mod frametime;
 pub mod math;
+
+pub use frametime::get_ft_to_seconds;
+pub use math::{get_clamped, get_sign, PI};
