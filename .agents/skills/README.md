@@ -24,7 +24,8 @@ library (vendored C++, third-party C++ dependency, or Rust crate), written from
 
 | Skill | Library | Source of truth | Written by |
 |---|---|---|---|
-| `lib-ssvutils.md` | SSVUtils (incl. PCG) | `extlibs/SSVUtils` | (pending) |
+| `lib-pcg.md` | PCG engine (`pcg32_fast` + oracle vectors) | `extlibs/SSVUtils/include/SSVUtils/Internal/PCG/pcg_random.hpp` | issue 001 |
+| `lib-ssvutils.md` | SSVUtils core (Frametime/Math/Containers/Rnd) | `extlibs/SSVUtils/include/SSVUtils/Core/**` | issue 001 |
 | `lib-ssvstart.md` | SSVStart | `extlibs/SSVStart` | (pending) |
 | `lib-ssvmenusystem.md` | SSVMenuSystem | `extlibs/SSVMenuSystem` | (pending) |
 | `lib-sfml.md` | SFML (custom fork) | CMake pin + call sites | (pending) |
