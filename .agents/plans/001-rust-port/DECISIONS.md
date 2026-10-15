@@ -67,3 +67,18 @@ contradicting one must report it rather than silently diverge.
 - **Do NOT edit `~/.config/tinyllb/config.yaml`** to work around this — it is the
   user's infrastructure. Reduce worker thinking instead, and restart the service
   if it wedges.
+
+
+## D-007 — The recovery script must not be run under in-flight work
+
+- **Decision:** `tools/infra/restart_lb_if_wedged.sh` is report-only by default
+  (restart requires `--restart`), requires the deadlock log signature
+  (`admit=false` **with** `current_kv=0.0`), refuses to restart when agent work is
+  in flight, and uses a long (90s) probe timeout.
+- **Evidence / mistake made:** the first version used a 12s probe and restarted
+  unconditionally. 12s is shorter than healthy latency (observed 35s), so it
+  reported "WEDGED" for a working backend, and the restart **aborted a live
+  worker mid-request**, destroying the issue-004 run in progress. A restart
+  kills every in-flight generation.
+- **Rule:** a slow-but-answering backend is not wedged; judge by the log
+  signature. Never restart while an agent is working.
