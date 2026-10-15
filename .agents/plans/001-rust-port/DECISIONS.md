@@ -579,3 +579,32 @@ console's `?fn` command and `!help`'s doc lookup are inert as shipped.
   headless assets + a null-window `HexagonGame` + `initLuaAndPrintDocs`), so it IS
   testable in this port without a window. The console itself is window-gated and
   debug-gated, so it does not touch replay determinism.
+
+## D-024 — The metadata divergence is real but dev-tool-only; fix it in issue 14 (not now)
+
+- **The divergence:** `oh-lua`'s `LuaMetadataProxy::drop` (`metadata.rs:279-286`)
+  calls `get_metadata().add_fn_entry(...)` **unconditionally**, i.e. it ports the
+  C++ **flag-ON** behaviour, while the shipped C++ build (D-023: the flag is
+  `FALSE`) records **nothing**. `crates/oh-lua/tests/runtime.rs:651`
+  (`metadata_entries_recorded_with_docs_and_args`) asserts the flag-ON behaviour,
+  and that test is correct for the infrastructure — the collector itself is
+  faithfully ported.
+- **Severity: low, and deliberately deferred.** Verified that nothing in
+  `crates/oh-game/src` or the 285 API lambdas reads the metadata store — its only
+  two consumers are the Lua console's tab completion (`HGUpdate.cpp:1178`,
+  `getAllFunctionNames`) and its `?fn` command (`:1509`, `getDocsForFunction`),
+  both of which live in issue 14 and are debug/window-gated (D-022/D-023). So the
+  divergence cannot affect replay determinism, the 285-name API surface, or any
+  landed issue's tests; changing it now would churn `oh-lua` for no behavioural
+  gain and would have to be undone by 14 anyway.
+- **Decision:** issue 14 owns making the *presentation* honour the flag. The
+  cleanest faithful shape: keep the collector as-is (it IS the flag-on pipeline)
+  and put the flag where the C++ puts it — at the point of use — so the DEFAULT
+  build behaves as D-023 describes: `print_docs` emits the 11 category headers and
+  **zero** entries, `get_all_function_names()` is empty, `get_docs_for_function`
+  returns `"UNKNOWN FUNCTION"`; and the produce-metadata mode yields the real docs.
+  Whether that is a cargo feature, a runtime toggle on the metadata store, or a
+  build-time constant is issue 14's call — record what you chose and why.
+- **Rule:** a divergence found while preparing an issue belongs in that issue's
+  record (D-012 family) as long as it is proven not to affect landed work. This one
+  is recorded rather than fixed so the finding is not lost.
