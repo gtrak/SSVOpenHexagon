@@ -91,9 +91,7 @@ mod feature_on {
             "u_docsA entry line missing:\n{text}"
         );
         assert!(
-            text.contains(
-                "* **`void a_docsB(std::string id)`**: Play sound `id`.\n\n"
-            ),
+            text.contains("* **`void a_docsB(std::string id)`**: Play sound `id`.\n\n"),
             "a_docsB entry line missing:\n{text}"
         );
     }

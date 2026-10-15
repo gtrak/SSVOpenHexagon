@@ -57,7 +57,9 @@ use oh_config::Config;
 use oh_data::{MusicData, PackData, StyleData};
 use oh_game::hexagon_game::HexagonGame;
 use oh_game::lua_state::{GameApi, ReentrantMutex};
-use oh_game::seams::{NoJoystick, NullReplayStore, PcgCosmeticRng, Profiles, ScriptHost};
+use oh_game::seams::{
+    NoJoystick, NullReplayStore, PcgCosmeticRng, Profiles, ScriptError, ScriptHost,
+};
 use oh_game::{HexagonGameStatus, LevelStatus};
 use oh_lua::api::callbacks;
 use oh_lua::api::state::{AssetsApi, GameApiState, RunLuaFile, SharedLua};
@@ -393,6 +395,25 @@ impl ScriptHost for LuaScriptHost {
             .read_variable(name)
             .map_err(|e| e.to_string())
     }
+
+    // -- the headless Lua console (issue 014 step (a)) ----------------------
+    fn execute_code(&self, code: &str) -> Result<(), ScriptError> {
+        // The composition's `LuaContext` failures are all
+        // `std::runtime_error`-class (C++ `ExecutionErrorException` & co.),
+        // so the console's outer `catch(...)` is unreachable from here.
+        self.lua
+            .execute_code(code)
+            .map_err(|e| ScriptError::Runtime(e.to_string()))
+    }
+    fn all_function_names(&self) -> Vec<String> {
+        oh_lua::docs::get_all_function_names()
+    }
+    fn docs_for_function(&self, name: &str) -> String {
+        oh_lua::docs::get_docs_for_function(name)
+    }
+    fn print_docs(&self, out: &mut dyn std::io::Write) -> std::io::Result<()> {
+        oh_lua::docs::print_docs(out)
+    }
 }
 
 /// One fully composed engine: `HexagonGame<GameApiState>` + its
@@ -405,9 +426,13 @@ impl ScriptHost for LuaScriptHost {
 /// `SharedLua` ever outlives the `LuaContext` it points into.
 pub struct Composed {
     pub game: HexagonGame<GameApiState>,
-    #[allow(dead_code)] // held so the engine's backend Arc stays alive; the
-    // host/state fields own the rest of the drop-order chain
-    host: Arc<LuaScriptHost>,
+    /// Public so tests can drive the seam directly (e.g. `host.init_lua()`
+    /// to register the API before exercising console commands). Still held
+    /// for the whole struct lifetime: the host/state fields own the rest of
+    /// the drop-order chain. `allow(dead_code)`: each test binary compiles
+    /// this module separately and not all of them read every field.
+    #[allow(dead_code)]
+    pub host: Arc<LuaScriptHost>,
     #[allow(dead_code)]
     state: State,
     // Heap-pinned (`Box`): the `SharedLua` handle captured from this
@@ -526,7 +551,10 @@ pub fn release_dir() -> PathBuf {
 
 /// Runs one engine to death (C++ `executeGameUntilDeath(1, 1.f)`) and
 /// returns the C++ test's `(playedTimeSeconds, replay_file)` pair.
+/// `allow(dead_code)`: each test binary compiles this module separately and
+/// not all of them drive a live run.
 #[must_use]
+#[allow(dead_code)]
 pub fn run_live_to_death(game: &HexagonGame<GameApiState>) -> (f64, ReplayFile) {
     let captured: std::sync::Arc<std::sync::Mutex<Option<ReplayFile>>> =
         std::sync::Arc::new(std::sync::Mutex::new(None));

@@ -16,3 +16,14 @@ oh-assets = { path = "../oh-assets" }
 # cycle: oh-lua already depends on oh-game).
 [dev-dependencies]
 oh-lua = { path = "../oh-lua" }
+
+[features]
+# D-023/D-024: mirror oh-lua's `produce-lua-metadata` (the C++
+# `SSVOH_PRODUCE_LUA_METADATA` build gate, `CMakeLists.txt`'s literal
+# `if(FALSE)` = default OFF) for the engine's console tests: with the
+# feature on, the `init_lua_and_print_docs_to` headless test sees the
+# flag-ON metadata store (entry lines + resolved lookups); default builds
+# see the shipped flag-OFF behavior (11 headers, zero entries,
+# "UNKNOWN FUNCTION"). Forwarded onto the dev-dependency only — oh-game
+# itself gains no dependency (oh-lua is already dev-only here, D-013).
+produce-lua-metadata = ["oh-lua/produce-lua-metadata"]

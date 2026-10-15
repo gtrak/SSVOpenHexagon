@@ -53,5 +53,8 @@ fn default_mode_prints_eleven_headers_with_zero_entries() {
     assert_eq!(get_docs_for_function("u_log"), "UNKNOWN FUNCTION");
     assert_eq!(get_docs_for_function("u_clear"), "UNKNOWN FUNCTION");
     assert_eq!(get_docs_for_function(""), "UNKNOWN FUNCTION");
-    assert_eq!(get_docs_for_function("nonexistent_fn_xyz"), "UNKNOWN FUNCTION");
+    assert_eq!(
+        get_docs_for_function("nonexistent_fn_xyz"),
+        "UNKNOWN FUNCTION"
+    );
 }

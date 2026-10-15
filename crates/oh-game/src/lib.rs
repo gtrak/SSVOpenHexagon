@@ -26,6 +26,7 @@ pub mod custom_wall;
 pub mod custom_wall_manager;
 pub mod hexagon_game;
 pub mod level_status;
+pub mod lua_console;
 pub mod lua_state;
 pub mod player;
 pub mod polygon;

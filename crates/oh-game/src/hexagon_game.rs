@@ -305,9 +305,34 @@ pub struct EngineState {
     pub(crate) always_spin_right: bool,
     // C++ `debugPause` (ImGui console toggle, issue 14).
     pub(crate) debug_pause: bool,
-    // C++ `ilcShowConsole` (always false in this issue; the ImGui Lua
-    // console lands in issue 14).
+    // C++ `ilcShowConsole` (HexagonGame.hpp:114) — the console window's
+    // visibility; toggled by the `post_update` gate (issue 014 step (a))
+    // and read by `imgui_lua_console_has_input`.
     pub(crate) ilc_show_console: bool,
+    // C++ `sf::Clock ilcDeltaClock` (HexagonGame.hpp:108) — read ONLY by the
+    // windowed ImGui frame (`ImGui::SFML::Update(*window,
+    // ilcDeltaClock.restart())`, `HGUpdate.cpp:1305`). Nothing in the
+    // headless port reads it; the read site is step (b). Kept field-for-
+    // field per the spec; `Instant` is the port's clock-helper stand-in
+    // (`clock.rs` carries the game-time-point alias, not a ticking clock).
+    #[allow(dead_code)]
+    pub(crate) ilc_delta_clock: std::time::Instant,
+    // C++ `std::vector<std::string> ilcHistory` (HexagonGame.hpp:110).
+    pub(crate) ilc_history: Vec<String>,
+    // C++ `int ilcHistoryPos{-1}` (HexagonGame.hpp:111).
+    pub(crate) ilc_history_pos: i32,
+    // C++ `std::string ilcCmdBuffer` (HexagonGame.hpp:112).
+    pub(crate) ilc_cmd_buffer: String,
+    // C++ `std::string ilcTrackBuffer` (HexagonGame.hpp:113).
+    pub(crate) ilc_track_buffer: String,
+    // C++ `bool ilcShowConsoleNext{false}` (HexagonGame.hpp:115) — the
+    // pending `Tid::LuaConsole` toggle.
+    pub(crate) ilc_show_console_next: bool,
+    // C++ `std::vector<std::string> ilcLuaTracked / ilcLuaTrackedNames`
+    // (HexagonGame.hpp:116-117). (`ilcCmdLog` / `ilcLuaTrackedResults` live
+    // on `SharedState` — the 007 lambdas write them.)
+    pub(crate) ilc_lua_tracked: Vec<String>,
+    pub(crate) ilc_lua_tracked_names: Vec<String>,
     // C++ `random_input_rng` equivalent: the C++
     // `static std::mt19937 en(std::random_device{})` in
     // `updateInput` (process-static, test-only, non-deterministic). The
@@ -529,6 +554,14 @@ impl<S: SharedStore> HexagonGame<S> {
             always_spin_right: false,
             debug_pause: false,
             ilc_show_console: false,
+            ilc_delta_clock: std::time::Instant::now(),
+            ilc_history: Vec::new(),
+            ilc_history_pos: -1,
+            ilc_cmd_buffer: String::new(),
+            ilc_track_buffer: String::new(),
+            ilc_show_console_next: false,
+            ilc_lua_tracked: Vec::new(),
+            ilc_lua_tracked_names: Vec::new(),
             random_input_rng: Pcg32Fast::from_seed(entropy_seed()),
             fast_forward_target: None,
             advance_tick_count: None,
@@ -2048,8 +2081,14 @@ impl<S: SharedStore> HexagonGame<S> {
         format_ostream_f64((x * 1000.0).floor() / (1000.0_f32 as f64))
     }
 
-    /// `imguiLuaConsoleHasInput()` — always false in this issue (the ImGui
-    /// Lua console is issue 14).
+    /// C++ `imguiLuaConsoleHasInput()` (`HexagonGame.cpp:270-274`):
+    /// `ilcShowConsole && (Imgui::wantCaptureKeyboard() ||
+    /// Imgui::wantCaptureMouse())`. The port returns `ilc_show_console`
+    /// alone: the `wantCaptureKeyboard/Mouse` conjunct is the step (b) egui
+    /// piece (issue 15), and headless the C++ conjuncts are false anyway —
+    /// when the console IS shown (debug + non-official + F1), suppressing
+    /// the game input is the behavior that matters (the C++ gate at
+    /// `HGUpdate.cpp:649` then returns before any input is read).
     pub(crate) fn imgui_lua_console_has_input(&self) -> bool {
         self.est().ilc_show_console
     }

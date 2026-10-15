@@ -143,6 +143,25 @@ impl ReplayStore for NullReplayStore {
 /// the C++ exception `what()` string (the engine performs the
 /// `luaExceptionLippincottHandler` behavior: print + `goToMenu(false, true)`
 /// when not in debug mode — see `HexagonGame::host_call`).
+/// The C++ exception classes a console command can surface (issue 014 step
+/// (a); the console's catch structure at `HGUpdate.cpp:1512-1537`
+/// distinguishes `catch(std::runtime_error&)` — carries `what()` — from
+/// `catch(...)` — "unknown").
+///
+/// Every other `ScriptHost` method reports failures as a plain `String`
+/// (its caller performs the Lippincott behavior or a `runLuaFile`-style
+/// print); only `execute_code` needs the class, because the interpreter's
+/// two nested catches treat the two cases differently.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScriptError {
+    /// C++ `std::runtime_error` (every `Lua::LuaContext` exception derives
+    /// from it: `ExecutionErrorException`, `SyntaxErrorException`, ...).
+    /// Carries the C++ `what()`.
+    Runtime(String),
+    /// C++ `catch(...)` — a non-`runtime_error` exception.
+    Unknown,
+}
+
 pub trait ScriptHost: Send + Sync + 'static {
     /// C++ `lua = Lua::LuaContext{}; initLua();` (called in `newGame` before
     /// the level script runs).
@@ -194,6 +213,27 @@ pub trait ScriptHost: Send + Sync + 'static {
     /// C++ `lua.readVariable<std::string>(name)` (`updateText`
     /// `scoreOverride` / tracked variables).
     fn read_variable_string(&self, name: &str) -> Result<String, String>;
+
+    // -- the headless Lua console (issue 014 step (a)) ---------------------
+    /// C++ `lua.executeCode(std::string_view)` (`LuaWrapper.hpp:189`) — the
+    /// command fallback (`u_log(<cmd>)\n`, then bare `<cmd>\n`) and the
+    /// tracked-snippet loop call exactly this. Error class per
+    /// [`ScriptError`] (the C++ catch structure, `HGUpdate.cpp:1512-1537`).
+    fn execute_code(&self, code: &str) -> Result<(), ScriptError>;
+    /// C++ `LuaScripting::getAllFunctionNames()`
+    /// (`LuaScripting.cpp:1632-1652`) — the tab-completion candidate list.
+    /// (In C++ a `LuaScripting` static over the process-global metadata
+    /// store; the composition's host delegates to `oh_lua::docs`.)
+    fn all_function_names(&self) -> Vec<String>;
+    /// C++ `LuaScripting::getDocsForFunction(name)`
+    /// (`LuaScripting.cpp:1654-1688`) — the `?fn` command's docs; returns
+    /// `"UNKNOWN FUNCTION"` when no entry matches (the shipped flag-off
+    /// build, D-023).
+    fn docs_for_function(&self, name: &str) -> String;
+    /// C++ `LuaScripting::printDocs()` (`LuaScripting.cpp:1613-1630`) to a
+    /// writer (the C++ writes `std::cout`; the `-printLuaDocs` CLI entry is
+    /// issue 15). Always emits the 11 category headers, entries or not.
+    fn print_docs(&self, out: &mut dyn std::io::Write) -> std::io::Result<()>;
 }
 
 /// The no-Lua host (`HexagonGame::<SharedState>` pure headless runs): every
@@ -247,6 +287,38 @@ impl ScriptHost for NoScriptHost {
     }
     fn read_variable_string(&self, name: &str) -> Result<String, String> {
         Err(format!("variable '{name}' does not exist (no Lua context)"))
+    }
+
+    // -- the headless Lua console ------------------------------------------
+    fn execute_code(&self, _: &str) -> Result<(), ScriptError> {
+        // Stand-in: the C++ engine always owns a live `Lua::LuaContext`
+        // (default-constructed, default libs); calling `u_log` on it before
+        // `initLua()` throws `ExecutionErrorException` (a `runtime_error`).
+        // The exact `what()` is Lua-version dependent and not pinned, so the
+        // port carries a stand-in message; the interpreter's catch behavior
+        // is what is under test.
+        Err(ScriptError::Runtime(
+            "no Lua context (NoScriptHost)".to_string(),
+        ))
+    }
+    fn all_function_names(&self) -> Vec<String> {
+        // No registrations ever happened → the C++ store is empty → the C++
+        // `getAllFunctionNames()` returns an empty vector.
+        Vec::new()
+    }
+    fn docs_for_function(&self, _: &str) -> String {
+        // C++ `getDocsForFunction` with an empty store: always the fallback.
+        "UNKNOWN FUNCTION".to_string()
+    }
+    fn print_docs(&self, out: &mut dyn std::io::Write) -> std::io::Result<()> {
+        // C++ `printDocs` prints the 11 category headers even when the store
+        // is empty (flag-off build / never-initialized context); the entries
+        // (none, here) would follow each header.
+        for header in crate::lua_console::PREFIX_HEADERS {
+            // C++ byte format: `"\n" + prefixHeaders[i] + "\n\n"`.
+            writeln!(out, "\n{header}\n")?;
+        }
+        Ok(())
     }
 }
 

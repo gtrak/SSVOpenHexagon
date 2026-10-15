@@ -76,7 +76,7 @@ pub const PREFIX_HEADERS: [&str; NUM_CATEGORIES] = [
     "## Event Timeline Functions (e_)\n\nBelow are the event timeline functions, which can be identified with the \"e_\" prefix. These are functions that are similar to the Main Timeline functions, but they instead are for the event timeline as opposed to the main timeline. Use these functions to help set up basic events for the game, such as handling messages. Use ``e_eval`` to do more advanced events.",
     "## Level Functions (l_)\n\nBelow are the level functions, which can be identified with the \"l_\" prefix. These are functions that have a role in altering the level mechanics themselves, including all level properties and attributes. These typically get called en masse in `onInit` to initialize properties.",
     "## Style Functions (s_)\n\nBelow are the style functions, which can be identified with the \"s_\" prefix. These are functions that have a role in altering the attributes of the current style that is on the level. Style attributes, unlike level attributes, do not get initialized in Lua and rather are premade in a JSON file (but this is subject to change).",
-    "## Wall Functions (w_)\n\nBelow are the basic wall functions, which can be identified with the \"w_\" prefix. These are the functions solely responsible for wall creation in the levels. There are a variety of walls that can be made with different degrees of complexity, all of which can be used to construct your own patterns.",
+    "## Wall Functions (w_)\n\nBelow are the basic wall functions, which can be identified with the \"w_\" prefix. These are the functions sole responsible for wall creation in the levels. There are a variety of walls that can be made with different degrees of complexity, all of which can be used to construct your own patterns.",
     "## Custom Wall Functions (cw_)\n\nBelow are the custom wall functions, which can be identified with the \"cw_\" prefix. These are functions with foundations of [Object-oriented programming](https://en.wikipedia.org/wiki/Object-oriented_programming) to allow pack developers to customize individual walls and their properties and make the most out of them.",
     "## Custom Timeline Functions (ct_)\n\nBelow are the custom timeline functions, which can be identified with the \"ct_\" prefix. These are functions with foundations of [Object-oriented programming](https://en.wikipedia.org/wiki/Object-oriented_programming) to allow pack developers to create and manage independent timelines.",
     "## Shader Functions (shdr_)\n\nBelow are the shader functions, which can be identified with the \"shdr_\" prefix. These are functions that enable graphical manipulation of the rendered game scene via GLSL shaders.",
@@ -236,10 +236,7 @@ impl LuaMetadataProxy {
 /// `"type name, type name"` for more. Missing `.arg()` names (C++:
 /// `vector::at` throws -> entry dropped + logged) become empty strings here
 /// so the entry is still recorded.
-#[cfg_attr(
-    not(feature = "produce-lua-metadata"),
-    allow(dead_code)
-)] // the flag-off build never calls this (the drop body is `#else {}`)
+#[cfg_attr(not(feature = "produce-lua-metadata"), allow(dead_code))] // the flag-off build never calls this (the drop body is `#else {}`)
 fn make_args_string(arg_types: &[&str], arg_names: &[String]) -> String {
     if arg_types.is_empty() {
         return String::new();
@@ -260,10 +257,7 @@ fn make_args_string(arg_types: &[&str], arg_names: &[String]) -> String {
 /// that argument name. A bare `$` (no digits) selects argument 0, exactly
 /// like the C++ parser (`indexAcc` stays 0). Out-of-range indices (C++:
 /// `vector::at` throws -> entry dropped) are left as the literal `$N`.
-#[cfg_attr(
-    not(feature = "produce-lua-metadata"),
-    allow(dead_code)
-)] // the flag-off build never calls this (the drop body is `#else {}`)
+#[cfg_attr(not(feature = "produce-lua-metadata"), allow(dead_code))] // the flag-off build never calls this (the drop body is `#else {}`)
 fn resolve_arg_names(docs: &str, arg_names: &[String]) -> String {
     let chars: Vec<char> = docs.chars().collect();
     let mut result = String::with_capacity(docs.len() + arg_names.len() * 4);
@@ -370,10 +364,7 @@ mod tests {
         assert_eq!(make_args_string(&[], &[]), "");
         assert_eq!(make_args_string(&["int"], &["n".to_string()]), "int n");
         assert_eq!(
-            make_args_string(
-                &["int", "float"],
-                &["a".to_string(), "b".to_string()]
-            ),
+            make_args_string(&["int", "float"], &["a".to_string(), "b".to_string()]),
             "int a, float b"
         );
         // Missing name -> empty string (the port's leniency, module docs).

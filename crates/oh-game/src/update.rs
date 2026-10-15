@@ -470,11 +470,48 @@ impl<S: SharedStore> HexagonGame<S> {
         }
     }
 
-    /// C++ `postUpdate()` — `postUpdate_ImguiLuaConsole()` only. The ImGui
-    /// Lua console (test tooling, `ilc*` members) lands in issue 14; `ilcShowConsole`
-    /// stays false here, so the C++ headless behavior is an exact no-op.
+    /// C++ `postUpdate()` — `postUpdate_ImguiLuaConsole()` only
+    /// (`HGUpdate.cpp:1648-1651`). Ports the C++ function's headless
+    /// prefix (`HGUpdate.cpp:1287-1309`):
+    ///
+    /// * C++ `if(window == nullptr) return;` — the port's engine has no
+    ///   window (the constructor `window` flag gates the draw lane only), so
+    ///   in C++ the rest of the function never runs headless. The port
+    ///   instead runs the two gates the C++ applies AFTER the window check
+    ///   (spec-mandated headless-testable prefix); the whole ImGui tail
+    ///   (`HGUpdate.cpp:1305-1641`) is step (b).
+    /// * C++ `if(!Config::getDebug() || Config::getOfficial())` → force-hide
+    ///   the console and clear the pending toggle.
+    /// * C++ `if(ilcShowConsoleNext)` → toggle `ilcShowConsole`, clear
+    ///   `ilcShowConsoleNext` (the C++ also fires
+    ///   `ImGui::SFML::ProcessEvent(GainedFocus)` — step (b)).
+    /// * C++ `if(!ilcShowConsole) return;` — the console-shown tail is UI.
     pub fn post_update(&self) {
-        // (no-op: the ImGui Lua console is issue 14 — see module docs)
+        // (the C++ `window == nullptr` return — see docs)
+        if !self.config().get_debug() || self.config().get_official() {
+            let mut e = self.est();
+            e.ilc_show_console = false;
+            e.ilc_show_console_next = false;
+            return;
+        }
+
+        if self.est().ilc_show_console_next {
+            let mut e = self.est();
+            e.ilc_show_console = !e.ilc_show_console;
+            e.ilc_show_console_next = false;
+            // C++ `ImGui::SFML::ProcessEvent(sf::Event{sf::Event::GainedFocus})`
+            // — step (b).
+        }
+
+        // C++ `if(!ilcShowConsole) return;` — the console-shown tail is UI
+        // (step (b)); expressed as the positive condition since the tail is
+        // empty here.
+        if self.est().ilc_show_console {
+            // C++ `ImGui::SFML::Update(*window, ilcDeltaClock.restart())` …
+            // `ImGui::End()` (`HGUpdate.cpp:1305-1641`) — the console UI,
+            // incl. the `InputText("Command")` Enter branch (port headlessly
+            // as [`Self::post_update_imgui_lua_console_command`]) — step (b).
+        }
     }
 
     /// C++ `updateWalls(mFT)` (verbatim).

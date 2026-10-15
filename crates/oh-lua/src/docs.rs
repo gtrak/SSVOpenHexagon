@@ -71,11 +71,15 @@ pub fn get_docs_for_function(fn_name: &str) -> String {
 /// C++ `printDocs` (LuaScripting.cpp:1613-1630) to a writer: per category
 /// `"\n" + prefixHeaders[i] + "\n\n"`, then per entry `"* **`" + ret + " " +
 /// name + "(" + args + ")`**: " + docs + `"\n\n"`.
-pub fn print_docs(out: &mut impl Write) -> std::io::Result<()> {
+///
+/// (The parameter is `&mut dyn Write` rather than `&mut impl Write` so the
+/// `oh-game` `ScriptHost::print_docs` seam — which carries `&mut dyn Write`
+/// across the dependency cycle — can delegate straight to this function.)
+pub fn print_docs(out: &mut dyn Write) -> std::io::Result<()> {
     let lm = get_metadata();
     let mut error: Option<std::io::Error> = None;
-    for i in 0..lm.num_categories() {
-        if let Err(e) = write!(out, "\n{}\n\n", PREFIX_HEADERS[i]) {
+    for (i, header) in PREFIX_HEADERS.iter().enumerate() {
+        if let Err(e) = write!(out, "\n{header}\n\n") {
             error = Some(e);
             break;
         }
@@ -107,6 +111,7 @@ pub fn print_docs_to_stdout() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "produce-lua-metadata")]
     use crate::metadata::LuaMetadataProxy;
 
     /// D-023 default mode (feature off): nothing is ever recorded, so the
@@ -150,8 +155,7 @@ mod tests {
     #[test]
     fn feature_on_mode_populates_entries() {
         {
-            let mut proxy =
-                LuaMetadataProxy::new("z_docsProbe", "float", &["int", "int"]);
+            let mut proxy = LuaMetadataProxy::new("z_docsProbe", "float", &["int", "int"]);
             proxy.arg("lower").arg("upper");
             proxy.doc("Return a random value in `[$0; $1]`.");
         }
