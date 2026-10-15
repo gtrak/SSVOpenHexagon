@@ -21,6 +21,32 @@ mod common;
 
 use common::release_dir;
 
+/// Binary-level smoke (the in-process test above covers the core bytes):
+/// the `-printLuaDocs` dispatch in the real `open-hexagon` binary — exit
+/// 0 and the Finished line. Runs against the read-only `_RELEASE` (this
+/// mode writes nothing to the data root: no folders, no config save).
+#[test]
+fn print_lua_docs_binary_exits_0_and_prints_the_finished_line() {
+    let exe = std::env::var("CARGO_BIN_EXE_open-hexagon").expect("open-hexagon is built");
+    let out = std::process::Command::new(exe)
+        .current_dir(release_dir())
+        .arg("-printLuaDocs")
+        .output()
+        .expect("spawn open-hexagon");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "C++ mainPrintLuaDocs returns 0; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.ends_with("[::mainPrintLuaDocs] Finished\n"),
+        "the C++ Finished line closes the binary output; stdout tail: {}",
+        &stdout[stdout.len().saturating_sub(80)..]
+    );
+}
+
 #[test]
 fn print_lua_docs_output_matches_the_build_mode() {
     let mut out = Vec::new();

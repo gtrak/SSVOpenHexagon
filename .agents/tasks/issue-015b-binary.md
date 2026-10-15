@@ -8,8 +8,9 @@ You are a worker. Implement exactly this. Do not redesign or widen scope.
 
 Issue 15's contract says "`open-hexagon -headless -p base -l <level>` runs N
 ticks and exits 0". **That is wrong** (D-012, verified against the source): the
-C++ headless path (`main.cpp:549-581`) IGNORES `-p`/`-l` (those are consumed by
-the windowed MenuGame path only, `:477-483`), and **requires a compressed
+C++ headless path (`main.cpp:537-581`) IGNORES `-p`/`-l` (those are consumed by
+the windowed MenuGame path only, `mg->init(false, *cliLevelPack,
+*cliLevelName)` at `:510`), and **requires a compressed
 replay file** — with none present it logs
 `"Running in headless mode without replay...?"` and `return 1`. With one, it
 decompresses, replays to death via
@@ -28,12 +29,20 @@ clean, gate 4/4 (369 tests default + feature-on), `oh-app` lib exists (15a).
 
 Read first:
 1. C++ oracle: `src/SSVOpenHexagon/Core/main.cpp` — `ParsedArgs`/`parseArgs`
-   `:80-160`, `createFolderIfNonExistant` calls `:275-276`,
-   `Config::loadConfig(args)` + `reapplyResolution` `:279-280`, the
-   config-save scope guard `:282-287`, the headless branch `:549-581`,
-   `getFirstCompressedReplayFilenameFromArgs` (find it in `main.cpp` — args
-   not starting with `-`), `mainPrintLuaDocs` `:167-189`, the dispatch
-   `:672-686`.
+   `:80-140`, `createFolderIfNonExistant` helper `:65-79` + calls `:275-276`,
+   `Config::loadConfig(args)` + `reapplyResolution` `:282-283`, the
+   config-save scope guard `:287-292`, the headless branch `:537-581`,
+   `getFirstCompressedReplayFilenameFromArgs` `:146-154` — D-014 CORRECTION
+   (landed 15b): the scan is a SUBSTRING test (`arg.find(".ohr.z") !=
+   npos`), NOT "args not starting with `-`"; `mainPrintLuaDocs` `:167-189`,
+   the dispatch `:666-686`.
+   D-014 CORRECTION (landed 15b): the spec's "C++ saves config … BEFORE
+   ImGui shutdown" (in §3) is reversed — the three `mainClient` scope
+   guards fire LIFO at scope exit, so the config-save guard (registered
+   first, `:287`) fires LAST (after the `pSaveAll` and ImGui guards).
+   For the pieces that exist in the 15b tree (config save only) the
+   relative position is the same either way: after the game ran, after
+   the `Finished` line.
 2. `crates/oh-app/src/` (15a) and `crates/oh-game/tests/common/mod.rs` (the
    two-phase composition — 15b replicates it inside the binary).
 3. `crates/oh-game/src/seams.rs` (`ScriptHost`, `NoScriptHost`),
@@ -69,18 +78,25 @@ function docs.
 `createFolderIfNonExistant("Profiles/")` + `("Replays/")` (find the C++
 helper — `std::filesystem::create_directories` + log; port it with the same
 log output on creation). `Config::load_config(args)` +
-`reapply_resolution()`; the SCOPE-GUARD order matters: C++ saves config (with
-its two log lines) BEFORE ImGui shutdown but AFTER the game ran — mirror the
-order for the pieces that exist (config save + log lines).
+`reapply_resolution()`; the SCOPE-GUARD order matters: the C++ scope
+guards fire LIFO at scope exit, so the config-save guard (registered
+FIRST, `main.cpp:287`) fires LAST — after the `pSaveAll` guard, after the
+ImGui shutdown, after the game ran, and after the `Finished` line (D-014
+CORRECTION: this spec's first draft said "BEFORE ImGui shutdown" — the
+LIFO order is the reverse; see the note in the Context section). Mirror
+the order for the pieces that exist (config save + its two log lines, at
+scope end after the game ran).
 
-### 4. Headless client run (port `main.cpp:549-581` exactly)
+### 4. Headless client run (port `main.cpp:537-581` exactly)
 
-- No replay file in args → the exact log line + `return 1`.
-- Unreadable/corrupt file → `ssvu::lo("Replay")`-style log + `return 1` for
-  the decompress failure (`:571-574`); the `deserialize_from_file` failure
-  path logs `Failed to read compressed replay file in headless mode '<name>'`
-  and falls THROUGH to `return 0` (verify that fall-through yourself —
-  the C++ does not return 1 there).
+- No replay file in args → the exact log line + `return 1` (`:542-545`).
+- Unreadable/corrupt file → the decompress failure (`:554-558`) prints
+  `Could not decompress replay file` (stderr) + `return 1`; the
+  `deserialize_from_file` failure path (`:577-581`, a file that name-scans
+  but cannot be read) logs `Failed to read compressed replay file in
+  headless mode '<name>'` and falls THROUGH to `return 0` (verified against
+  the source — the C++ does not return 1 there; D-014 double-check done in
+  15b, pinned by the `headless_missing_replay_file…` test).
 - Success → `"Player died.\nFinal time: <score>\n"` where the score is
   `runReplayUntilDeathAndGetScore(replay, 1, 1.f).playedTimeSeconds` — check
   whether that engine method exists from the determinism harness (issue 09
@@ -111,9 +127,19 @@ stub must be unmistakable.)
 - Headless + a REAL compressed replay fixture (build one in-test with
   `oh-replay`'s writer from a live run — the determinism harness already
   produces replay files; compress via the oh-replay compressor): exit 0 and
-  the printed final time equals the harness's own score for that replay
-  (cross-check against `tests/determinism.rs`'s established numbers, e.g.
-  the cube 1.3875 fixture — cite which).
+  the printed final time equals the harness's own score for that replay.
+  D-014 CORRECTION (landed 15b): `tests/determinism.rs` pins NO absolute
+  numbers (its module docs: "Self-consistent, NOT C++-verified … NO
+  expected numbers" — D-018), and the live run's score is not absolutely
+  pinnable (the game RNG is entropy-seeded per `newGame` — C++-faithful,
+  `HexagonGame.cpp:306` + `initializeRng()` `:57-65`; observed 1.75417,
+  1.725, …). The `1.3875` figure appears only in DECISIONS.md D-019 as a
+  scratch discrimination value, not as a fixture. So the established
+  cross-check IS the D-018 property `determinism.rs` establishes: the
+  binary's printed `Final time:` (the replay run's `playedTimeSeconds`,
+  C++ `std::ostream` float format via `format_ostream_f64`) must equal the
+  harness's own live-run `played_time_seconds` — pinned by
+  `headless_real_compressed_replay_runs_to_death_and_prints_the_harness_score`.
 - Headless without replay → exit 1 + exact line; corrupt replay → the right
   exit code per your verified C++ reading.
 - Unknown flag handling: `-p` without a following value etc. — port the C++
