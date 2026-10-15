@@ -8,6 +8,10 @@ edition.workspace = true
 # Library + the `open-hexagon` binary (issue 15 step (b)); the windowed
 # loop (step (c)) lands in the same binary.
 
+[[bin]]
+name = "open-hexagon"
+path = "src/main.rs"
+
 [dependencies]
 # The two sides of the bridge: the engine (never depends on the render
 # layer) and the render layer (never depends on the engine). `oh-app` is

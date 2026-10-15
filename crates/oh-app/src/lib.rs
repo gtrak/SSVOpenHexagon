@@ -19,9 +19,11 @@
 //! Issue 15 step (b): the `open-hexagon` binary pieces — [`args`] (the
 //! `main.cpp:80-154` CLI surface), [`lifecycle`] (the `mainClient`
 //! folder/config scope-guard pieces, `main.cpp:275-291`), [`compose`] (the
-//! headless engine composition, promoted from the step-(a) test tree) and
-//! [`print_lua_docs`] (the `-printLuaDocs` entrypoint, `main.cpp:167-189`);
-//! the client/dispatch modules land with the later step-(b) milestones.
+//! headless engine composition, promoted from the step-(a) test tree),
+//! [`print_lua_docs`] (the `-printLuaDocs` entrypoint, `main.cpp:167-189`),
+//! [`client`] (the `mainClient` headless replay run, `main.cpp:540-581`)
+//! and [`dispatch`] (the `main()` dispatch, `main.cpp:604-686`, + the
+//! not-yet-ported `mainServer` stub).
 //!
 //! Out of scope for step (b) (step (c)): the winit/glow window + event
 //! pump, MenuGame↔HexagonGame switching, signals, the FPS text timing loop,
@@ -30,6 +32,8 @@
 pub mod args;
 pub mod bridge;
 pub mod camera;
+pub mod client;
 pub mod compose;
+pub mod dispatch;
 pub mod lifecycle;
 pub mod print_lua_docs;
