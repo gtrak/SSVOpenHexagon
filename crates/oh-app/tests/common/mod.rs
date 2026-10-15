@@ -30,7 +30,6 @@ use oh_lua::{LuaContext, LuaError};
 use oh_render::draw::RenderStates;
 use oh_render::graphics::DrawTarget;
 use oh_render::view::View;
-use oh_replay::ReplayFile;
 use oh_rng::RandomNumberGenerator;
 
 /// The C++ `ReplayExecution.t.cpp` profile (see the original's docs).
@@ -513,30 +512,4 @@ impl DrawTarget for Recording {
     fn save_screenshot(&mut self, path: &str) {
         self.events.push(DrawEvent::Screenshot(path.to_string()));
     }
-}
-
-/// Runs one engine to death (C++ `executeGameUntilDeath(1, 1.f)`) and
-/// returns the C++ test's `(playedTimeSeconds, replay_file)` pair.
-/// `allow(dead_code)`: the no-op test (this milestone) doesn't run a
-/// live game yet — the full-draw test (next milestone) does.
-#[must_use]
-#[allow(dead_code)]
-pub fn run_live_to_death(game: &HexagonGame<GameApiState>) -> (f64, ReplayFile) {
-    let captured: std::sync::Arc<std::sync::Mutex<Option<ReplayFile>>> =
-        std::sync::Arc::new(std::sync::Mutex::new(None));
-    let cap = captured.clone();
-    game.set_on_death_replay_created(std::sync::Arc::new(move |rf: &ReplayFile| {
-        *cap.lock().expect("replay capture poisoned") = Some(rf.clone());
-    }));
-
-    game.set_must_start(true);
-    let result = game
-        .execute_game_until_death(1, 1.0)
-        .expect("live run exceeded the C++ 1-second processing budget");
-    let rf = captured
-        .lock()
-        .expect("replay capture poisoned")
-        .take()
-        .expect("on_death_replay_created never fired (in_replay was true?)");
-    (result.played_time_seconds, rf)
 }
