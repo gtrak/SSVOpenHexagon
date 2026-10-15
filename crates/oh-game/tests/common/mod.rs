@@ -373,6 +373,14 @@ impl ScriptHost for LuaScriptHost {
         callbacks::call_on_cursor_swap(self.lua.context()).map_err(|e| e.to_string())
     }
 
+    fn run_on_render_stage(&self, stage: i32, frametime: f32) -> Result<(), String> {
+        // C++ `runLuaFunctionIfExists<int, float>("onRenderStage", rs, ft)`
+        // (`HGGraphics.cpp:74-77`); the int return is discarded.
+        callbacks::call_on_render_stage(self.lua.context(), stage, frametime)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
     fn read_variable_f32(&self, name: &str) -> Result<f32, String> {
         self.lua
             .context()

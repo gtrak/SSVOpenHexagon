@@ -203,6 +203,13 @@ pub trait ScriptHost: Send + Sync + 'static {
     fn run_on_unload(&self) -> Result<(), String>;
     /// C++ `runLuaFunctionIfExists<void>("onCursorSwap")`.
     fn run_on_cursor_swap(&self) -> Result<(), String>;
+    /// C++ `runLuaFunctionIfExists<int, float>("onRenderStage", rs, 60.f /
+    /// window->getFPS())` (`HGGraphics.cpp:74-77`, inside the per-stage
+    /// `getRenderStates` lambda) — the level's `onRenderStage(rs, ft)`
+    /// side-effect hook, `rs` = 0–8 (`RenderStage`), `ft` = `60 / FPS`.
+    /// The `int` return is discarded by the engine. Dispatched by the
+    /// draw bridge (issue 15 step (a)) — NOT by the update loop.
+    fn run_on_render_stage(&self, stage: i32, frametime: f32) -> Result<(), String>;
 
     // -- direct variable access the loop performs --------------------------
     /// C++ `lua.readVariable<float>(name)` (the `scoreOverridden` path in
@@ -277,6 +284,11 @@ impl ScriptHost for NoScriptHost {
         Ok(())
     }
     fn run_on_cursor_swap(&self) -> Result<(), String> {
+        Ok(())
+    }
+    fn run_on_render_stage(&self, _: i32, _: f32) -> Result<(), String> {
+        // No Lua context → the function cannot exist → the C++
+        // `runLuaFunctionIfExists` skips it silently.
         Ok(())
     }
     fn read_variable_f32(&self, name: &str) -> Result<f32, String> {

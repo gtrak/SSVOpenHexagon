@@ -1076,6 +1076,9 @@ mod tests {
         fn run_on_cursor_swap(&self) -> Result<(), String> {
             Ok(())
         }
+        fn run_on_render_stage(&self, _: i32, _: f32) -> Result<(), String> {
+            Ok(())
+        }
         fn read_variable_f32(&self, _: &str) -> Result<f32, String> {
             Err("no".into())
         }

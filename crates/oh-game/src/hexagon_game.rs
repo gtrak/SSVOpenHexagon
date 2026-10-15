@@ -273,9 +273,8 @@ pub struct EngineState {
     // C++ flags.
     pub(crate) must_change_sides: bool,
     pub(crate) must_start: bool,
-    // Consumed in the windowed `draw()` (render lane); set by the ilc
-    // console command in this crate.
-    #[allow(dead_code)]
+    // Consumed in the windowed `draw()` (render lane, via the issue 15
+    // step (a) bridge); set by the ilc console command in this crate.
     pub(crate) must_take_screenshot: bool,
     pub(crate) input_focused: bool,
     pub(crate) input_swap: bool,
@@ -1937,6 +1936,203 @@ impl<S: SharedStore> HexagonGame<S> {
         } else {
             *g.style_data.get_text_color()
         }
+    }
+
+    /// C++ `getColorCap()` (HexagonGame.cpp:1475, verbatim).
+    #[must_use]
+    pub fn get_color_cap(&self) -> oh_math::hg::color::Color {
+        let g = self.st();
+        if self.config().get_black_and_white() {
+            oh_math::hg::color::Color::BLACK
+        } else {
+            // C++ `styleData.getCapColorResult()` (never fails in C++);
+            // the port's `None` (empty-colours `ByIndex`) falls back to
+            // Black — the C++ `getColor(index)` there asserts in debug.
+            g.style_data
+                .get_cap_color_result()
+                .unwrap_or(oh_math::hg::color::Color::BLACK)
+        }
+    }
+
+    /// C++ `getColorWall()` (HexagonGame.cpp:1485, verbatim).
+    #[must_use]
+    pub fn get_color_wall(&self) -> oh_math::hg::color::Color {
+        let g = self.st();
+        if self.config().get_black_and_white() {
+            oh_math::hg::color::Color::new(255, 255, 255, g.style_data.get_wall_color().a)
+        } else {
+            *g.style_data.get_wall_color()
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Draw-bridge accessors (issue 15 step (a), D-020)
+    //
+    // The smallest `pub` reader set the composition crate (`oh-app`)
+    // needs to build `FrameInput`/`DrawState` from the engine — mirroring
+    // the C++ member visibility (the C++ `draw()` reads these members
+    // directly, `HGGraphics.cpp:52-316`). Read-only: none of these may
+    // change simulation state (the D-019 determinism harness must see no
+    // difference).
+    // ------------------------------------------------------------------
+
+    /// The engine's `Config` (the C++ static `Config`; the composition
+    /// shares its loaded instance). Borrow lives as long as the guard.
+    pub fn config_ref(&self) -> std::sync::RwLockReadGuard<'_, Config> {
+        self.0.config.read().expect("config poisoned")
+    }
+
+    /// C++ `backgroundCamera` (`std::optional<ssvs::Camera>`; `None` when
+    /// the engine was constructed headless — the C++ `window == nullptr`
+    /// state).
+    #[must_use]
+    pub fn background_camera(&self) -> Option<Camera> {
+        self.est().background_camera
+    }
+
+    /// C++ `overlayCamera`.
+    #[must_use]
+    pub fn overlay_camera(&self) -> Option<Camera> {
+        self.est().overlay_camera
+    }
+
+    /// C++ `preShakeCenters` (the camera centres captured before a shake
+    /// starts, `HexagonGame::PreShakeCenters`).
+    #[must_use]
+    pub fn pre_shake_centers(&self) -> Option<PreShakeCenters> {
+        self.est().pre_shake_centers
+    }
+
+    /// C++ `mustTakeScreenshot` (set by the ilc `screenshot` command;
+    /// consumed by the windowed `draw()`).
+    #[must_use]
+    pub fn must_take_screenshot(&self) -> bool {
+        self.est().must_take_screenshot
+    }
+
+    /// The setter half of the C++ `mustTakeScreenshot = false` clear the
+    /// draw bridge performs after consuming the flag (the engine field is
+    /// behind the reentrant lock, so the bridge reads/writes it as a
+    /// value).
+    pub fn set_must_take_screenshot(&self, value: bool) {
+        self.est().must_take_screenshot = value;
+    }
+
+    /// C++ `pbTextGrowth` (the PB-text size sawtooth driven by
+    /// `updateText`).
+    #[must_use]
+    pub fn pb_text_growth(&self) -> f32 {
+        self.est().pb_text_growth
+    }
+
+    /// C++ `styleData` (clone; the C++ reads the member in place).
+    #[must_use]
+    pub fn get_style_data(&self) -> StyleData {
+        self.st().style_data.clone()
+    }
+
+    /// C++ `ssvu::getRndR(min, max)` — the NON-game (cosmetic) RNG the
+    /// draw-time camera-shake jitter uses (`HGGraphics.cpp:88-96`).
+    /// Draw-only: never advances the replay-relevant `status.rng`.
+    #[must_use]
+    pub fn get_rnd_r(&self, min: f32, max: f32) -> f32 {
+        self.0.cosmetic_rng.get_rnd_r(min, max)
+    }
+
+    /// C++ `runLuaFunctionIfExists<int, float>("onRenderStage", rs, ft)`
+    /// (`HGGraphics.cpp:74-77`, inside the `getRenderStates` lambda) —
+    /// dispatches the level's `onRenderStage(rs, ft)` Lua function if
+    /// defined. `Err` carries the C++ exception `what()`; the caller
+    /// performs the Lippincott behavior (`HGScripting.cpp:1155`): print
+    /// `"[runLuaFunctionIfExists] Runtime error on ..."` and
+    /// `goToMenu(false, true)` unless debug.
+    pub fn run_on_render_stage(&self, stage: i32, frametime: f32) -> Result<(), String> {
+        self.0.script_host.run_on_render_stage(stage, frametime)
+    }
+
+    /// The C++ `draw()` scene-batch fill orchestration
+    /// (`HGGraphics.cpp:127-146`), verbatim order, returning the four
+    /// batches `draw_frame` consumes pre-filled (`wallQuads`,
+    /// `pivotQuads`, `playerTris`, `capTris`):
+    ///
+    /// 1. `wallQuads.reserve_more_quad(walls.size() + cwManager.count())`
+    ///    (`HGGraphics.cpp:133`);
+    /// 2. `for(CWall& w : walls) w.draw(getColorWall(), wallQuads)`
+    ///    (`HGGraphics.cpp:135-138`);
+    /// 3. `cwManager.draw(wallQuads)` (`HGGraphics.cpp:140`);
+    /// 4. `if(status.started) player.draw(getSides(), getColorMain(),
+    ///    getColorPlayer(), pivotQuads, capTris, playerTris, getColorCap(),
+    ///    Config::getAngleTiltIntensity(),
+    ///    Config::getShowSwapBlinkingEffect())` (`HGGraphics.cpp:142-146`).
+    ///
+    /// (The C++ clears its member batches first, `HGGraphics.cpp:127-132`;
+    /// the port returns fresh batches — the caller's per-frame scratch is
+    /// refilled every call. The `status.started` gate is read under the
+    /// shared-store lock, in the C++ position between the cw fill and the
+    /// player fill. The 3D copies of these batches are built INSIDE
+    /// `oh_render::graphics::draw_frame` — do not duplicate them here.)
+    #[must_use]
+    pub fn draw_scene_batches(
+        &self,
+    ) -> (
+        FastVertexVectorTris,
+        FastVertexVectorTris,
+        FastVertexVectorTris,
+        FastVertexVectorTris,
+    ) {
+        // C++ `getColorWall()` / `getColorMain()` / `getColorPlayer()` /
+        // `getColorCap()` (HexagonGame.cpp:1423-1493).
+        let color_wall = self.get_color_wall();
+        let color_main = self.get_color_main();
+        let color_player = self.get_color_player();
+        let color_cap = self.get_color_cap();
+        // C++ `Config::getAngleTiltIntensity()` / `getShowSwapBlinkingEffect()`.
+        let (angle_tilt, swap_blinking) = {
+            let c = self.config();
+            (
+                c.get_angle_tilt_intensity(),
+                c.get_show_swap_blinking_effect(),
+            )
+        };
+        // C++ `getSides()`.
+        let sides = self.get_sides();
+
+        let mut wall_quads = FastVertexVectorTris::new();
+        let mut pivot_quads = FastVertexVectorTris::new();
+        let mut cap_tris = FastVertexVectorTris::new();
+        let mut player_tris = FastVertexVectorTris::new();
+
+        // C++ `HGGraphics.cpp:133-140`.
+        let must_draw_player = {
+            let g = self.st();
+            wall_quads.reserve_more_quad(g.walls.len() + g.cw_manager.count());
+            for w in &g.walls {
+                w.draw(color_wall, &mut wall_quads);
+            }
+            g.cw_manager.draw(&mut wall_quads);
+            // C++ `status.started` (HGGraphics.cpp:142).
+            g.status.started
+        };
+
+        if must_draw_player {
+            // C++ `HGGraphics.cpp:144-145` — the 4th argument is the
+            // PIVOT batch (C++ `player.draw(..., pivotQuads, capTris,
+            // playerTris, ...)`).
+            let e = self.est();
+            e.player.draw(
+                sides,
+                color_main,
+                color_player,
+                &mut pivot_quads,
+                &mut cap_tris,
+                &mut player_tris,
+                color_cap,
+                angle_tilt,
+                swap_blinking,
+            );
+        }
+
+        (wall_quads, pivot_quads, player_tris, cap_tris)
     }
 
     // ------------------------------------------------------------------

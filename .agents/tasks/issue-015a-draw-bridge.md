@@ -37,8 +37,14 @@ Read first:
    `background_camera`/`overlay_camera`, `pub(crate)` — see accessors below),
    `:471` (the `window` ctor flag).
 5. C++ oracle: `src/SSVOpenHexagon/Core/HGGraphics.cpp:52-316` (draw),
-   `HexagonGame.hpp` (member visibility), `HGUpdate.cpp` `runLuaFunctionIfExists`
-   usage for `onRenderStage`.
+   `HexagonGame.hpp` (member visibility — NOTE: not vendored in this tree;
+   the `src/` dir carries only the Core `.cpp` files, so the "C++ members
+   are public" claim is read off the `.cpp` bodies the accessors mirror,
+   e.g. the colour getters at `HexagonGame.cpp:1423-1493`), and the
+   `onRenderStage` Lua dispatch at `HGGraphics.cpp:74-77` (inside `draw()`'s
+   `getRenderStates` lambda — NOT `HGUpdate.cpp`; that file's
+   `runLuaFunctionIfExists` sites are `onInput` `:244`, `onLoad` `:549`,
+   `onUpdate` `:738`, `onStep` `:745`).
 
 ## Scope
 
