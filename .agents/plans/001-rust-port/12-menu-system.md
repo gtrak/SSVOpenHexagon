@@ -29,7 +29,12 @@ navigation/selection semantics.
 
 1. Port `ItemBase` + the item variants with exact `exec`/`adjust`/`getStr` semantics.
 2. Port `Menu` (categories, item ownership, navigation up/down/left/right/ok/erase/exit).
-3. Port `Controller` (key bindings → item actions).
+3. Port `Controller`. **CORRECTION (2026-10-15):** the contract originally said
+   "key bindings → item actions" — that is WRONG. The real `Controller`
+   (`extlibs/SSVMenuSystem/include/SSVMenuSystem/Menu/Controller.hpp`) has NO key
+   handling; it only holds `enableWhenPairs` and exposes `enableItemWhen(ItemBase&,
+   Predicate)` + `update()` (which calls `setEnabled(p.snd())`). Key→action mapping
+   lives in `MenuGame` (issue 013). The Rust port mirrors the real Controller.
 4. Port the `UniquePtr`-based ownership to `Box`/`Rc` as appropriate.
 
 ## Verification

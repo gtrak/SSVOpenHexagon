@@ -206,3 +206,21 @@ fork is `include/SSVOpenHexagon/SSVUtilsJson/JsonCpp/jsoncpp.inl` (pinned).
      otherwise **skips with a printed reason** — never a silent pass and never a
      fake rasterizer standing in for GL.
 - **Landed by:** issue 010.
+
+## D-012 — Issue contracts are claims; the C++ source is the contract of record
+
+- **Decision:** when a contract/plan statement conflicts with the real C++ source,
+  the source wins and the contract is corrected in-place with a dated note.
+- **Evidence (two cases, same session):**
+  1. issue 006's contract said `writeVariable("a.b.c")` "creates intermediate
+     tables" — `LuaWrapper.cpp:167-205` shows it **throws** `VariableDoesntExist`
+     (D-010);
+  2. issue 012's contract said the `Controller` maps "key bindings → item actions"
+     — the real `Controller.hpp` has **no** key handling (only `enableItemWhen` +
+     `update`); key mapping lives in `MenuGame` (issue 013).
+  Both times the worker followed the source and reported the discrepancy, which is
+  the required behaviour.
+- **Rule for spec authors (me):** a claim about what a library does must be derived
+  from its source, not from its name or its plan prose — the same rule as
+  "a plausible claim about a language is still a claim".
+- **Landed by:** issues 006/012; recorded here.
