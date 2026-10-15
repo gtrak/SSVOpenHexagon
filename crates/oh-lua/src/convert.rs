@@ -61,23 +61,39 @@ pub trait FromLuaValue: Sized {
     fn from_lua_value(value: &Value) -> Result<Self, LuaError>;
 }
 
-/// A registered function's arguments, extracted from a call with the exact
-/// C++ `FunctionToPush::operator()` rules (see `LuaContext::add_lua_fn`):
-/// the "at least N" count check counts the callee itself, a call with exactly
-/// N-1 arguments hits the callee while reading -> `WrongType`, and a call
-/// with *extra* arguments reads the **last** N stack slots (C++ reads
-/// positions `-N .. -1`). Implemented for `()` and tuples of `FromLuaValue`
-/// types up to 17 elements (the game's largest signature).
-pub trait ArgTuple: Sized {
-    const COUNT: usize;
-    fn read_last_n(values: &[Value]) -> Result<Self, LuaError>;
-}
-
+/// The argument-conversion rules a registered function's call dispatch
+/// uses: the C++ `FunctionToPush::operator()` call-frame rules (see
+/// `LuaContext::add_lua_fn`) position the last-N argument window, and each
+/// argument is then converted with this trait's `_read` coercion rules.
+///
 /// A registered function's return value(s), pushed the way C++ `_push` of
-/// scalars and `std::tuple` does (tuples become Lua multiple returns). The
-/// state handle is needed for string internment.
+/// scalars and `std::tuple` does (tuples become Lua multiple returns).
 pub trait PushValue: Sized {
     fn push_value(self, lua: &mlua::Lua) -> Result<MultiValue, mlua::Error>;
+}
+
+/// The return side of a registered-function closure
+/// (`context::{LuaFn, LuaFnTry}`). Implemented for every `PushValue` (the
+/// plain closure return) and for `Result<T, LuaError>` (fallible closures):
+/// an `Err` becomes a Lua runtime error carrying the `LuaError`'s `Display`
+/// text — the port of the C++ exception propagating out of the lambda to
+/// the nearest `runLuaCode`/`runLuaFile` catch.
+pub trait FnReturn: Sized {
+    /// Push the closure's return value(s) as Lua return values.
+    fn to_multi(self, lua: &mlua::Lua) -> Result<MultiValue, mlua::Error>;
+}
+
+impl<T: PushValue> FnReturn for T {
+    fn to_multi(self, lua: &mlua::Lua) -> Result<MultiValue, mlua::Error> {
+        self.push_value(lua)
+    }
+}
+
+impl<T: PushValue> FnReturn for Result<T, LuaError> {
+    fn to_multi(self, lua: &mlua::Lua) -> Result<MultiValue, mlua::Error> {
+        self.map_err(|err| mlua::Error::RuntimeError(err.to_string()))?
+            .push_value(lua)
+    }
 }
 
 // ----------------------------------------------------------------------------

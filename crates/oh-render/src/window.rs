@@ -13,7 +13,7 @@
 //! (`GameWindow::runEvents`) maps onto `Window::run`, which drives the winit
 //! loop, folds `WindowEvent`s into the SFML `Event` set (via `map_window_event`
 //! + `apply_event`), and invokes the per-frame handler once. `Window::headless`
-//! (no display) still runs exactly one frame so the headless game path works.
+//!   (no display) still runs exactly one frame so the headless game path works.
 
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -121,26 +121,27 @@ pub fn winit_key_to_sfml(logical: &WKey, physical: &PhysicalKey, location: KeyLo
     }
 
     match logical {
-        WKey::Character(s) => match s.chars().next() {
-            Some(c) => match c {
-                'a'..='z' => return Key(Key::A.0 + (c as i32 - 'a' as i32)),
-                'A'..='Z' => return Key(Key::A.0 + (c as i32 - 'A' as i32)),
-                '0'..='9' => return Key(Key::NUM0.0 + (c as i32 - '0' as i32)),
-                ',' => return Key::COMMA,
-                '.' => return Key::PERIOD,
-                ';' => return Key::SEMICOLON,
-                '\'' => return Key::APOSTROPHE,
-                '/' => return Key::SLASH,
-                '\\' => return Key::BACKSLASH,
-                '`' => return Key::GRAVE,
-                '=' => return Key::EQUAL,
-                '-' => return Key::HYPHEN,
-                '[' => return Key::L_BRACKET,
-                ']' => return Key::R_BRACKET,
-                _ => {}
-            },
-            None => {}
-        },
+        WKey::Character(s) => {
+            if let Some(c) = s.chars().next() {
+                match c {
+                    'a'..='z' => return Key(Key::A.0 + (c as i32 - 'a' as i32)),
+                    'A'..='Z' => return Key(Key::A.0 + (c as i32 - 'A' as i32)),
+                    '0'..='9' => return Key(Key::NUM0.0 + (c as i32 - '0' as i32)),
+                    ',' => return Key::COMMA,
+                    '.' => return Key::PERIOD,
+                    ';' => return Key::SEMICOLON,
+                    '\'' => return Key::APOSTROPHE,
+                    '/' => return Key::SLASH,
+                    '\\' => return Key::BACKSLASH,
+                    '`' => return Key::GRAVE,
+                    '=' => return Key::EQUAL,
+                    '-' => return Key::HYPHEN,
+                    '[' => return Key::L_BRACKET,
+                    ']' => return Key::R_BRACKET,
+                    _ => {}
+                }
+            }
+        }
         WKey::Named(nk) => match nk {
             NamedKey::Space => return Key::SPACE,
             NamedKey::Enter => return Key::ENTER,
@@ -570,7 +571,7 @@ impl Window {
     /// (The PNG encode is delegated to the OS/asset layer when a context is
     /// present; here we only surface the readback buffer.)
     pub fn save_screenshot(&self, _path: &str) -> bool {
-        self.gl().map_or(false, |g| g.version_string().is_some())
+        self.gl().is_some_and(|g| g.version_string().is_some())
     }
 
     // ---- the game loop ----------------------------------------------------

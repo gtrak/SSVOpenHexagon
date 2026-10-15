@@ -100,8 +100,7 @@ impl View {
         let sy = self.size.y / target_size.y;
         // pixel relative to window centre, in world units (y grows downward).
         let d = Vec2::new((pixel.x - half_w) * sx, (pixel.y - half_h) * sy);
-        let world = self.center + Self::rotate_vec(d, -self.rotation);
-        world
+        self.center + Self::rotate_vec(d, -self.rotation)
     }
 
     /// `RenderTarget::mapCoordsToPixel(world, view)` — forward view transform:

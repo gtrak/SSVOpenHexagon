@@ -34,6 +34,7 @@ pub mod vertex_batch;
 pub mod wall;
 
 pub use clock::HRTimePoint;
+pub use custom_timeline::{CustomTimeline, CustomTimelineHandle, CustomTimelineManager};
 pub use custom_wall::CCustomWall;
 pub use custom_wall_manager::CCustomWallManager;
 pub use level_status::LevelStatus;
@@ -41,4 +42,5 @@ pub use player::CPlayer;
 pub use speed_data::SpeedData;
 pub use status::HexagonGameStatus;
 pub use ticker::Ticker;
+pub use timeline::{Timeline2, Timeline2Runner};
 pub use wall::CWall;

@@ -11,7 +11,7 @@
 //! `mlua::Lua` is not `Sync`; like the C++ context (single stack, no mutex)
 //! this context must be used from one thread at a time.
 
-use crate::convert::{FromLuaValue, IntoLuaValue, PushValue};
+use crate::convert::{FnReturn, FromLuaValue, IntoLuaValue};
 use crate::error::LuaError;
 use crate::metadata::{FnMeta, LuaMetadataProxy};
 use mlua::Value;
@@ -151,94 +151,6 @@ impl LuaContext {
         self.set_path(name, &Value::Table(table))
     }
 
-    /// `addLuaFn` (LuaScripting.cpp:39-53): registers a Rust closure as a
-    /// Lua global `name` and returns the metadata proxy (`.arg` / `.doc`),
-    /// which records the docs entry in the global `LuaMetadata` on drop —
-    /// exactly what the C++ `LuaMetadataProxy` destructor does.
-    ///
-    /// # Exact C++ call semantics (`FunctionToPush::operator()`)
-    ///
-    /// The C++ wrapper checks `lua_gettop(state) < N` where the stack holds
-    /// the callee itself plus its arguments, then reads the slots
-    /// `-N .. -1`. Consequences, all preserved here:
-    ///
-    /// * a call with `N - 2` or fewer arguments raises the Lua error
-    ///   `this function requires at least N parameter(s)` (C++ builds it
-    ///   with `luaL_where` + `lua_concat`; the port omits the location
-    ///   prefix that `luaL_where` would add);
-    /// * a call with exactly `N - 1` arguments makes the last read hit the
-    ///   callee itself, which every C++ `_read` rejects: the Lua error is
-    ///   `Trying to cast a lua variable to an invalid type`;
-    /// * a call with *more* than `N` arguments reads the **last** `N`
-    ///   arguments (stack positions `-N .. -1`), not the first `N`;
-    /// * each argument is converted with the `_read` coercion rules
-    ///   (`FromLuaValue`), so explicit `nil` args read as 0 / 0.0 / false
-    ///   (string: `WrongType`, the deliberate replacement of the C++ UB).
-    ///
-    /// `f` must be `'static` (mlua stores Rust functions in the state).
-    /// Captured state therefore needs `Arc`s or the engine's own
-    /// lifetime-extension pattern; `meta.arg_types` must list exactly
-    /// `Args::COUNT` C++ `typeToStr` spellings (see `FnMeta`).
-    pub fn add_lua_fn<Ret, Args, F>(
-        &self,
-        name: &str,
-        meta: FnMeta,
-        f: F,
-    ) -> Result<LuaMetadataProxy, LuaError>
-    where
-        F: Fn(Args) -> Ret + 'static,
-        Args: ArgTuple,
-        Ret: PushValue,
-    {
-        debug_assert_eq!(
-            meta.arg_types.len(),
-            Args::COUNT,
-            "FnMeta::arg_types must list exactly one entry per closure argument"
-        );
-
-        let func = self
-            .lua
-            .create_function(
-                move |_lua: &mlua::Lua,
-                      values: mlua::MultiValue|
-                      -> mlua::Result<mlua::MultiValue> {
-                    let values: Vec<Value> = values.into();
-                    let count = Args::COUNT;
-                    let nargs = values.len();
-
-                    // C++: `if (lua_gettop(state) < TupledFunction::count)` — the
-                    // callee itself occupies one stack slot. (`count == 0` means
-                    // zero-argument functions: both checks are vacuous.)
-                    if count > 0 && nargs + 1 < count {
-                        return Err(mlua::Error::RuntimeError(format!(
-                            "this function requires at least {count} parameter(s)"
-                        )));
-                    }
-                    // Exactly `count - 1` arguments: the C++ read of slot `-count`
-                    // is the callee itself (userdata) -> WrongTypeException.
-                    if count > 0 && nargs == count - 1 {
-                        return Err(mlua::Error::RuntimeError(
-                            "Trying to cast a lua variable to an invalid type".to_string(),
-                        ));
-                    }
-                    // Extra arguments: C++ reads the last `count` slots
-                    // (`count == 0` reads nothing at all).
-                    let window = if count == 0 {
-                        &values[..0]
-                    } else {
-                        &values[nargs - count..]
-                    };
-                    let args = Args::read_last_n(window)
-                        .map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
-                    f(args).push_value(_lua)
-                },
-            )
-            .map_err(LuaError::from_mlua)?;
-
-        self.write_variable(name, &func)?;
-        Ok(LuaMetadataProxy::new(name, meta.ret, meta.arg_types))
-    }
-
     /// The underlying `mlua::Lua` state (escape hatch for raw Lua API
     /// operations; the single-thread, single-stack usage contract stays the
     /// caller's, exactly like the C++ context's raw `lua_State*`).
@@ -331,533 +243,422 @@ impl Default for LuaContext {
     }
 }
 
+/// The exact C++ `FunctionToPush::operator()` call-frame rules (see
+/// `add_lua_fn`'s docs): the "at least N" count check (the callee occupies
+/// one stack slot), the `N - 1`-argument callee-hit `WrongType` error, and
+/// the last-N argument window for extra arguments. Returns the window the
+/// argument reads operate on (exactly `count` values, or zero for
+/// zero-argument closures).
+fn read_call_window(count: usize, values: &[Value]) -> Result<&[Value], mlua::Error> {
+    let nargs = values.len();
+
+    // C++: `if (lua_gettop(state) < TupledFunction::count)` — the callee
+    // itself occupies one stack slot. (`count == 0` means zero-argument
+    // functions: both checks are vacuous.)
+    if count > 0 && nargs + 1 < count {
+        return Err(mlua::Error::RuntimeError(format!(
+            "this function requires at least {count} parameter(s)"
+        )));
+    }
+    // Exactly `count - 1` arguments: the C++ read of slot `-count` is the
+    // callee itself (userdata) -> WrongTypeException.
+    if count > 0 && nargs == count - 1 {
+        return Err(mlua::Error::RuntimeError(
+            "Trying to cast a lua variable to an invalid type".to_string(),
+        ));
+    }
+    // Extra arguments: C++ reads the last `count` slots (`count == 0` reads
+    // nothing at all).
+    Ok(if count == 0 {
+        &values[..0]
+    } else {
+        &values[nargs - count..]
+    })
+}
+
+/// Take the next value off the front of a call window (the window always
+/// holds exactly the remaining argument count, so this only fails if the
+/// call-frame bookkeeping above is wrong).
+fn take_next(values: &[Value]) -> Result<(&Value, &[Value]), mlua::Error> {
+    values.split_first().ok_or_else(|| {
+        mlua::Error::RuntimeError("this function requires at least 1 parameter(s)".to_string())
+    })
+}
+
+/// Read the next argument of type `A` off the call window, converting it
+/// with the C++ `_read` coercion rules (`FromLuaValue`).
+fn read_arg<A: FromLuaValue>(values: &[Value]) -> Result<(A, &[Value]), mlua::Error> {
+    let (value, rest) = take_next(values)?;
+    Ok((A::from_lua_value(value).map_err(to_lua_error)?, rest))
+}
+
+/// Convert a `LuaError` (argument coercion / fallible-closure error) to the
+/// Lua runtime error the C++ exception propagation produces.
+fn to_lua_error(err: LuaError) -> mlua::Error {
+    mlua::Error::RuntimeError(err.to_string())
+}
+
 // ----------------------------------------------------------------------------
-// `ArgTuple` — registered-function argument extraction (C++ `FnTupleWrapper`
-// + `FunctionToPush` argument reads). The game's largest signature is
+// Registered-function methods, one per arity (C++ `FunctionToPush` spread
+// semantics: the closure is invoked with its N parameters as N separate
+// values, never as one tuple — stable Rust cannot name a generic
+// `Fn(A, B, ...)` for variable N in a trait bound, so the arity is a method
+// parameter instead; the `add_lua_fn!` / `add_lua_fn_raw!` macros dispatch
+// to the right method). The game's largest signature is
 // `cw_setVertexColor4` (17 parameters); arities 0..=17 are provided.
 // ----------------------------------------------------------------------------
 
-use crate::convert::ArgTuple;
+impl LuaContext {
+    /// Create a Rust function in the state (shared by every `add_lua_fn_*`
+    /// / `add_lua_fn_raw_*` method).
+    fn register_fn<F>(&self, f: F) -> Result<mlua::Function, LuaError>
+    where
+        F: Fn(&mlua::Lua, mlua::MultiValue) -> mlua::Result<mlua::MultiValue> + 'static,
+    {
+        self.lua.create_function(f).map_err(LuaError::from_mlua)
+    }
+}
 
-impl ArgTuple for () {
-    const COUNT: usize = 0;
-    fn read_last_n(_values: &[Value]) -> Result<Self, LuaError> {
+/// Zero-argument closures (C++ `TupledFunction` with `count == 0`: every
+/// call arity is accepted, nothing is read).
+impl LuaContext {
+    /// `add_lua_fn` for a zero-argument closure (see the `add_lua_fn!`
+    /// macro).
+    pub fn add_lua_fn_0<Ret, F>(
+        &self,
+        name: &str,
+        meta: FnMeta,
+        f: F,
+    ) -> Result<LuaMetadataProxy, LuaError>
+    where
+        F: Fn() -> Ret + 'static,
+        Ret: FnReturn,
+    {
+        debug_assert_eq!(
+            meta.arg_types.len(),
+            0,
+            "FnMeta::arg_types must list exactly one entry per closure argument"
+        );
+        let func = self
+            .register_fn(move |_lua: &mlua::Lua, _values: mlua::MultiValue| f().to_multi(_lua))?;
+        self.write_variable(name, &func)?;
+        Ok(LuaMetadataProxy::new(name, meta.ret, meta.arg_types))
+    }
+
+    /// `add_lua_fn_raw` for a zero-argument closure (see the
+    /// `add_lua_fn_raw!` macro).
+    pub fn add_lua_fn_raw_0<Ret, F>(&self, name: &str, f: F) -> Result<(), LuaError>
+    where
+        F: Fn() -> Ret + 'static,
+        Ret: FnReturn,
+    {
+        let func = self
+            .register_fn(move |_lua: &mlua::Lua, _values: mlua::MultiValue| f().to_multi(_lua))?;
+        self.write_variable(name, &func)?;
         Ok(())
     }
 }
 
-// Single-argument functions may take the scalar type directly (e.g.
-// `|a: i32|`): COUNT 1, read the same single slot as `(A0,)`.
-macro_rules! impl_arg_tuple_scalar {
-    ($($t:ty),* $(,)?) => {
-        $(impl ArgTuple for $t {
-            const COUNT: usize = 1;
-            fn read_last_n(values: &[Value]) -> Result<Self, LuaError> {
-                <Self as FromLuaValue>::from_lua_value(&values[0])
-            }
-        })*
+// One method pair per arity (1..=17); `$t` are the C++ argument types,
+// `$v` the local argument bindings.
+macro_rules! impl_lua_fn_arity {
+    ($fn_name:ident, $fn_name_raw:ident, $n:literal; $($t:ident => $v:ident),*) => {
+        /// `add_lua_fn` for a `$n`-argument spread closure (see the
+        /// `add_lua_fn!` macro).
+        pub fn $fn_name<$($t),*, Ret, F>(
+            &self,
+            name: &str,
+            meta: FnMeta,
+            f: F,
+        ) -> Result<LuaMetadataProxy, LuaError>
+        where
+            $($t: FromLuaValue,)*
+            F: Fn($($t),*) -> Ret + 'static,
+            Ret: FnReturn,
+        {
+            debug_assert_eq!(
+                meta.arg_types.len(),
+                $n,
+                "FnMeta::arg_types must list exactly one entry per closure argument"
+            );
+            let func = self.register_fn(
+                move |_lua: &mlua::Lua,
+                      values: mlua::MultiValue| {
+                    let values: Vec<Value> = values.into();
+                    let window = read_call_window($n, &values)?;
+                    $(
+                        let ($v, window) = read_arg::<$t>(window)?;
+                    )*
+                    _ = window;
+                    f($($v),*).to_multi(_lua)
+                },
+            )?;
+            self.write_variable(name, &func)?;
+            Ok(LuaMetadataProxy::new(name, meta.ret, meta.arg_types))
+        }
+
+        /// `add_lua_fn_raw` for a `$n`-argument spread closure (see the
+        /// `add_lua_fn_raw!` macro).
+        pub fn $fn_name_raw<$($t),*, Ret, F>(&self, name: &str, f: F) -> Result<(), LuaError>
+        where
+            $($t: FromLuaValue,)*
+            F: Fn($($t),*) -> Ret + 'static,
+            Ret: FnReturn,
+        {
+            let func = self.register_fn(
+                move |_lua: &mlua::Lua,
+                      values: mlua::MultiValue| {
+                    let values: Vec<Value> = values.into();
+                    let window = read_call_window($n, &values)?;
+                    $(
+                        let ($v, window) = read_arg::<$t>(window)?;
+                    )*
+                    _ = window;
+                    f($($v),*).to_multi(_lua)
+                },
+            )?;
+            self.write_variable(name, &func)?;
+            Ok(())
+        }
     };
 }
-impl_arg_tuple_scalar!(bool, i8, i16, i32, i64, isize, u8, u16, u32, u64, usize, f32, f64, String);
 
-// One impl per arity (the game's largest signature is `cw_setVertexColor4`,
-// 17 parameters). Element reads use literal local names so the tuple
-// construction stays in non-fragment positions.
-
-impl<A0: FromLuaValue> ArgTuple for (A0,) {
-    const COUNT: usize = 1;
-    fn read_last_n(values: &[Value]) -> Result<Self, LuaError> {
-        let v0 = <A0 as FromLuaValue>::from_lua_value(&values[0])?;
-        Ok((v0,))
-    }
+impl LuaContext {
+    impl_lua_fn_arity!(add_lua_fn_1, add_lua_fn_raw_1, 1; A0 => a0);
+    impl_lua_fn_arity!(add_lua_fn_2, add_lua_fn_raw_2, 2; A0 => a0, A1 => a1);
+    impl_lua_fn_arity!(add_lua_fn_3, add_lua_fn_raw_3, 3; A0 => a0, A1 => a1, A2 => a2);
+    impl_lua_fn_arity!(add_lua_fn_4, add_lua_fn_raw_4, 4; A0 => a0, A1 => a1, A2 => a2, A3 => a3);
+    impl_lua_fn_arity!(add_lua_fn_5, add_lua_fn_raw_5, 5; A0 => a0, A1 => a1, A2 => a2, A3 => a3, A4 => a4);
+    impl_lua_fn_arity!(add_lua_fn_6, add_lua_fn_raw_6, 6; A0 => a0, A1 => a1, A2 => a2, A3 => a3, A4 => a4, A5 => a5);
+    impl_lua_fn_arity!(add_lua_fn_7, add_lua_fn_raw_7, 7; A0 => a0, A1 => a1, A2 => a2, A3 => a3, A4 => a4, A5 => a5, A6 => a6);
+    impl_lua_fn_arity!(
+        add_lua_fn_8, add_lua_fn_raw_8, 8;
+        A0 => a0, A1 => a1, A2 => a2, A3 => a3, A4 => a4, A5 => a5, A6 => a6, A7 => a7
+    );
+    impl_lua_fn_arity!(
+        add_lua_fn_9, add_lua_fn_raw_9, 9;
+        A0 => a0, A1 => a1, A2 => a2, A3 => a3, A4 => a4, A5 => a5, A6 => a6, A7 => a7, A8 => a8
+    );
+    impl_lua_fn_arity!(
+        add_lua_fn_10, add_lua_fn_raw_10, 10;
+        A0 => a0, A1 => a1, A2 => a2, A3 => a3, A4 => a4, A5 => a5, A6 => a6, A7 => a7, A8 => a8, A9 => a9
+    );
+    impl_lua_fn_arity!(
+        add_lua_fn_11, add_lua_fn_raw_11, 11;
+        A0 => a0, A1 => a1, A2 => a2, A3 => a3, A4 => a4, A5 => a5, A6 => a6, A7 => a7, A8 => a8, A9 => a9, A10 => a10
+    );
+    impl_lua_fn_arity!(
+        add_lua_fn_12, add_lua_fn_raw_12, 12;
+        A0 => a0, A1 => a1, A2 => a2, A3 => a3, A4 => a4, A5 => a5, A6 => a6, A7 => a7, A8 => a8, A9 => a9, A10 => a10, A11 => a11
+    );
+    impl_lua_fn_arity!(
+        add_lua_fn_13, add_lua_fn_raw_13, 13;
+        A0 => a0, A1 => a1, A2 => a2, A3 => a3, A4 => a4, A5 => a5, A6 => a6, A7 => a7, A8 => a8, A9 => a9, A10 => a10, A11 => a11, A12 => a12
+    );
+    impl_lua_fn_arity!(
+        add_lua_fn_14, add_lua_fn_raw_14, 14;
+        A0 => a0, A1 => a1, A2 => a2, A3 => a3, A4 => a4, A5 => a5, A6 => a6, A7 => a7, A8 => a8, A9 => a9, A10 => a10, A11 => a11, A12 => a12, A13 => a13
+    );
+    impl_lua_fn_arity!(
+        add_lua_fn_15, add_lua_fn_raw_15, 15;
+        A0 => a0, A1 => a1, A2 => a2, A3 => a3, A4 => a4, A5 => a5, A6 => a6, A7 => a7, A8 => a8, A9 => a9, A10 => a10, A11 => a11, A12 => a12, A13 => a13, A14 => a14
+    );
+    impl_lua_fn_arity!(
+        add_lua_fn_16, add_lua_fn_raw_16, 16;
+        A0 => a0, A1 => a1, A2 => a2, A3 => a3, A4 => a4, A5 => a5, A6 => a6, A7 => a7, A8 => a8, A9 => a9, A10 => a10, A11 => a11, A12 => a12, A13 => a13, A14 => a14, A15 => a15
+    );
+    impl_lua_fn_arity!(
+        add_lua_fn_17, add_lua_fn_raw_17, 17;
+        A0 => a0, A1 => a1, A2 => a2, A3 => a3, A4 => a4, A5 => a5, A6 => a6, A7 => a7, A8 => a8, A9 => a9, A10 => a10, A11 => a11, A12 => a12, A13 => a13, A14 => a14, A15 => a15, A16 => a16
+    );
 }
 
-impl<A0: FromLuaValue, A1: FromLuaValue> ArgTuple for (A0, A1) {
-    const COUNT: usize = 2;
-    fn read_last_n(values: &[Value]) -> Result<Self, LuaError> {
-        let v0 = <A0 as FromLuaValue>::from_lua_value(&values[0])?;
-        let v1 = <A1 as FromLuaValue>::from_lua_value(&values[1])?;
-        Ok((v0, v1))
-    }
+// ----------------------------------------------------------------------------
+// `add_lua_fn!` / `add_lua_fn_try!` / `add_lua_fn_raw!` — the C++ `addLuaFn`
+// registration (LuaScripting.cpp:39-53), dispatching the spread-argument
+// closure to the matching arity method. A registration:
+// (1) creates the Rust function in the state, (2) stores it under the global
+// `name` (plain `writeVariable`), and (3) for `add_lua_fn!` /
+// `add_lua_fn_try!`, returns the metadata proxy (`.arg` / `.doc`), which
+// records the docs entry in the global `LuaMetadata` on drop — exactly what
+// the C++ `LuaMetadataProxy` destructor does.
+//
+// # Spread arguments (C++ `FunctionToPush` semantics)
+//
+// The closure takes its parameters as **separate** closure arguments,
+// exactly like the C++ `TupledFunction` callable:
+//
+//     add_lua_fn!(ctx, "f", FnMeta { ret: "void", arg_types: &[] },
+//         move || { /* zero arguments */ });
+//     add_lua_fn!(ctx, "g", FnMeta { ret: "void", arg_types: &["std::string"] },
+//         move |x: String| { /* one argument */ });
+//     add_lua_fn!(ctx, "h", FnMeta { ret: "void", arg_types: &["int", "float"] },
+//         move |a: i32, b: f32| { /* two arguments */ });
+//
+// A closure returning `Result<T, LuaError>` is accepted too (use
+// `add_lua_fn_try!` for those; it documents intent — the call semantics are
+// identical); an `Err` aborts the enclosing protected call as a Lua runtime
+// error.
+//
+// # Exact C++ call semantics (`FunctionToPush::operator()`)
+//
+// The C++ wrapper checks `lua_gettop(state) < N` where the stack holds the
+// callee itself plus its arguments, then reads the slots `-N .. -1`.
+// Consequences, all preserved (see `read_call_window`):
+//
+// * a call with `N - 2` or fewer arguments raises the Lua error
+//   `this function requires at least N parameter(s)` (C++ builds it with
+//   `luaL_where` + `lua_concat`; the port omits the location prefix);
+// * a call with exactly `N - 1` arguments makes the last read hit the callee
+//   itself, which every C++ `_read` rejects: the Lua error is `Trying to
+//   cast a lua variable to an invalid type`;
+// * a call with *more* than `N` arguments reads the **last** `N` arguments
+//   (stack positions `-N .. -1`), not the first `N`;
+// * each argument is converted with the `_read` coercion rules
+//   (`FromLuaValue`), so explicit `nil` args read as 0 / 0.0 / false
+//   (string: `WrongType`, the deliberate replacement of the C++ UB).
+//
+// The closure must be `'static` (mlua stores Rust functions in the state).
+// Captured state therefore needs `Arc`s or the engine's own
+// lifetime-extension pattern; `meta.arg_types` must list exactly one C++
+// `typeToStr` spelling per closure argument (see `FnMeta`).
+// ----------------------------------------------------------------------------
+
+#[macro_export]
+macro_rules! add_lua_fn {
+    // strip `move` and re-dispatch
+    ($ctx:expr, $name:expr, $meta:expr, move $($tail:tt)*) => {
+        $crate::add_lua_fn!($ctx, $name, $meta, $($tail)*)
+    };
+    ($ctx:expr, $name:expr, $meta:expr, || $($body:tt)*) => {
+        $ctx.add_lua_fn_0($name, $meta, move || $($body)*)
+    };
+    ($ctx:expr, $name:expr, $meta:expr, |$a0:ident: $t0:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_1($name, $meta, move |$a0: $t0| $($body)*)
+    };
+    ($ctx:expr, $name:expr, $meta:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_2($name, $meta, move |$a0: $t0, $a1: $t1| $($body)*)
+    };
+    ($ctx:expr, $name:expr, $meta:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_3($name, $meta, move |$a0: $t0, $a1: $t1, $a2: $t2| $($body)*)
+    };
+    ($ctx:expr, $name:expr, $meta:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_4($name, $meta, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3| $($body)*)
+    };
+    ($ctx:expr, $name:expr, $meta:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty, $a4:ident: $t4:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_5($name, $meta, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3, $a4: $t4| $($body)*)
+    };
+    ($ctx:expr, $name:expr, $meta:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty, $a4:ident: $t4:ty, $a5:ident: $t5:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_6($name, $meta, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3, $a4: $t4, $a5: $t5| $($body)*)
+    };
+    ($ctx:expr, $name:expr, $meta:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty, $a4:ident: $t4:ty, $a5:ident: $t5:ty, $a6:ident: $t6:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_7($name, $meta, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3, $a4: $t4, $a5: $t5, $a6: $t6| $($body)*)
+    };
+    ($ctx:expr, $name:expr, $meta:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty, $a4:ident: $t4:ty, $a5:ident: $t5:ty, $a6:ident: $t6:ty, $a7:ident: $t7:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_8($name, $meta, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3, $a4: $t4, $a5: $t5, $a6: $t6, $a7: $t7| $($body)*)
+    };
+    ($ctx:expr, $name:expr, $meta:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty, $a4:ident: $t4:ty, $a5:ident: $t5:ty, $a6:ident: $t6:ty, $a7:ident: $t7:ty, $a8:ident: $t8:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_9($name, $meta, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3, $a4: $t4, $a5: $t5, $a6: $t6, $a7: $t7, $a8: $t8| $($body)*)
+    };
+    ($ctx:expr, $name:expr, $meta:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty, $a4:ident: $t4:ty, $a5:ident: $t5:ty, $a6:ident: $t6:ty, $a7:ident: $t7:ty, $a8:ident: $t8:ty, $a9:ident: $t9:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_10($name, $meta, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3, $a4: $t4, $a5: $t5, $a6: $t6, $a7: $t7, $a8: $t8, $a9: $t9| $($body)*)
+    };
+    ($ctx:expr, $name:expr, $meta:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty, $a4:ident: $t4:ty, $a5:ident: $t5:ty, $a6:ident: $t6:ty, $a7:ident: $t7:ty, $a8:ident: $t8:ty, $a9:ident: $t9:ty, $a10:ident: $t10:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_11($name, $meta, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3, $a4: $t4, $a5: $t5, $a6: $t6, $a7: $t7, $a8: $t8, $a9: $t9, $a10: $t10| $($body)*)
+    };
+    ($ctx:expr, $name:expr, $meta:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty, $a4:ident: $t4:ty, $a5:ident: $t5:ty, $a6:ident: $t6:ty, $a7:ident: $t7:ty, $a8:ident: $t8:ty, $a9:ident: $t9:ty, $a10:ident: $t10:ty, $a11:ident: $t11:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_12($name, $meta, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3, $a4: $t4, $a5: $t5, $a6: $t6, $a7: $t7, $a8: $t8, $a9: $t9, $a10: $t10, $a11: $t11| $($body)*)
+    };
+    ($ctx:expr, $name:expr, $meta:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty, $a4:ident: $t4:ty, $a5:ident: $t5:ty, $a6:ident: $t6:ty, $a7:ident: $t7:ty, $a8:ident: $t8:ty, $a9:ident: $t9:ty, $a10:ident: $t10:ty, $a11:ident: $t11:ty, $a12:ident: $t12:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_13($name, $meta, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3, $a4: $t4, $a5: $t5, $a6: $t6, $a7: $t7, $a8: $t8, $a9: $t9, $a10: $t10, $a11: $t11, $a12: $t12| $($body)*)
+    };
+    ($ctx:expr, $name:expr, $meta:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty, $a4:ident: $t4:ty, $a5:ident: $t5:ty, $a6:ident: $t6:ty, $a7:ident: $t7:ty, $a8:ident: $t8:ty, $a9:ident: $t9:ty, $a10:ident: $t10:ty, $a11:ident: $t11:ty, $a12:ident: $t12:ty, $a13:ident: $t13:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_14($name, $meta, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3, $a4: $t4, $a5: $t5, $a6: $t6, $a7: $t7, $a8: $t8, $a9: $t9, $a10: $t10, $a11: $t11, $a12: $t12, $a13: $t13| $($body)*)
+    };
+    ($ctx:expr, $name:expr, $meta:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty, $a4:ident: $t4:ty, $a5:ident: $t5:ty, $a6:ident: $t6:ty, $a7:ident: $t7:ty, $a8:ident: $t8:ty, $a9:ident: $t9:ty, $a10:ident: $t10:ty, $a11:ident: $t11:ty, $a12:ident: $t12:ty, $a13:ident: $t13:ty, $a14:ident: $t14:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_15($name, $meta, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3, $a4: $t4, $a5: $t5, $a6: $t6, $a7: $t7, $a8: $t8, $a9: $t9, $a10: $t10, $a11: $t11, $a12: $t12, $a13: $t13, $a14: $t14| $($body)*)
+    };
+    ($ctx:expr, $name:expr, $meta:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty, $a4:ident: $t4:ty, $a5:ident: $t5:ty, $a6:ident: $t6:ty, $a7:ident: $t7:ty, $a8:ident: $t8:ty, $a9:ident: $t9:ty, $a10:ident: $t10:ty, $a11:ident: $t11:ty, $a12:ident: $t12:ty, $a13:ident: $t13:ty, $a14:ident: $t14:ty, $a15:ident: $t15:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_16($name, $meta, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3, $a4: $t4, $a5: $t5, $a6: $t6, $a7: $t7, $a8: $t8, $a9: $t9, $a10: $t10, $a11: $t11, $a12: $t12, $a13: $t13, $a14: $t14, $a15: $t15| $($body)*)
+    };
+    ($ctx:expr, $name:expr, $meta:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty, $a4:ident: $t4:ty, $a5:ident: $t5:ty, $a6:ident: $t6:ty, $a7:ident: $t7:ty, $a8:ident: $t8:ty, $a9:ident: $t9:ty, $a10:ident: $t10:ty, $a11:ident: $t11:ty, $a12:ident: $t12:ty, $a13:ident: $t13:ty, $a14:ident: $t14:ty, $a15:ident: $t15:ty, $a16:ident: $t16:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_17($name, $meta, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3, $a4: $t4, $a5: $t5, $a6: $t6, $a7: $t7, $a8: $t8, $a9: $t9, $a10: $t10, $a11: $t11, $a12: $t12, $a13: $t13, $a14: $t14, $a15: $t15, $a16: $t16| $($body)*)
+    };
 }
 
-impl<A0: FromLuaValue, A1: FromLuaValue, A2: FromLuaValue> ArgTuple for (A0, A1, A2) {
-    const COUNT: usize = 3;
-    fn read_last_n(values: &[Value]) -> Result<Self, LuaError> {
-        let v0 = <A0 as FromLuaValue>::from_lua_value(&values[0])?;
-        let v1 = <A1 as FromLuaValue>::from_lua_value(&values[1])?;
-        let v2 = <A2 as FromLuaValue>::from_lua_value(&values[2])?;
-        Ok((v0, v1, v2))
-    }
+/// `add_lua_fn!` for fallible closures (the port of C++ lambdas that can
+/// throw — e.g. `u_execDependencyScript` dependency validation, `a_setMusic`
+/// asset lookup, `s_setStyle`): the closure returns
+/// `Result<Ret, LuaError>`, and an `Err` aborts the enclosing protected
+/// call as a Lua runtime error (exactly what the plain `add_lua_fn!` does
+/// too — this spelling documents intent and keeps the call sites readable).
+#[macro_export]
+macro_rules! add_lua_fn_try {
+    ($($args:tt)*) => {
+        $crate::add_lua_fn!($($args)*)
+    };
 }
 
-impl<A0: FromLuaValue, A1: FromLuaValue, A2: FromLuaValue, A3: FromLuaValue> ArgTuple
-    for (A0, A1, A2, A3)
-{
-    const COUNT: usize = 4;
-    fn read_last_n(values: &[Value]) -> Result<Self, LuaError> {
-        let v0 = <A0 as FromLuaValue>::from_lua_value(&values[0])?;
-        let v1 = <A1 as FromLuaValue>::from_lua_value(&values[1])?;
-        let v2 = <A2 as FromLuaValue>::from_lua_value(&values[2])?;
-        let v3 = <A3 as FromLuaValue>::from_lua_value(&values[3])?;
-        Ok((v0, v1, v2, v3))
-    }
-}
-
-impl<A0: FromLuaValue, A1: FromLuaValue, A2: FromLuaValue, A3: FromLuaValue, A4: FromLuaValue>
-    ArgTuple for (A0, A1, A2, A3, A4)
-{
-    const COUNT: usize = 5;
-    fn read_last_n(values: &[Value]) -> Result<Self, LuaError> {
-        let v0 = <A0 as FromLuaValue>::from_lua_value(&values[0])?;
-        let v1 = <A1 as FromLuaValue>::from_lua_value(&values[1])?;
-        let v2 = <A2 as FromLuaValue>::from_lua_value(&values[2])?;
-        let v3 = <A3 as FromLuaValue>::from_lua_value(&values[3])?;
-        let v4 = <A4 as FromLuaValue>::from_lua_value(&values[4])?;
-        Ok((v0, v1, v2, v3, v4))
-    }
-}
-
-impl<
-        A0: FromLuaValue,
-        A1: FromLuaValue,
-        A2: FromLuaValue,
-        A3: FromLuaValue,
-        A4: FromLuaValue,
-        A5: FromLuaValue,
-    > ArgTuple for (A0, A1, A2, A3, A4, A5)
-{
-    const COUNT: usize = 6;
-    fn read_last_n(values: &[Value]) -> Result<Self, LuaError> {
-        let v0 = <A0 as FromLuaValue>::from_lua_value(&values[0])?;
-        let v1 = <A1 as FromLuaValue>::from_lua_value(&values[1])?;
-        let v2 = <A2 as FromLuaValue>::from_lua_value(&values[2])?;
-        let v3 = <A3 as FromLuaValue>::from_lua_value(&values[3])?;
-        let v4 = <A4 as FromLuaValue>::from_lua_value(&values[4])?;
-        let v5 = <A5 as FromLuaValue>::from_lua_value(&values[5])?;
-        Ok((v0, v1, v2, v3, v4, v5))
-    }
-}
-
-impl<
-        A0: FromLuaValue,
-        A1: FromLuaValue,
-        A2: FromLuaValue,
-        A3: FromLuaValue,
-        A4: FromLuaValue,
-        A5: FromLuaValue,
-        A6: FromLuaValue,
-    > ArgTuple for (A0, A1, A2, A3, A4, A5, A6)
-{
-    const COUNT: usize = 7;
-    fn read_last_n(values: &[Value]) -> Result<Self, LuaError> {
-        let v0 = <A0 as FromLuaValue>::from_lua_value(&values[0])?;
-        let v1 = <A1 as FromLuaValue>::from_lua_value(&values[1])?;
-        let v2 = <A2 as FromLuaValue>::from_lua_value(&values[2])?;
-        let v3 = <A3 as FromLuaValue>::from_lua_value(&values[3])?;
-        let v4 = <A4 as FromLuaValue>::from_lua_value(&values[4])?;
-        let v5 = <A5 as FromLuaValue>::from_lua_value(&values[5])?;
-        let v6 = <A6 as FromLuaValue>::from_lua_value(&values[6])?;
-        Ok((v0, v1, v2, v3, v4, v5, v6))
-    }
-}
-
-impl<
-        A0: FromLuaValue,
-        A1: FromLuaValue,
-        A2: FromLuaValue,
-        A3: FromLuaValue,
-        A4: FromLuaValue,
-        A5: FromLuaValue,
-        A6: FromLuaValue,
-        A7: FromLuaValue,
-    > ArgTuple for (A0, A1, A2, A3, A4, A5, A6, A7)
-{
-    const COUNT: usize = 8;
-    fn read_last_n(values: &[Value]) -> Result<Self, LuaError> {
-        let v0 = <A0 as FromLuaValue>::from_lua_value(&values[0])?;
-        let v1 = <A1 as FromLuaValue>::from_lua_value(&values[1])?;
-        let v2 = <A2 as FromLuaValue>::from_lua_value(&values[2])?;
-        let v3 = <A3 as FromLuaValue>::from_lua_value(&values[3])?;
-        let v4 = <A4 as FromLuaValue>::from_lua_value(&values[4])?;
-        let v5 = <A5 as FromLuaValue>::from_lua_value(&values[5])?;
-        let v6 = <A6 as FromLuaValue>::from_lua_value(&values[6])?;
-        let v7 = <A7 as FromLuaValue>::from_lua_value(&values[7])?;
-        Ok((v0, v1, v2, v3, v4, v5, v6, v7))
-    }
-}
-
-impl<
-        A0: FromLuaValue,
-        A1: FromLuaValue,
-        A2: FromLuaValue,
-        A3: FromLuaValue,
-        A4: FromLuaValue,
-        A5: FromLuaValue,
-        A6: FromLuaValue,
-        A7: FromLuaValue,
-        A8: FromLuaValue,
-    > ArgTuple for (A0, A1, A2, A3, A4, A5, A6, A7, A8)
-{
-    const COUNT: usize = 9;
-    fn read_last_n(values: &[Value]) -> Result<Self, LuaError> {
-        let v0 = <A0 as FromLuaValue>::from_lua_value(&values[0])?;
-        let v1 = <A1 as FromLuaValue>::from_lua_value(&values[1])?;
-        let v2 = <A2 as FromLuaValue>::from_lua_value(&values[2])?;
-        let v3 = <A3 as FromLuaValue>::from_lua_value(&values[3])?;
-        let v4 = <A4 as FromLuaValue>::from_lua_value(&values[4])?;
-        let v5 = <A5 as FromLuaValue>::from_lua_value(&values[5])?;
-        let v6 = <A6 as FromLuaValue>::from_lua_value(&values[6])?;
-        let v7 = <A7 as FromLuaValue>::from_lua_value(&values[7])?;
-        let v8 = <A8 as FromLuaValue>::from_lua_value(&values[8])?;
-        Ok((v0, v1, v2, v3, v4, v5, v6, v7, v8))
-    }
-}
-
-impl<
-        A0: FromLuaValue,
-        A1: FromLuaValue,
-        A2: FromLuaValue,
-        A3: FromLuaValue,
-        A4: FromLuaValue,
-        A5: FromLuaValue,
-        A6: FromLuaValue,
-        A7: FromLuaValue,
-        A8: FromLuaValue,
-        A9: FromLuaValue,
-    > ArgTuple for (A0, A1, A2, A3, A4, A5, A6, A7, A8, A9)
-{
-    const COUNT: usize = 10;
-    fn read_last_n(values: &[Value]) -> Result<Self, LuaError> {
-        let v0 = <A0 as FromLuaValue>::from_lua_value(&values[0])?;
-        let v1 = <A1 as FromLuaValue>::from_lua_value(&values[1])?;
-        let v2 = <A2 as FromLuaValue>::from_lua_value(&values[2])?;
-        let v3 = <A3 as FromLuaValue>::from_lua_value(&values[3])?;
-        let v4 = <A4 as FromLuaValue>::from_lua_value(&values[4])?;
-        let v5 = <A5 as FromLuaValue>::from_lua_value(&values[5])?;
-        let v6 = <A6 as FromLuaValue>::from_lua_value(&values[6])?;
-        let v7 = <A7 as FromLuaValue>::from_lua_value(&values[7])?;
-        let v8 = <A8 as FromLuaValue>::from_lua_value(&values[8])?;
-        let v9 = <A9 as FromLuaValue>::from_lua_value(&values[9])?;
-        Ok((v0, v1, v2, v3, v4, v5, v6, v7, v8, v9))
-    }
-}
-
-impl<
-        A0: FromLuaValue,
-        A1: FromLuaValue,
-        A2: FromLuaValue,
-        A3: FromLuaValue,
-        A4: FromLuaValue,
-        A5: FromLuaValue,
-        A6: FromLuaValue,
-        A7: FromLuaValue,
-        A8: FromLuaValue,
-        A9: FromLuaValue,
-        A10: FromLuaValue,
-    > ArgTuple for (A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10)
-{
-    const COUNT: usize = 11;
-    fn read_last_n(values: &[Value]) -> Result<Self, LuaError> {
-        let v0 = <A0 as FromLuaValue>::from_lua_value(&values[0])?;
-        let v1 = <A1 as FromLuaValue>::from_lua_value(&values[1])?;
-        let v2 = <A2 as FromLuaValue>::from_lua_value(&values[2])?;
-        let v3 = <A3 as FromLuaValue>::from_lua_value(&values[3])?;
-        let v4 = <A4 as FromLuaValue>::from_lua_value(&values[4])?;
-        let v5 = <A5 as FromLuaValue>::from_lua_value(&values[5])?;
-        let v6 = <A6 as FromLuaValue>::from_lua_value(&values[6])?;
-        let v7 = <A7 as FromLuaValue>::from_lua_value(&values[7])?;
-        let v8 = <A8 as FromLuaValue>::from_lua_value(&values[8])?;
-        let v9 = <A9 as FromLuaValue>::from_lua_value(&values[9])?;
-        let v10 = <A10 as FromLuaValue>::from_lua_value(&values[10])?;
-        Ok((v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10))
-    }
-}
-
-impl<
-        A0: FromLuaValue,
-        A1: FromLuaValue,
-        A2: FromLuaValue,
-        A3: FromLuaValue,
-        A4: FromLuaValue,
-        A5: FromLuaValue,
-        A6: FromLuaValue,
-        A7: FromLuaValue,
-        A8: FromLuaValue,
-        A9: FromLuaValue,
-        A10: FromLuaValue,
-        A11: FromLuaValue,
-    > ArgTuple for (A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11)
-{
-    const COUNT: usize = 12;
-    fn read_last_n(values: &[Value]) -> Result<Self, LuaError> {
-        let v0 = <A0 as FromLuaValue>::from_lua_value(&values[0])?;
-        let v1 = <A1 as FromLuaValue>::from_lua_value(&values[1])?;
-        let v2 = <A2 as FromLuaValue>::from_lua_value(&values[2])?;
-        let v3 = <A3 as FromLuaValue>::from_lua_value(&values[3])?;
-        let v4 = <A4 as FromLuaValue>::from_lua_value(&values[4])?;
-        let v5 = <A5 as FromLuaValue>::from_lua_value(&values[5])?;
-        let v6 = <A6 as FromLuaValue>::from_lua_value(&values[6])?;
-        let v7 = <A7 as FromLuaValue>::from_lua_value(&values[7])?;
-        let v8 = <A8 as FromLuaValue>::from_lua_value(&values[8])?;
-        let v9 = <A9 as FromLuaValue>::from_lua_value(&values[9])?;
-        let v10 = <A10 as FromLuaValue>::from_lua_value(&values[10])?;
-        let v11 = <A11 as FromLuaValue>::from_lua_value(&values[11])?;
-        Ok((v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11))
-    }
-}
-
-impl<
-        A0: FromLuaValue,
-        A1: FromLuaValue,
-        A2: FromLuaValue,
-        A3: FromLuaValue,
-        A4: FromLuaValue,
-        A5: FromLuaValue,
-        A6: FromLuaValue,
-        A7: FromLuaValue,
-        A8: FromLuaValue,
-        A9: FromLuaValue,
-        A10: FromLuaValue,
-        A11: FromLuaValue,
-        A12: FromLuaValue,
-    > ArgTuple for (A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12)
-{
-    const COUNT: usize = 13;
-    fn read_last_n(values: &[Value]) -> Result<Self, LuaError> {
-        let v0 = <A0 as FromLuaValue>::from_lua_value(&values[0])?;
-        let v1 = <A1 as FromLuaValue>::from_lua_value(&values[1])?;
-        let v2 = <A2 as FromLuaValue>::from_lua_value(&values[2])?;
-        let v3 = <A3 as FromLuaValue>::from_lua_value(&values[3])?;
-        let v4 = <A4 as FromLuaValue>::from_lua_value(&values[4])?;
-        let v5 = <A5 as FromLuaValue>::from_lua_value(&values[5])?;
-        let v6 = <A6 as FromLuaValue>::from_lua_value(&values[6])?;
-        let v7 = <A7 as FromLuaValue>::from_lua_value(&values[7])?;
-        let v8 = <A8 as FromLuaValue>::from_lua_value(&values[8])?;
-        let v9 = <A9 as FromLuaValue>::from_lua_value(&values[9])?;
-        let v10 = <A10 as FromLuaValue>::from_lua_value(&values[10])?;
-        let v11 = <A11 as FromLuaValue>::from_lua_value(&values[11])?;
-        let v12 = <A12 as FromLuaValue>::from_lua_value(&values[12])?;
-        Ok((v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12))
-    }
-}
-
-impl<
-        A0: FromLuaValue,
-        A1: FromLuaValue,
-        A2: FromLuaValue,
-        A3: FromLuaValue,
-        A4: FromLuaValue,
-        A5: FromLuaValue,
-        A6: FromLuaValue,
-        A7: FromLuaValue,
-        A8: FromLuaValue,
-        A9: FromLuaValue,
-        A10: FromLuaValue,
-        A11: FromLuaValue,
-        A12: FromLuaValue,
-        A13: FromLuaValue,
-    > ArgTuple for (A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13)
-{
-    const COUNT: usize = 14;
-    fn read_last_n(values: &[Value]) -> Result<Self, LuaError> {
-        let v0 = <A0 as FromLuaValue>::from_lua_value(&values[0])?;
-        let v1 = <A1 as FromLuaValue>::from_lua_value(&values[1])?;
-        let v2 = <A2 as FromLuaValue>::from_lua_value(&values[2])?;
-        let v3 = <A3 as FromLuaValue>::from_lua_value(&values[3])?;
-        let v4 = <A4 as FromLuaValue>::from_lua_value(&values[4])?;
-        let v5 = <A5 as FromLuaValue>::from_lua_value(&values[5])?;
-        let v6 = <A6 as FromLuaValue>::from_lua_value(&values[6])?;
-        let v7 = <A7 as FromLuaValue>::from_lua_value(&values[7])?;
-        let v8 = <A8 as FromLuaValue>::from_lua_value(&values[8])?;
-        let v9 = <A9 as FromLuaValue>::from_lua_value(&values[9])?;
-        let v10 = <A10 as FromLuaValue>::from_lua_value(&values[10])?;
-        let v11 = <A11 as FromLuaValue>::from_lua_value(&values[11])?;
-        let v12 = <A12 as FromLuaValue>::from_lua_value(&values[12])?;
-        let v13 = <A13 as FromLuaValue>::from_lua_value(&values[13])?;
-        Ok((v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13))
-    }
-}
-
-impl<
-        A0: FromLuaValue,
-        A1: FromLuaValue,
-        A2: FromLuaValue,
-        A3: FromLuaValue,
-        A4: FromLuaValue,
-        A5: FromLuaValue,
-        A6: FromLuaValue,
-        A7: FromLuaValue,
-        A8: FromLuaValue,
-        A9: FromLuaValue,
-        A10: FromLuaValue,
-        A11: FromLuaValue,
-        A12: FromLuaValue,
-        A13: FromLuaValue,
-        A14: FromLuaValue,
-    > ArgTuple
-    for (
-        A0,
-        A1,
-        A2,
-        A3,
-        A4,
-        A5,
-        A6,
-        A7,
-        A8,
-        A9,
-        A10,
-        A11,
-        A12,
-        A13,
-        A14,
-    )
-{
-    const COUNT: usize = 15;
-    fn read_last_n(values: &[Value]) -> Result<Self, LuaError> {
-        let v0 = <A0 as FromLuaValue>::from_lua_value(&values[0])?;
-        let v1 = <A1 as FromLuaValue>::from_lua_value(&values[1])?;
-        let v2 = <A2 as FromLuaValue>::from_lua_value(&values[2])?;
-        let v3 = <A3 as FromLuaValue>::from_lua_value(&values[3])?;
-        let v4 = <A4 as FromLuaValue>::from_lua_value(&values[4])?;
-        let v5 = <A5 as FromLuaValue>::from_lua_value(&values[5])?;
-        let v6 = <A6 as FromLuaValue>::from_lua_value(&values[6])?;
-        let v7 = <A7 as FromLuaValue>::from_lua_value(&values[7])?;
-        let v8 = <A8 as FromLuaValue>::from_lua_value(&values[8])?;
-        let v9 = <A9 as FromLuaValue>::from_lua_value(&values[9])?;
-        let v10 = <A10 as FromLuaValue>::from_lua_value(&values[10])?;
-        let v11 = <A11 as FromLuaValue>::from_lua_value(&values[11])?;
-        let v12 = <A12 as FromLuaValue>::from_lua_value(&values[12])?;
-        let v13 = <A13 as FromLuaValue>::from_lua_value(&values[13])?;
-        let v14 = <A14 as FromLuaValue>::from_lua_value(&values[14])?;
-        Ok((
-            v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14,
-        ))
-    }
-}
-
-impl<
-        A0: FromLuaValue,
-        A1: FromLuaValue,
-        A2: FromLuaValue,
-        A3: FromLuaValue,
-        A4: FromLuaValue,
-        A5: FromLuaValue,
-        A6: FromLuaValue,
-        A7: FromLuaValue,
-        A8: FromLuaValue,
-        A9: FromLuaValue,
-        A10: FromLuaValue,
-        A11: FromLuaValue,
-        A12: FromLuaValue,
-        A13: FromLuaValue,
-        A14: FromLuaValue,
-        A15: FromLuaValue,
-    > ArgTuple
-    for (
-        A0,
-        A1,
-        A2,
-        A3,
-        A4,
-        A5,
-        A6,
-        A7,
-        A8,
-        A9,
-        A10,
-        A11,
-        A12,
-        A13,
-        A14,
-        A15,
-    )
-{
-    const COUNT: usize = 16;
-    fn read_last_n(values: &[Value]) -> Result<Self, LuaError> {
-        let v0 = <A0 as FromLuaValue>::from_lua_value(&values[0])?;
-        let v1 = <A1 as FromLuaValue>::from_lua_value(&values[1])?;
-        let v2 = <A2 as FromLuaValue>::from_lua_value(&values[2])?;
-        let v3 = <A3 as FromLuaValue>::from_lua_value(&values[3])?;
-        let v4 = <A4 as FromLuaValue>::from_lua_value(&values[4])?;
-        let v5 = <A5 as FromLuaValue>::from_lua_value(&values[5])?;
-        let v6 = <A6 as FromLuaValue>::from_lua_value(&values[6])?;
-        let v7 = <A7 as FromLuaValue>::from_lua_value(&values[7])?;
-        let v8 = <A8 as FromLuaValue>::from_lua_value(&values[8])?;
-        let v9 = <A9 as FromLuaValue>::from_lua_value(&values[9])?;
-        let v10 = <A10 as FromLuaValue>::from_lua_value(&values[10])?;
-        let v11 = <A11 as FromLuaValue>::from_lua_value(&values[11])?;
-        let v12 = <A12 as FromLuaValue>::from_lua_value(&values[12])?;
-        let v13 = <A13 as FromLuaValue>::from_lua_value(&values[13])?;
-        let v14 = <A14 as FromLuaValue>::from_lua_value(&values[14])?;
-        let v15 = <A15 as FromLuaValue>::from_lua_value(&values[15])?;
-        Ok((
-            v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v15,
-        ))
-    }
-}
-
-impl<
-        A0: FromLuaValue,
-        A1: FromLuaValue,
-        A2: FromLuaValue,
-        A3: FromLuaValue,
-        A4: FromLuaValue,
-        A5: FromLuaValue,
-        A6: FromLuaValue,
-        A7: FromLuaValue,
-        A8: FromLuaValue,
-        A9: FromLuaValue,
-        A10: FromLuaValue,
-        A11: FromLuaValue,
-        A12: FromLuaValue,
-        A13: FromLuaValue,
-        A14: FromLuaValue,
-        A15: FromLuaValue,
-        A16: FromLuaValue,
-    > ArgTuple
-    for (
-        A0,
-        A1,
-        A2,
-        A3,
-        A4,
-        A5,
-        A6,
-        A7,
-        A8,
-        A9,
-        A10,
-        A11,
-        A12,
-        A13,
-        A14,
-        A15,
-        A16,
-    )
-{
-    const COUNT: usize = 17;
-    fn read_last_n(values: &[Value]) -> Result<Self, LuaError> {
-        let v0 = <A0 as FromLuaValue>::from_lua_value(&values[0])?;
-        let v1 = <A1 as FromLuaValue>::from_lua_value(&values[1])?;
-        let v2 = <A2 as FromLuaValue>::from_lua_value(&values[2])?;
-        let v3 = <A3 as FromLuaValue>::from_lua_value(&values[3])?;
-        let v4 = <A4 as FromLuaValue>::from_lua_value(&values[4])?;
-        let v5 = <A5 as FromLuaValue>::from_lua_value(&values[5])?;
-        let v6 = <A6 as FromLuaValue>::from_lua_value(&values[6])?;
-        let v7 = <A7 as FromLuaValue>::from_lua_value(&values[7])?;
-        let v8 = <A8 as FromLuaValue>::from_lua_value(&values[8])?;
-        let v9 = <A9 as FromLuaValue>::from_lua_value(&values[9])?;
-        let v10 = <A10 as FromLuaValue>::from_lua_value(&values[10])?;
-        let v11 = <A11 as FromLuaValue>::from_lua_value(&values[11])?;
-        let v12 = <A12 as FromLuaValue>::from_lua_value(&values[12])?;
-        let v13 = <A13 as FromLuaValue>::from_lua_value(&values[13])?;
-        let v14 = <A14 as FromLuaValue>::from_lua_value(&values[14])?;
-        let v15 = <A15 as FromLuaValue>::from_lua_value(&values[15])?;
-        let v16 = <A16 as FromLuaValue>::from_lua_value(&values[16])?;
-        Ok((
-            v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v15, v16,
-        ))
-    }
+/// Raw registration — same exact call semantics as `add_lua_fn!` but **no**
+/// metadata entry (the C++ `addLuaFn`-free registration used for
+/// `u_impl_addTrackedResult`, HGScripting.cpp:49).
+#[macro_export]
+macro_rules! add_lua_fn_raw {
+    ($ctx:expr, $name:expr, move $($tail:tt)*) => {
+        $crate::add_lua_fn_raw!($ctx, $name, $($tail)*)
+    };
+    ($ctx:expr, $name:expr, || $($body:tt)*) => {
+        $ctx.add_lua_fn_raw_0($name, move || $($body)*)
+    };
+    ($ctx:expr, $name:expr, |$a0:ident: $t0:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_raw_1($name, move |$a0: $t0| $($body)*)
+    };
+    ($ctx:expr, $name:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_raw_2($name, move |$a0: $t0, $a1: $t1| $($body)*)
+    };
+    ($ctx:expr, $name:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_raw_3($name, move |$a0: $t0, $a1: $t1, $a2: $t2| $($body)*)
+    };
+    ($ctx:expr, $name:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_raw_4($name, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3| $($body)*)
+    };
+    ($ctx:expr, $name:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty, $a4:ident: $t4:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_raw_5($name, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3, $a4: $t4| $($body)*)
+    };
+    ($ctx:expr, $name:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty, $a4:ident: $t4:ty, $a5:ident: $t5:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_raw_6($name, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3, $a4: $t4, $a5: $t5| $($body)*)
+    };
+    ($ctx:expr, $name:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty, $a4:ident: $t4:ty, $a5:ident: $t5:ty, $a6:ident: $t6:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_raw_7($name, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3, $a4: $t4, $a5: $t5, $a6: $t6| $($body)*)
+    };
+    ($ctx:expr, $name:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty, $a4:ident: $t4:ty, $a5:ident: $t5:ty, $a6:ident: $t6:ty, $a7:ident: $t7:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_raw_8($name, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3, $a4: $t4, $a5: $t5, $a6: $t6, $a7: $t7| $($body)*)
+    };
+    ($ctx:expr, $name:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty, $a4:ident: $t4:ty, $a5:ident: $t5:ty, $a6:ident: $t6:ty, $a7:ident: $t7:ty, $a8:ident: $t8:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_raw_9($name, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3, $a4: $t4, $a5: $t5, $a6: $t6, $a7: $t7, $a8: $t8| $($body)*)
+    };
+    ($ctx:expr, $name:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty, $a4:ident: $t4:ty, $a5:ident: $t5:ty, $a6:ident: $t6:ty, $a7:ident: $t7:ty, $a8:ident: $t8:ty, $a9:ident: $t9:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_raw_10($name, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3, $a4: $t4, $a5: $t5, $a6: $t6, $a7: $t7, $a8: $t8, $a9: $t9| $($body)*)
+    };
+    ($ctx:expr, $name:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty, $a4:ident: $t4:ty, $a5:ident: $t5:ty, $a6:ident: $t6:ty, $a7:ident: $t7:ty, $a8:ident: $t8:ty, $a9:ident: $t9:ty, $a10:ident: $t10:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_raw_11($name, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3, $a4: $t4, $a5: $t5, $a6: $t6, $a7: $t7, $a8: $t8, $a9: $t9, $a10: $t10| $($body)*)
+    };
+    ($ctx:expr, $name:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty, $a4:ident: $t4:ty, $a5:ident: $t5:ty, $a6:ident: $t6:ty, $a7:ident: $t7:ty, $a8:ident: $t8:ty, $a9:ident: $t9:ty, $a10:ident: $t10:ty, $a11:ident: $t11:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_raw_12($name, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3, $a4: $t4, $a5: $t5, $a6: $t6, $a7: $t7, $a8: $t8, $a9: $t9, $a10: $t10, $a11: $t11| $($body)*)
+    };
+    ($ctx:expr, $name:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty, $a4:ident: $t4:ty, $a5:ident: $t5:ty, $a6:ident: $t6:ty, $a7:ident: $t7:ty, $a8:ident: $t8:ty, $a9:ident: $t9:ty, $a10:ident: $t10:ty, $a11:ident: $t11:ty, $a12:ident: $t12:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_raw_13($name, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3, $a4: $t4, $a5: $t5, $a6: $t6, $a7: $t7, $a8: $t8, $a9: $t9, $a10: $t10, $a11: $t11, $a12: $t12| $($body)*)
+    };
+    ($ctx:expr, $name:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty, $a4:ident: $t4:ty, $a5:ident: $t5:ty, $a6:ident: $t6:ty, $a7:ident: $t7:ty, $a8:ident: $t8:ty, $a9:ident: $t9:ty, $a10:ident: $t10:ty, $a11:ident: $t11:ty, $a12:ident: $t12:ty, $a13:ident: $t13:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_raw_14($name, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3, $a4: $t4, $a5: $t5, $a6: $t6, $a7: $t7, $a8: $t8, $a9: $t9, $a10: $t10, $a11: $t11, $a12: $t12, $a13: $t13| $($body)*)
+    };
+    ($ctx:expr, $name:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty, $a4:ident: $t4:ty, $a5:ident: $t5:ty, $a6:ident: $t6:ty, $a7:ident: $t7:ty, $a8:ident: $t8:ty, $a9:ident: $t9:ty, $a10:ident: $t10:ty, $a11:ident: $t11:ty, $a12:ident: $t12:ty, $a13:ident: $t13:ty, $a14:ident: $t14:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_raw_15($name, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3, $a4: $t4, $a5: $t5, $a6: $t6, $a7: $t7, $a8: $t8, $a9: $t9, $a10: $t10, $a11: $t11, $a12: $t12, $a13: $t13, $a14: $t14| $($body)*)
+    };
+    ($ctx:expr, $name:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty, $a4:ident: $t4:ty, $a5:ident: $t5:ty, $a6:ident: $t6:ty, $a7:ident: $t7:ty, $a8:ident: $t8:ty, $a9:ident: $t9:ty, $a10:ident: $t10:ty, $a11:ident: $t11:ty, $a12:ident: $t12:ty, $a13:ident: $t13:ty, $a14:ident: $t14:ty, $a15:ident: $t15:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_raw_16($name, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3, $a4: $t4, $a5: $t5, $a6: $t6, $a7: $t7, $a8: $t8, $a9: $t9, $a10: $t10, $a11: $t11, $a12: $t12, $a13: $t13, $a14: $t14, $a15: $t15| $($body)*)
+    };
+    ($ctx:expr, $name:expr, |$a0:ident: $t0:ty, $a1:ident: $t1:ty, $a2:ident: $t2:ty, $a3:ident: $t3:ty, $a4:ident: $t4:ty, $a5:ident: $t5:ty, $a6:ident: $t6:ty, $a7:ident: $t7:ty, $a8:ident: $t8:ty, $a9:ident: $t9:ty, $a10:ident: $t10:ty, $a11:ident: $t11:ty, $a12:ident: $t12:ty, $a13:ident: $t13:ty, $a14:ident: $t14:ty, $a15:ident: $t15:ty, $a16:ident: $t16:ty| $($body:tt)*) => {
+        $ctx.add_lua_fn_raw_17($name, move |$a0: $t0, $a1: $t1, $a2: $t2, $a3: $t3, $a4: $t4, $a5: $t5, $a6: $t6, $a7: $t7, $a8: $t8, $a9: $t9, $a10: $t10, $a11: $t11, $a12: $t12, $a13: $t13, $a14: $t14, $a15: $t15, $a16: $t16| $($body)*)
+    };
 }

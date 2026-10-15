@@ -19,6 +19,14 @@ pub struct CustomTimeline {
     runner: Timeline2Runner,
 }
 
+impl CustomTimeline {
+    /// Mutable access to the inner `Timeline2` (the Lua `ct_*` API appends
+    /// deferred actions here — issue 007).
+    pub fn timeline_mut(&mut self) -> &mut Timeline2 {
+        &mut self.timeline
+    }
+}
+
 /// `hg::CustomTimelineManager`.
 #[derive(Default)]
 pub struct CustomTimelineManager {
@@ -32,7 +40,11 @@ impl CustomTimelineManager {
         Self::default()
     }
 
-    fn is_handle_valid(&self, h: CustomTimelineHandle) -> bool {
+    /// `isHandleValid(h)` — `h >= 0 && h < timelines.size()`. Exposed for the
+    /// Lua `ct_*` API handle validation (issue 007 logs + no-ops invalid
+    /// handles exactly like the C++ `checkHandle` helper).
+    #[must_use]
+    pub fn is_handle_valid(&self, h: CustomTimelineHandle) -> bool {
         h >= 0 && h < self.timelines.len() as CustomTimelineHandle
     }
 

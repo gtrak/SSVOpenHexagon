@@ -250,14 +250,15 @@ fn sandbox_destroys_malicious_functions() {
     let calls = Arc::new(Mutex::new(Vec::<(i32, i32, i32)>::new()));
     // C++ `init` order: RNG shims first, then io.open, math.random, teardown.
     let c2 = calls.clone();
-    lua.add_lua_fn(
+    oh_lua::add_lua_fn!(
+        lua,
         "u_rndSwitch",
         oh_lua::FnMeta {
             ret: "float",
             arg_types: &["int", "int", "int"],
         },
-        move |m| {
-            c2.lock().unwrap().push(m);
+        move |m: i32, _lower: i32, _upper: i32| {
+            c2.lock().unwrap().push((m, 0, 0));
             0.42f32
         },
     )
@@ -312,14 +313,15 @@ fn math_random_routes_to_u_rnd_switch() {
     let lua = new_ctx();
     let calls = Arc::new(Mutex::new(Vec::<(i32, i32, i32)>::new()));
     let c2 = calls.clone();
-    lua.add_lua_fn(
+    oh_lua::add_lua_fn!(
+        lua,
         "u_rndSwitch",
         oh_lua::FnMeta {
             ret: "float",
             arg_types: &["int", "int", "int"],
         },
-        move |m| {
-            c2.lock().unwrap().push(m);
+        move |mode: i32, lower: i32, upper: i32| {
+            c2.lock().unwrap().push((mode, lower, upper));
             0.42f32
         },
     )
@@ -394,14 +396,14 @@ fn registered_fn_arity_and_arg_window() {
     let lua = new_ctx();
     let seen = Arc::new(Mutex::new(Vec::<(i32, i32)>::new()));
     let s2 = seen.clone();
-    lua.add_lua_fn(
+    oh_lua::add_lua_fn!(
+        lua,
         "f2",
         oh_lua::FnMeta {
             ret: "void",
             arg_types: &["int", "int"],
         },
-        move |ab: (i32, i32)| {
-            let (a, b) = ab;
+        move |a: i32, b: i32| {
             s2.lock().unwrap().push((a, b));
         },
     )
@@ -442,7 +444,8 @@ fn registered_fn_nil_and_type_coercion() {
     let lua = new_ctx();
     let got_i = Arc::new(Mutex::new(0i32));
     let gi = got_i.clone();
-    lua.add_lua_fn(
+    oh_lua::add_lua_fn!(
+        lua,
         "ri",
         oh_lua::FnMeta {
             ret: "void",
@@ -455,7 +458,8 @@ fn registered_fn_nil_and_type_coercion() {
     .unwrap();
     let got_b = Arc::new(Mutex::new(false));
     let gb = got_b.clone();
-    lua.add_lua_fn(
+    oh_lua::add_lua_fn!(
+        lua,
         "rb",
         oh_lua::FnMeta {
             ret: "void",
@@ -468,7 +472,8 @@ fn registered_fn_nil_and_type_coercion() {
     .unwrap();
     let got_s = Arc::new(Mutex::new(String::new()));
     let gs = got_s.clone();
-    lua.add_lua_fn(
+    oh_lua::add_lua_fn!(
+        lua,
         "rs",
         oh_lua::FnMeta {
             ret: "void",
@@ -481,7 +486,8 @@ fn registered_fn_nil_and_type_coercion() {
     .unwrap();
     let got_f = Arc::new(Mutex::new(0.0f64));
     let gf = got_f.clone();
-    lua.add_lua_fn(
+    oh_lua::add_lua_fn!(
+        lua,
         "rf",
         oh_lua::FnMeta {
             ret: "void",
@@ -548,7 +554,8 @@ fn registered_fn_wrong_type_on_userdata() {
     let lua = new_ctx();
     let got = Arc::new(Mutex::new(0i32));
     let g = got.clone();
-    lua.add_lua_fn(
+    oh_lua::add_lua_fn!(
+        lua,
         "ri",
         oh_lua::FnMeta {
             ret: "void",
@@ -575,40 +582,44 @@ fn registered_fn_wrong_type_on_userdata() {
 #[test]
 fn registered_fn_returns_scalars_and_tuples() {
     let lua = new_ctx();
-    lua.add_lua_fn::<i32, (), _>(
+    oh_lua::add_lua_fn!(
+        lua,
         "g1",
         oh_lua::FnMeta {
             ret: "int",
             arg_types: &[],
         },
-        |_| 7i32,
+        || 7i32,
     )
     .unwrap();
-    lua.add_lua_fn::<(f32, f32), (), _>(
+    oh_lua::add_lua_fn!(
+        lua,
         "g2",
         oh_lua::FnMeta {
             ret: "tuple<float, float>",
             arg_types: &[],
         },
-        |_| (1.5f32, 2.5f32),
+        || (1.5f32, 2.5f32),
     )
     .unwrap();
-    lua.add_lua_fn::<(i32, i32, i32, i32), (), _>(
+    oh_lua::add_lua_fn!(
+        lua,
         "g4",
         oh_lua::FnMeta {
             ret: "tuple<int, int, int, int>",
             arg_types: &[],
         },
-        |_| (1i32, 2i32, 3i32, 4i32),
+        || (1i32, 2i32, 3i32, 4i32),
     )
     .unwrap();
-    lua.add_lua_fn::<(f32, f32, f32, f32, f32, f32, f32, f32), (), _>(
+    oh_lua::add_lua_fn!(
+        lua,
         "g8",
         oh_lua::FnMeta {
             ret: "tuple<float, float, float, float, float, float, float, float>",
             arg_types: &[],
         },
-        |_| (0f32, 1f32, 2f32, 3f32, 4f32, 5f32, 6f32, 7f32),
+        || (0f32, 1f32, 2f32, 3f32, 4f32, 5f32, 6f32, 7f32),
     )
     .unwrap();
 
@@ -646,16 +657,19 @@ fn metadata_entries_recorded_with_docs_and_args() {
     }
     let lua = new_ctx();
     {
-        let mut proxy = lua
-            .add_lua_fn::<f32, (i32, i32), _>(
-                "u_testRnd",
-                oh_lua::FnMeta {
-                    ret: "float",
-                    arg_types: &["int", "int"],
-                },
-                move |_a| 0.5f32,
-            )
-            .unwrap();
+        let mut proxy = oh_lua::add_lua_fn!(
+            &lua,
+            "u_testRnd",
+            oh_lua::FnMeta {
+                ret: "float",
+                arg_types: &["int", "int"],
+            },
+            |lower: i32, upper: i32| {
+                let _ = (lower, upper);
+                0.5f32
+            }
+        )
+        .unwrap();
         proxy.arg("lower").arg("upper");
         proxy.doc("Return a random integer number in the [$0; $1] range.");
     }

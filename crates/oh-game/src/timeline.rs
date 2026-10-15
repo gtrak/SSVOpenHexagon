@@ -15,13 +15,13 @@ type Duration = std::time::Duration;
 /// `Utils::action` (the `std::variant` of the four action kinds).
 pub enum Action {
     /// `action_do { std::function<void()> }`.
-    Do(Box<dyn Fn()>),
+    Do(Box<dyn Fn() + Send>),
     /// `action_wait_for { duration }`.
     WaitFor(Duration),
     /// `action_wait_until { time_point }`.
     WaitUntil(HRTimePoint),
     /// `action_wait_until_fn { std::function<time_point()> }`.
-    WaitUntilFn(Box<dyn Fn() -> HRTimePoint>),
+    WaitUntilFn(Box<dyn Fn() -> HRTimePoint + Send>),
 }
 
 /// `class timeline2` — an ordered list of actions.
@@ -45,7 +45,7 @@ impl Timeline2 {
     }
 
     /// `append_do(func)`.
-    pub fn append_do(&mut self, func: impl Fn() + 'static) {
+    pub fn append_do(&mut self, func: impl Fn() + Send + 'static) {
         self.actions.push(Action::Do(Box::new(func)));
     }
 
@@ -72,7 +72,7 @@ impl Timeline2 {
     }
 
     /// `append_wait_until_fn(fn)`.
-    pub fn append_wait_until_fn(&mut self, tp_fn: impl Fn() -> HRTimePoint + 'static) {
+    pub fn append_wait_until_fn(&mut self, tp_fn: impl Fn() -> HRTimePoint + Send + 'static) {
         self.actions.push(Action::WaitUntilFn(Box::new(tp_fn)));
     }
 

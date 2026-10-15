@@ -21,6 +21,10 @@
 //! * [`metadata`] — `LuaMetadata` / `LuaMetadataProxy` (`addLuaFn` docs)
 //! * [`sandbox`] — `redefine_io_open`, `redefine_random`,
 //!   `destroy_malicious_functions` (verbatim C++ Lua snippets)
+//! * [`api`] — the complete game API (issue 007): all 285 registered global
+//!   function names + the 12-callback dispatch + the `GameApiState` /
+//!   `GameApi` / `AssetsApi` state interface (issue 009 implements the real
+//!   backend)
 //!
 //! # Threading
 //!
@@ -28,6 +32,7 @@
 //! wrapper), a `LuaContext` is used from one thread at a time and is not
 //! `Sync` (nor `Clone`: the C++ context is move-only).
 
+pub mod api;
 mod context;
 mod convert;
 mod error;
@@ -35,7 +40,7 @@ mod metadata;
 mod sandbox;
 
 pub use context::LuaContext;
-pub use convert::{ArgTuple, FromLuaValue, IntoLuaValue, PushValue};
+pub use convert::{FnReturn, FromLuaValue, IntoLuaValue, PushValue};
 pub use error::LuaError;
 pub use metadata::{
     get_metadata, FnEntry, FnMeta, LuaMetadata, LuaMetadataProxy, NUM_CATEGORIES,

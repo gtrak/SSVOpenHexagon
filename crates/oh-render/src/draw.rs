@@ -220,6 +220,7 @@ impl VertexBatch {
 
     /// C++ `FastVertexVectorTris::unsafe_emplace_back_quad(nw, cNW, sw, cSW,
     /// se, cSE, ne, cNE)` — a per-vertex-colored quad (same 6-vertex split).
+    #[allow(clippy::too_many_arguments)]
     pub fn push_quad_per_vertex(
         &mut self,
         nw: Vec2,

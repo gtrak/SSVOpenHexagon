@@ -10,3 +10,11 @@ edition.workspace = true
 # which compiles LuaJIT into the binary (DECISIONS.md / skills).
 mlua = { version = "0.10", features = ["luajit", "vendored"] }
 thiserror = { workspace = true }
+# The game API (issue 007) registers over the concrete gameplay/data types
+# owned by these crates (LevelStatus, HexagonGameStatus, StyleData, the
+# timelines, the custom-wall manager, the RNG). The game loop (issue 009)
+# implements the `GameApi` backend trait against its own state.
+oh-game = { path = "../oh-game" }
+oh-data = { path = "../oh-data" }
+oh-math = { path = "../oh-math" }
+oh-rng = { path = "../oh-rng" }
