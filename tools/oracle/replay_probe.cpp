@@ -44,5 +44,36 @@ int main(){
     printf("PHEX=");
     for(std::size_t i=0;i<p.size();++i) printf("%02x",(unsigned)(unsigned char)p.data()[i]);
     printf("\n");
+
+    // ---- fixture 2 (issue 009c): the `alwaysSpinRight` input stream ----
+    // Every recorded tick is record_input(false,true,false,false) — the
+    // C++ policy block (HGUpdate.cpp:660-666) + the CW-only resolve branch
+    // (movement = 1 = right bit) — so each input byte is 0x02 (bit order
+    // pinned by fixture 1's note). Same envelope the Rust determinism
+    // harness records (version 0, C++ test profile name).
+    const unsigned NSTREAM = 12;
+    hg::replay_file rf2;
+    rf2._version = 0;
+    rf2._player_name = "testProfile";
+    rf2._seed = 987654321ull;
+    rf2._pack_id = "ohvrvanilla_vittorio_romeo_cube_1";
+    rf2._level_id = "ohvrvanilla_vittorio_romeo_cube_1_apeirogon";
+    rf2._first_play = true;
+    rf2._difficulty_mult = 1.0f;
+    rf2._played_score = 720.0;
+    for(unsigned i = 0; i < NSTREAM; ++i)
+        rf2._data.record_input(false, true, false, false);
+    auto sr2 = rf2.serialize(buf, sizeof(buf));
+    printf("stream_serialized_bytes=%zu success=%d\n", sr2.written_bytes(), (int)(bool)sr2);
+    printf("STREAMHEX=");
+    for(std::size_t i=0;i<sr2.written_bytes();++i) printf("%02x", (unsigned)(unsigned char)buf[i]);
+    printf("\n");
+    auto crf2 = hg::compress_replay_file(rf2);
+    if(crf2){
+      printf("stream_compressed_bytes=%zu\n", crf2->_data.size());
+      printf("STREAMCZHEX=");
+      for(unsigned char c : crf2->_data) printf("%02x", c);
+      printf("\n");
+    } else printf("stream_compression_failed\n");
     return 0;
 }

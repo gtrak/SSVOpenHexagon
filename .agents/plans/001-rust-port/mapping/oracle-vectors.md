@@ -138,6 +138,27 @@ is `p << (u64)_data.size(); p.append(_data.data(), size)`.
 `{version}_{"%Y%m%d_%H%M%S"}_{player_name}_{level_id}_{difficulty_mult}x_{played_seconds}s.ohr`
 in UTC; numbers formatted via `ssvu::concat` (default ostream float formatting).
 
+### Fixture 2 — the `alwaysSpinRight` input stream (issue 009c)
+
+Same `replay_probe.cpp` (second fixture block): the replay envelope the
+Rust determinism harness records under the C++ `alwaysSpinRight` policy
+(`HGUpdate.cpp:660-666`: `inputImplCW = true` only → the CW-only resolve
+branch → `inputMovement = 1` = the right bit) — every recorded tick is
+`record_input(false, true, false, false)` → input byte `0x02` (bit order
+from the fixture-1 note). Version 0 + the C++ test profile name.
+
+```
+stream_serialized_bytes=144 success=1
+STREAMHEX=000000000b0000007465737450726f66696c65b168de3a000000000c00000000000000020202020202020202020202210000006f68767276616e696c6c615f766974746f72696f5f726f6d656f5f637562655f312b0000006f68767276616e696c6c615f766974746f72696f5f726f6d656f5f637562655f315f61706569726f676f6e010000803f0000000000808640
+stream_compressed_bytes=98
+STREAMCZHEX=78da63606060e006e292d4e29280a2fcb4cc9cd48d19f7ac80220c3c0c10c084041481fcfc8cb2a2b2c4bccc9c9cc4f8b2cc9292fca2ccfcf8a2fcdcd4fcf8e4d2a4d478436d6214c52716a46616e5a7e7e731323034d8836d6a687300002a07288f
+```
+
+Fixture: version=0, player_name="testProfile", seed=987654321, pack_id=
+"ohvrvanilla_vittorio_romeo_cube_1", level_id="ohvrvanilla_vittorio_romeo_cube_1_apeirogon",
+first_play=true, difficulty_mult=1.0f, played_score=720.0; 12 inputs, all
+`(false, true, false, false)` (bytes `02 02 ... 02`).
+
 ## String formatting (`Utils::concat`, `buildPackId`, `getLevelValidator`)
 
 Replay filenames and validator strings embed `Utils::concat`'s float/double
