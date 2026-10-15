@@ -386,3 +386,51 @@ fork is `include/SSVOpenHexagon/SSVUtilsJson/JsonCpp/jsoncpp.inl` (pinned).
 - **Rule (D-012 restated):** when a contract makes a claim about a source file, the
   source wins. Contributed by orchestrator verification before dispatch, so the
   worker is not sent chasing numbers that do not exist.
+
+## D-019 — `setLevelData` must reset the timeline RUNNERS, not only the timelines (replay-determinism bug)
+
+- **Situation:** issue 009 step (c) landed the determinism harness against the
+  `test/ReplayExecution.t.cpp` level set only (2 pairs: `cube`/`apeirogon`,
+  `experimental`/`autotest0`). `09-game-loop.md` also requires porting
+  `test/ReplayExecutionBenchmark.t.cpp`, which uses **4** pairs — adding
+  `orthoplex`/`arcadia` and `orthoplex`/`bipolarity` — and 100 iterations.
+- **What I found while verifying (orchestrator, independent scratch runs):** the
+  4th pair, `ohvrvanilla_vittorio_romeo_orthoplex_1_bipolarity`, breaks the
+  self-consistency property on the **same-engine** variant: `live=1.05`,
+  `replay=0.85`. The 2-pair harness could not have caught it.
+- **Discrimination (which isolated it to engine re-use, not the replay format):**
+  - replay on a **fresh** engine: `live=1.05 replay=1.05` (match);
+  - replay on the **same** engine that produced the live run: `live=1.05
+    replay=0.85` (mismatch);
+  - three consecutive replays on one engine: **identical** (`1.2208…` ×3) — so
+    playback itself is deterministic; the *live* run is what changes after a
+    previous `newGame` (same-engine live = `1.3875, 0.85, 0.85`; fresh-engine
+    live = `1.3875` ×3).
+- **Root cause (verified):** C++ `setLevelData` resets each timeline **and** its
+  runner — `eventTimeline.clear(); eventTimelineRunner = {};`
+  (`HexagonGame.cpp:668-669`), `timeline.clear(); timelineRunner = {};`
+  (`:686-687`), `messageTimeline… + messageTimelineRunner = {};` (`:672-673`).
+  The port cleared the three timelines and reset only
+  `message_timeline_runner`; `main_timeline_runner` and `event_timeline_runner`
+  kept their `current_idx` / `wait_start_tp` (`oh-game/src/timeline.rs:102-105`).
+  `bipolarity.lua`'s `onInit` ends with `t_wait(12 / getMusicDMSyncFactor())` and
+  its `onStep` schedules `e_wait(...)`s, so the first wait of the next game
+  measured against the **previous** game's `wait_start_tp`: the spawn schedule
+  shifted and the death time moved. Levels that wait early and heavily on the
+  timelines (`bipolarity`, `arcadia`) expose it; `apeirogon`/`autotest0` happen
+  not to.
+- **Fix:** reset all three runners in `set_level_data_inner`, in the C++ order
+  (`hexagon_game.rs`, next to each `*.clear()`). Two statements.
+- **Rule:** when the C++ pairs `x.clear()` with `xRunner = {}`, the port must do
+  BOTH. A cleared timeline with a stale runner is silent state leakage across
+  `newGame` (and `newGame` is the restart path in the real game too — this is a
+  1:1 fidelity gap (D-000), not a test artifact).
+- **Process lesson:** the coverage requirement in `09-game-loop.md` (port BOTH
+  replay tests, i.e. the 4-pair set) is what would have caught this at review
+  time. A harness that passes on a subset is not evidence for the whole issue.
+- **Correction of my own first draft (D-014):** I first recorded this as "the Lua
+  context must be fresh per `newGame`" and blamed the reused `LuaContext` keeping
+  `floatingWalls`. Scratch probes disproved it (`#floatingWalls` was re-assigned
+  by the script itself, and a level with no custom walls reproduced nothing).
+  The `lua = Lua::LuaContext{}` difference (`:731`) is real and still worth
+  modelling, but it is **not** the cause of this failure.

@@ -739,6 +739,12 @@ impl<S: SharedStore> HexagonGame<S> {
         e.message_text.clear();
         e.pb_text.clear();
         g.event_timeline.clear();
+        // C++ `eventTimelineRunner = {};` (HexagonGame.cpp:669). Resetting the
+        // timeline WITHOUT its runner leaves a stale `wait_start_tp` /
+        // `current_idx` (D-019) — the first `e_wait` of the next game then
+        // measures against the PREVIOUS game's clock and the spawn schedule
+        // shifts, so a live run no longer replays to the same death time.
+        e.event_timeline_runner = Timeline2Runner::new();
         e.message_timeline.clear();
         e.message_timeline_runner = Timeline2Runner::new();
         g.custom_timelines.clear();
@@ -765,7 +771,10 @@ impl<S: SharedStore> HexagonGame<S> {
 
         // Timeline cleanup.
         g.main_timeline.clear();
-        // C++ `timelineRunner = {};`
+        // C++ `timelineRunner = {};` (HexagonGame.cpp:687) — see the
+        // `event_timeline_runner` reset above for why the runner must be
+        // reset alongside its timeline (D-019).
+        e.main_timeline_runner = Timeline2Runner::new();
         e.effect_timeline_manager.clear();
         e.must_change_sides = false;
         e.must_start = false;
