@@ -21,7 +21,7 @@ Decisions log: `.agents/plans/001-rust-port/DECISIONS.md`
 | 06 | `oh-lua` runtime: LuaContext analogue + conversions | 01 | LANDED | 48dba310 | gate 4/4; 24 tests; %.14g + _setGlobal throw verified against real LuaJIT source |
 | 07 | `oh-lua` game API: all globals + callbacks | 06,03,04 | LANDED | 3f5d06eb | gate 4/4; 241 tests; 285-name exact-set test, name count reconciled independently, mutation reddens it |
 | 08 | `oh-game` types: walls, player, custom walls, status | 01,02 | LANDED | 65f0a9cc | gate 4/4 on a clean checkout; 24 tests; oracle vectors + discrimination-verified |
-| 09 | `oh-game` update loop (HGUpdate/HexagonGame) headless | 08,07 | OPEN | — | mapping/gameplay.md §13-15 ready |
+| 09 | `oh-game` update loop (HGUpdate/HexagonGame) headless | 08,07 | in-flight | 58dc5a87 (a: shared state) | D-013 approved; step (a) landed and gate-verified on a clean checkout |
 | 10 | `oh-render` backend (window/input/vertex/shader/font) | 01 | LANDED | e31d4d86 | gate 4/4 on clean checkout; 49 tests; GL smoke skips-with-reason (D-011) |
 | 11 | `oh-render` graphics: stages, draw methods, cameras | 10,08 | OPEN | — | |
 | 12 | `oh-menu-system`: SSVMenuSystem analogue | 01 | LANDED | 232a868c | gate 4/4; 252 tests; contract's Controller claim corrected from source |
