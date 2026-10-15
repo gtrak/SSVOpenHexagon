@@ -1,0 +1,9 @@
+[package]
+name = "oh-game"
+description = "Gameplay data types (walls, player, custom walls, status, ticker, timelines) ported from SSVOpenHexagon, with exact formulas/constants/float types"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+oh-math = { path = "../oh-math" }
+oh-rng = { path = "../oh-rng" }

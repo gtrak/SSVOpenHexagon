@@ -214,6 +214,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "oh-game"
+version = "0.1.0"
+dependencies = [
+ "oh-math",
+ "oh-rng",
+]
+
+[[package]]
 name = "oh-lua"
 version = "0.1.0"
 dependencies = [

@@ -8,6 +8,7 @@ members = [
     "crates/oh-config",
     "crates/oh-lua",
     "crates/oh-assets",
+    "crates/oh-game",
 ]
 # Later issues add workspace members as they land (PLAN.md architecture
 # table): oh-timeline, oh-replay, oh-data, oh-config, oh-assets, oh-lua,

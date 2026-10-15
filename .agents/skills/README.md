@@ -42,5 +42,6 @@ library (vendored C++, third-party C++ dependency, or Rust crate), written from
 | `lib-rsfml.md` | rsfml (Rust) | crate source | (pending) |
 | `lib-mlua.md` | mlua (Rust) | crate source | (pending) |
 | `lib-jsoncpp.md` | JsonCpp fork (ssvuj reader/writer, comment + trailing-comma tolerance, `%#.16g` floats) | `include/SSVOpenHexagon/SSVUtilsJson/JsonCpp/{json.hpp,jsoncpp.inl}`, `Utils/Io.hpp` | issue 003 |
+| `lib-gameplay.md` | Gameplay types: CWall/CPlayer/CCustomWall(+Manager)/SpeedData/HexagonGameStatus/Ticker/timeline2/CustomTimeline/FastVertexVectorTris/PointInPolygon — vertex ordering, collision-escape walk, push displacement, curve-rotation sign, RNG-in-update coupling, time bookkeeping | `include/SSVOpenHexagon/{Components,Core,Data,Utils}/**` + `src/SSVOpenHexagon/{Components,Core,Utils}/**`, `mapping/gameplay.md` | issue 008 |
 | `lib-serde-json.md` | serde_json 1.0.154 (Value/from_str/Number f64-f32, float formatting vs JsonCpp) | `~/.cargo/registry/src/**/serde_json-1.0.154/src/` | issue 003 |
 | `...` | other Rust crates | crate source | (pending) |
