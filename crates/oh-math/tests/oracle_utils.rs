@@ -7,6 +7,11 @@
 //!   `ssvu::Math`, `ssvu::Containers`, `ssvs::Vector2` values from a
 //!   `g++ -std=c++20 -O0` probe of the real C++ sources (same commands
 //!   as `tools/oracle/run.sh`; probe compiled 2026-10-15 on this machine).
+//!
+//! Parity (D-000): every float literal in this file is a C++ oracle pin
+//! value (probe output or C++ source constant); the full decimal precision
+//! is part of the pin and must not be truncated or re-expressed.
+#![allow(clippy::approx_constant, clippy::excessive_precision)]
 
 use oh_math::hg::build_pack_id::build_pack_id;
 use oh_math::hg::color::{
@@ -14,25 +19,22 @@ use oh_math::hg::color::{
 };
 use oh_math::hg::concat::{concat, ConcatPart};
 use oh_math::hg::easing::{get_saturated, get_smooth_step, get_smoother_step};
-use oh_math::hg::geometry::{
-    get_line_circle_closest_intersection, get_line_circle_intersection,
-};
+use oh_math::hg::geometry::{get_line_circle_closest_intersection, get_line_circle_intersection};
 use oh_math::hg::level_validator::get_level_validator;
 use oh_math::hg::move_towards::{get_move_towards, get_move_towards_zero};
 use oh_math::hg::split::split;
 use oh_math::hg::string::{
-    get_lr_trim, get_l_trim, get_r_trim, lowercasify, to_lowercase, to_uppercase,
-    uppercasify,
+    get_l_trim, get_lr_trim, get_r_trim, lowercasify, to_lowercase, to_uppercase, uppercasify,
 };
 use oh_math::ssvs::vector2::{
-    get_dist_euclidean, get_dist_squared_euclidean, get_mag, get_mag_squared,
-    get_normalized, get_orbit_rad, get_rad, get_vec_from_rad, ZERO_VEC,
+    get_dist_euclidean, get_dist_squared_euclidean, get_mag, get_mag_squared, get_normalized,
+    get_orbit_rad, get_rad, get_vec_from_rad, ZERO_VEC,
 };
 use oh_math::ssvu::containers::{contains, get_by_mod_idx};
 use oh_math::ssvu::math::{
     clamp, get_clamped, get_dist_euclidean as ssvu_get_dist_euclidean,
-    get_dist_squared_euclidean as ssvu_get_dist_squared_euclidean, get_mod,
-    get_mod_range, get_sign, to_rad, PI, RAD_DEG_RATIO, TAU,
+    get_dist_squared_euclidean as ssvu_get_dist_squared_euclidean, get_mod, get_mod_range,
+    get_sign, to_rad, PI, RAD_DEG_RATIO, TAU,
 };
 use oh_math::Vec2;
 
@@ -88,10 +90,7 @@ fn build_pack_id_matches_cpp_oracle() {
 fn get_level_validator_matches_cpp_oracle() {
     // validator=ohvrvanilla_vittorio_romeo_cube_1_apeirogon_m_1.6
     assert_eq!(
-        get_level_validator(
-            "ohvrvanilla_vittorio_romeo_cube_1_apeirogon",
-            1.6f32
-        ),
+        get_level_validator("ohvrvanilla_vittorio_romeo_cube_1_apeirogon", 1.6f32),
         "ohvrvanilla_vittorio_romeo_cube_1_apeirogon_m_1.6"
     );
 }
@@ -348,10 +347,7 @@ fn move_towards_matches_cpp() {
 
 #[test]
 fn split_matches_cpp() {
-    assert_eq!(
-        split("  a ,b,,c  d  ", " ,"),
-        vec!["a", "b", "c", "d"],
-    );
+    assert_eq!(split("  a ,b,,c  d  ", " ,"), vec!["a", "b", "c", "d"],);
     assert_eq!(split("", " "), Vec::<&str>::new());
     assert_eq!(split("single", " "), vec!["single"]);
     // Default delimiter (space).

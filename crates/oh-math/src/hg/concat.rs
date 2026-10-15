@@ -42,9 +42,7 @@ pub fn concat(parts: &[ConcatPart<'_>]) -> String {
             ConcatPart::F32(v) => result.push_str(&format_ostream_f32(*v)),
             ConcatPart::F64(v) => result.push_str(&format_ostream_f64(*v)),
             // C++: `oss << bool` → "1" / "0".
-            ConcatPart::Bool(v) => {
-                result.push_str(&(*v as u8).to_string())
-            }
+            ConcatPart::Bool(v) => result.push_str(&(*v as u8).to_string()),
         }
     }
     result
@@ -77,12 +75,11 @@ pub fn format_ostream_f64(v: f64) -> String {
     let s = format!("{:.5e}", abs);
     let (mantissa, exp_str) = s.split_once('e').expect("always has exponent");
     let exp10: i32 = exp_str.parse().expect("always numeric");
-    let digits: String =
-        mantissa.chars().filter(|c| c.is_ascii_digit()).collect();
+    let digits: String = mantissa.chars().filter(|c| c.is_ascii_digit()).collect();
     debug_assert_eq!(digits.len(), 6);
 
     let mut out = String::with_capacity(16);
-    if exp10 < -4 || exp10 >= 6 {
+    if !(-4..6).contains(&exp10) {
         // %e style: drop trailing zeros from the six significant digits
         // (the leading digit is nonzero, so at least one remains), then
         // the C exponent: signed, at least two digits.

@@ -26,20 +26,13 @@ const fn tolower_c(ch: u8) -> u8 {
 
 /// `hg::Utils::lTrim` — removes leading whitespace (in place).
 pub fn l_trim(str: &mut String) {
-    let start = str
-        .bytes()
-        .take_while(|&b| isspace_c(b))
-        .count();
+    let start = str.bytes().take_while(|&b| isspace_c(b)).count();
     str.drain(..start);
 }
 
 /// `hg::Utils::rTrim` — removes trailing whitespace (in place).
 pub fn r_trim(str: &mut String) {
-    let end = str
-        .bytes()
-        .rev()
-        .take_while(|&b| isspace_c(b))
-        .count();
+    let end = str.bytes().rev().take_while(|&b| isspace_c(b)).count();
     str.truncate(str.len() - end);
 }
 
@@ -73,12 +66,12 @@ pub fn get_lr_trim(s: String) -> String {
     s
 }
 
-/// `hg::Utils::uppercasify` — A–Z in place.
+/// `hg::Utils::uppercasify` — A–Z in place (C++ takes `std::string&`).
 ///
 /// `as_bytes_mut` is `unsafe` (it may produce invalid UTF-8); here each
 /// byte is mapped by the C-locale `toupper`, which only touches the
 /// ASCII letters A–Z, so the string stays valid UTF-8.
-pub fn uppercasify(s: &mut String) {
+pub fn uppercasify(s: &mut str) {
     for b in unsafe { s.as_bytes_mut() } {
         *b = toupper_c(*b);
     }
@@ -91,12 +84,12 @@ pub fn to_uppercase(mut s: String) -> String {
     s
 }
 
-/// `hg::Utils::lowercasify` — a–z in place.
+/// `hg::Utils::lowercasify` — a–z in place (C++ takes `std::string&`).
 ///
 /// `as_bytes_mut` is `unsafe` (it may produce invalid UTF-8); here each
 /// byte is mapped by the C-locale `tolower`, which only touches the
 /// ASCII letters a–z, so the string stays valid UTF-8.
-pub fn lowercasify(s: &mut String) {
+pub fn lowercasify(s: &mut str) {
     for b in unsafe { s.as_bytes_mut() } {
         *b = tolower_c(*b);
     }

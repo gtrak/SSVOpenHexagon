@@ -84,6 +84,11 @@ const fn u8_from_f32(x: f32) -> u8 {
 
 /// `hg::Utils::transformHue` — rotates the color's hue by `H` degrees via
 /// the C++ source's fixed matrices (formulas verbatim).
+///
+/// The C++ literal is the deliberate approximation `3.14f` (Color.hpp:33,
+/// `std::cos(H * 3.14f / 180.f)`); `std::f32::consts::PI` would change the
+/// hue-matrix values and break 1:1 parity (D-000).
+#[allow(clippy::approx_constant)]
 #[must_use]
 pub fn transform_hue(m_in: &Color, m_h: f32) -> Color {
     // C++: `std::cos(H * 3.14f / 180.f)` / `std::sin(H * 3.14f / 180.f)` —

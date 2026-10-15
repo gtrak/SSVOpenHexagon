@@ -67,25 +67,18 @@ pub fn get_line_circle_closest_intersection(
     let mut v1 = Vec2::default();
     let mut v2 = Vec2::default();
 
-    match get_line_circle_intersection(
-        &mut v1,
-        &mut v2,
-        p1,
-        p2,
-        m_radius_squared,
-    ) {
+    match get_line_circle_intersection(&mut v1, &mut v2, p1, p2, m_radius_squared) {
         1 => {
             *m_intersection = v1;
             true
         }
         2 => {
             // C++: `if(ssvs::getMagSquared(v1 - mPos) > ssvs::getMagSquared(v2 - mPos))`
-            *m_intersection =
-                if get_mag_squared(&(v1 - *m_pos)) > get_mag_squared(&(v2 - *m_pos)) {
-                    v2
-                } else {
-                    v1
-                };
+            *m_intersection = if get_mag_squared(&(v1 - *m_pos)) > get_mag_squared(&(v2 - *m_pos)) {
+                v2
+            } else {
+                v1
+            };
             true
         }
         _ => false,

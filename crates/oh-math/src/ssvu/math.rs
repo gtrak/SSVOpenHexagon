@@ -9,12 +9,24 @@
 use std::ops::{Add, AddAssign, Div, Mul, Rem, Sub};
 
 /// `ssvu::pi` — `constexpr float{3.14159265359f}`.
+///
+/// Parity (D-000): byte-identical to Math.hpp:18. `std::f32::consts::PI`
+/// is a different value and must not be substituted.
+#[allow(clippy::approx_constant, clippy::excessive_precision)]
 pub const PI: f32 = 3.14159265359f32;
 
 /// `ssvu::tau` — `constexpr float{6.28318530718f}`.
+///
+/// Parity (D-000): byte-identical to Math.hpp:24. `std::f32::consts::TAU`
+/// is a different value and must not be substituted.
+#[allow(clippy::approx_constant, clippy::excessive_precision)]
 pub const TAU: f32 = 6.28318530718f32;
 
 /// `ssvu::radDegRatio` — `constexpr float{0.01745329251f}`.
+///
+/// Parity (D-000): byte-identical to Math.hpp:27; the full-precision
+/// decimal literal must stay as written in the C++ source.
+#[allow(clippy::excessive_precision)]
 pub const RAD_DEG_RATIO: f32 = 0.01745329251f32;
 
 /// `toRad` — `mX * radDegRatio`.
@@ -120,12 +132,7 @@ where
 /// `getDistSquaredEuclidean` — dependency of `ssvs::getDistEuclidean`
 /// (also used directly by the game through SSVStart's Vec2 overload).
 #[must_use]
-pub fn get_dist_squared_euclidean<T>(
-    m_x1: T,
-    m_y1: T,
-    m_x2: T,
-    m_y2: T,
-) -> T
+pub fn get_dist_squared_euclidean<T>(m_x1: T, m_y1: T, m_x2: T, m_y2: T) -> T
 where
     T: Copy + Add<Output = T> + Sub<Output = T> + Mul<Output = T>,
 {

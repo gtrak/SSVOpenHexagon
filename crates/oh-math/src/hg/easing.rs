@@ -1,15 +1,13 @@
 //! Port of `include/SSVOpenHexagon/Utils/Easing.hpp` — every curve, verbatim.
 
 /// `hg::Utils::getSaturated` — clamps to `[0, 1]`.
+///
+/// C++ (Easing.hpp) checks `mValue < 0.f` then `mValue > 1.f` and returns
+/// the input unchanged otherwise; on the pinned toolchain `f32::clamp`
+/// matches that exactly, including `NaN -> NaN`.
 #[must_use]
 pub fn get_saturated(m_value: f32) -> f32 {
-    if m_value < 0.0f32 {
-        0.0f32
-    } else if m_value > 1.0f32 {
-        1.0f32
-    } else {
-        m_value
-    }
+    m_value.clamp(0.0f32, 1.0f32)
 }
 
 /// `hg::Utils::getSmoothStep` — formulas verbatim.
