@@ -23,7 +23,7 @@ Decisions log: `.agents/plans/001-rust-port/DECISIONS.md`
 | 08 | `oh-game` types: walls, player, custom walls, status | 01,02 | LANDED | 65f0a9cc | gate 4/4 on a clean checkout; 24 tests; oracle vectors + discrimination-verified |
 | 09 | `oh-game` update loop (HGUpdate/HexagonGame) headless | 08,07 | in-flight | 287b8056 (a+b) | D-013 steps (a) shared state + (b) GameApiState refactor landed; 007's suite green; update loop still owed |
 | 10 | `oh-render` backend (window/input/vertex/shader/font) | 01 | LANDED | e31d4d86 | gate 4/4 on clean checkout; 49 tests; GL smoke skips-with-reason (D-011) |
-| 11 | `oh-render` graphics: stages, draw methods, cameras | 10,08 | in-flight | cd0a4748 (RED) | committed with fmt/clippy/test failing in oh-render; live WIP is fixing it |
+| 11 | `oh-render` graphics: stages, draw methods, cameras | 10,08 | LANDED | cd0a4748, d30f1363 | gate 4/4 (285 tests, +33: 63 lib + 12 draw + golden guard); RenderStage order + per-stage shader binding asserted; golden-frame guard skips-with-reason headless (D-011); free-function port, no oh-render→oh-game dep; 009 wiring TODO seams marked |
 | 12 | `oh-menu-system`: SSVMenuSystem analogue | 01 | LANDED | 232a868c | gate 4/4; 252 tests; contract's Controller claim corrected from source |
 | 13 | `oh-menu` MenuGame: all states, dialog box | 11,12,07 | OPEN | — | |
 | 14 | Lua console overlay + `-printLuaDocs` | 13,07 | OPEN | — | |

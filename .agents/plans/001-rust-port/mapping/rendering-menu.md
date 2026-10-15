@@ -1573,10 +1573,15 @@ void HexagonGame::death_flashEffect()
 }
 ```
 
-(Exact body: `death_shakeCamera` checks both cameras and `Config::getCameraShake()`,
-stores `preShakeCenters`, then sets `levelStatus.cameraShake =
-Config::getCameraShakeMagnitude()`; `death_flashEffect` sets
-`status.flashEffect = 255.f` if `Config::getFlash()`. Both called from
+(Exact body, verified against `HexagonGame.cpp:822-853` during issue 11 — the
+earlier note here was stale: `death_shakeCamera` early-returns when
+`window == nullptr`, asserts both cameras, sets the overlay view to
+`{w/2, h/2} / {w, h}`, `backgroundCamera->setCenter(0,0)`, and
+`status.cameraShake = 45.f * Config::getCameraShakeMultiplier()` (the
+**status** shake, not `levelStatus`; multiplier, not magnitude). There is no
+`preShakeCenters` here — that is the `update_cameraShake` bookkeeping. The
+`death_flashEffect` body is unconditional: `initFlashEffect(255,255,255)` +
+`status.flashEffect = 255` (no `Config::getFlash()` gate). Both called from
 `death()`.)
 
 ## 5. `HGUpdate.cpp` — render-driving updates
