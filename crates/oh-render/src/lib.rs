@@ -1,0 +1,53 @@
+//! `oh-render` — the SFML analogue: the platform backend the rest of the game
+//! draws and reads input through.
+//!
+//! One Rust module per SFML/SSVStart subsystem (plan 001, ground rule 1;
+//! D-000/D-002). Backend decision: **real-GL stack** (`winit` + `glutin` +
+//! `glow` + `rodio` + `fontdue`), NOT `rsfml` — see DECISIONS.md D-004 (SFML
+//! entry). Pack content ships GLSL fragment shaders that must execute on a
+//! real GL context, so a CPU rasterizer was rejected.
+//!
+//! Modules:
+//! - `input` — `ssvs::Input::InputState` (per-key/button pressed bitsets over
+//!   the exact SFML `Keyboard::Key` / `Mouse::Button` integers).
+//! - `draw` — `sf::Vertex` / `sf::PrimitiveType` / `sf::RenderStates` + the
+//!   `hg::Utils::FastVertexVector` batch the game's draw code feeds.
+//! - `view` — `sf::View` + `ssvs::Camera` (world↔screen, pan/zoom/turn/skew).
+//! - `texture` / `font` / `shader` / `audio` / `window` — added in later
+//!   steps (see the issue-10 file map).
+//!
+//! The crate builds and tests **headless** (no display / GPU required): the
+//! pure-logic surface (input, vertex order, text metrics, enum tables, camera
+//! math) is asserted without a GL context; the GPU path is covered by a single
+//! smoke test that skips with a printed reason when no context is available.
+
+pub mod audio;
+pub mod draw;
+pub mod error;
+pub mod font;
+pub mod gl;
+pub mod input;
+pub mod shader;
+pub mod texture;
+pub mod types;
+pub mod view;
+pub mod window;
+
+// Compatibility-surface re-exports (exact SFML enum integers via `oh-config`,
+// and the `sf::Vector2f` / `sf::Color` analogues via `oh-math`).
+pub use audio::{AudioDevice, Music, Sound, SoundBuffer};
+pub use draw::{BlendMode, PrimitiveType, RenderStates, Vertex, VertexBatch};
+pub use error::RenderError;
+pub use font::{Font, Text};
+pub use gl::GlParts;
+pub use input::InputState;
+pub use oh_config::{Button, Key};
+pub use oh_math::hg::color::Color;
+pub use oh_math::ssvs::vector2::Vec2;
+pub use shader::{Shader, ShaderRegistry, ShaderType, Uniform};
+pub use texture::{Image, RenderTexture, Sprite, Texture};
+pub use types::{FloatRect, VideoMode};
+pub use view::{Camera, View};
+pub use window::{
+    map_window_event, winit_button_to_sfml, winit_key_to_sfml, Event, JoystickAxis, Window,
+};

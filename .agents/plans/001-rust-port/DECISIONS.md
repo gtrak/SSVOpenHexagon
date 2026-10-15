@@ -41,6 +41,59 @@ contradicting one must report it rather than silently diverge.
 - Pending: SFML analogue (issue 10), Lua runtime (06), JSON (03), zlib (02),
   sodium (16), SQLite (17), ImGui (14), Steam (20), Discord (21).
 
+## D-004 (SFML entry) — render backend: real-GPU stack, NOT `rsfml`
+
+- **Question:** which Rust backend implements the SFML analogue `oh-render`
+  (window / input / vertex-batch / texture / font / text / view / shader / audio
+  device)? `rsfml` was the plan's *primary* candidate; `winit`+`glow`+`rodio`
+  (±`fontdue`/`ab_glyph`) was the fallback.
+- **Decision:** use a **real-OpenGL** stack — `winit` 0.30 (window / event loop /
+  input platform backend), `glutin` 0.32 + `glutin-winit` 0.5 + `glow` 0.18
+  (GL context + GL function loader), `rodio` 0.23 (audio device surface),
+  `fontdue` 0.9 (TTF metrics + glyph rasterization → GL glyph atlas), plus
+  `oh-config`'s `Key` / `Button` (the exact SFML `Keyboard::Key` /
+  `Mouse::Button` integers) via a dependency. A self-written CPU software
+  rasterizer was **rejected** for the offscreen path.
+- **Evidence (all verified on this box, 2026-07):**
+  - **`rsfml` is not a published crate.** `cargo add rsfml` (and `-graphics`,
+    `-window`, `-audio`, `-system`, `-network`) → `the crate 'rsfml' could not
+    be found in registry index`; none of the crates appear under
+    `~/.cargo/registry/src/**`. The plan's primary candidate does not exist on
+    crates.io, so there is no `rsfml` source to read and no fallback decision
+    could be grounded in it.
+  - **The fallback crates resolve and compile:** `winit` 0.30.13 (builds
+    headless on this box in ~12s), `glutin` 0.32.3, `glutin-winit` 0.5.0,
+    `glow` 0.18.0, `rodio` 0.23.0, `fontdue` 0.9.4, `ab_glyph` 0.2.32.
+  - **Headless offscreen GL is infeasible here:** no `OSMesa`, and no usable
+    offscreen EGL context (only Chrome's own `libEGL` is present; X11 pkg-config
+    is available, but there is no display in the test environment). A pure
+    `glow` offscreen target therefore cannot back the required
+    "offscreen render target → draw a triangle → `glReadPixels`" headless test.
+  - **GLSL is a hard product requirement, not optional.** Pack content ships
+    GLSL fragment shaders (`_RELEASE/Packs/*/Shaders/*.frag`: `pixelate.frag`,
+    `text.frag`, `gradient.frag`, `steamart.frag`) and the game binds one per
+    `RenderStage` (mapping/rendering-menu.md §1/§9, the `shdr_*` Lua API,
+    `assets.getShaderByShaderId`). A CPU rasterizer cannot execute these at all,
+    so it would silently break third-party packs and issue 11's shader work. The
+    backend must run **real GL**.
+- **How the headless-test tension is resolved** (do NOT weaken the product for
+  testability): the pure-logic surface is tested headless with **no GL context**
+  — vertex/quad emission order + counts, text-layout metrics, the exact
+  key/button integer tables, input-state transitions, camera/world↔screen math,
+  and `RenderStates`/primitive mapping. The actual GPU path is covered by ONE
+  smoke test that (a) tries to create a context, (b) if a display/context is
+  unavailable it **SKIPS with a printed reason** (not a silent pass, not a
+  `#[ignore]`), (c) when a context IS available (dev box / CI with a display) it
+  does the offscreen draw + `glReadPixels` colour/position readback.
+- **Enum compatibility surface:** `Key`/`Button` are reused from `oh-config`
+  (`crates/oh-render` depends on `oh-config`) so the in-memory enum integers
+  stay exactly `Unknown=-1 .. Pause=100, KeyCount=101` and `Left=0 ..
+  XButton2=4, ButtonCount=5` (oracle-vectors.md).
+- **Cross-compile:** `x86_64-pc-windows-gnu` is **NOT RUN** here (target/
+  rustup absent); issue 22/CI owns the Windows build. `winit`+`glutin` are
+  cross-platform by design.
+- **Landed by:** issue 10 (`crates/oh-render`).
+
 ## D-005 — In-repo skills are written from real source
 
 - **Decision:** every library (vendored C++, Rust crate, system lib) gets a skill

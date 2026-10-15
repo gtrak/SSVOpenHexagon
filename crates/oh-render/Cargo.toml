@@ -1,0 +1,30 @@
+[package]
+name = "oh-render"
+description = "SFML-analogue render backend for the SSVOpenHexagon Rust port (window, input, vertex batch, texture, font/text, view/camera, shader, audio device) — real-GL stack per DECISIONS.md D-004 (SFML entry)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# Exact SFML Keyboard::Key / Mouse::Button integers (D-004 SFML entry) —
+# reused rather than duplicated.
+oh-config = { path = "../oh-config" }
+# Vec2 (sf::Vector2f analogue), Color (sf::Color analogue), angle/geometry
+# helpers (ssvu::PI/to_rad, ssvs getRad/getVecFromRad/getMag).
+oh-math = { path = "../oh-math" }
+
+# --- real-GL platform stack (D-004 SFML entry) -----------------------------
+# Window / event loop / input platform backend.
+winit = "0.30"
+# GL context + GL function loader. The context is created with glutin's
+# `Display::new(event_loop.as_raw(), <api preference>)` + a winit window (raw
+# handles from `raw-window-handle`); `glow` loads the GL entry points.
+glutin = "0.32"
+raw-window-handle = "0.6"
+glow = "0.18"
+# TTF metrics + glyph rasterization (pure-Rust; glyph atlases become GL
+# textures in the Font/Text path).
+fontdue = "0.9"
+# Audio device surface (play/stop/pitch/volume/playing-offset).
+rodio = "0.23"
+
+[dev-dependencies]
