@@ -21,6 +21,8 @@
 //!   icons, level info, particles.
 //! - `text_draw` — the `updateText` content build + `drawText_*` layout.
 //! - `batching` — `FastVertexVectorTris` → GPU buffer upload (live GL only).
+//! - `timer` — `ssvs::TimerStatic` (issue 15c): the fixed-timestep
+//!   accumulation timer the windowed loop ticks the game states with.
 //! - `texture` / `font` / `shader` / `audio` / `window` — added in later
 //!   steps (see the issue-10 file map).
 //!
@@ -41,6 +43,7 @@ pub mod input;
 pub mod shader;
 pub mod text_draw;
 pub mod texture;
+pub mod timer;
 pub mod types;
 pub mod view;
 pub mod window;
@@ -75,6 +78,7 @@ pub use text_draw::{
     format_time, get_scaled_character_size, time_format, update_text, TextUpdateInput,
 };
 pub use texture::{Image, RenderTexture, Sprite, Texture};
+pub use timer::TimerStatic;
 pub use types::{FloatRect, RectangleShape, VideoMode};
 pub use view::{Camera, View};
 pub use window::{
