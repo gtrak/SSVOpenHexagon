@@ -272,3 +272,56 @@ so the two streams are not interleavable — each was taken from a fresh wrapper
 
 Tests must assert the **bit patterns** for the real distributions (float equality
 cannot distinguish the last ulp).
+
+## Gameplay geometry (CWall / CPlayer / line-circle) — REAL SFML fork
+
+Compiled with the repo's minimal SFML shim (`tools/oracle/shim/`) against the
+**real** `CWall.cpp`, `CPlayer.cpp`, `Geometry.cpp`, `Ticker.cpp`. The vectors
+were cross-checked against a build using the real SFML fork headers
+(`vittorioromeo/SFML@dacceddbd1adee49c7bfd120266e200800550394`) plus the fork's
+`Vector2.cpp`, and are **identical** — the shim encodes the same semantics, so
+the fork is not vendored. Reproduce with `tools/oracle/run.sh`.
+
+Fixture A — `CWall(6, 0,0, 0,0, center=(0,0), side=0, thickness=40, distance=1600, speed=5, curve=0, hueMod=0)`:
+```
+wall_v0=1385.64062,-800
+wall_v1=1385.64062,800
+wall_v2=1420.28162,820
+wall_v3=1420.28162,-820
+wall_overlap_inner_pt=1     # isOverlapping(1400, 0)
+wall_overlap_centroid=0     # isOverlapping(0, 0)
+```
+
+Fixture B — same wall with `curve=3`, then `update(wallSpawnDist=1600, radius=75, center=(0,0), ft=1)`:
+```
+wall_u_v0=1401.64404,-718.344727
+wall_u_v1=1322.92676,854.68689
+wall_u_v2=1356.5249,876.39325
+wall_u_v3=1437.24121,-736.58844
+wall_dead=0
+```
+
+Fixture C — `CPlayer(pos=(0,0), swapCooldown=8, size=7.3, speed=9.45, focusSpeed=4.625)`,
+`setPlayerAngle(0.5)`, `updatePosition(75)`:
+```
+player_pos=65.8186951,35.9569168
+player_angle=0.5
+player_ready_to_swap=0
+player_just_swapped=0
+```
+
+Fixture D — player push: wall `distance=75, speed=0, curve=0`, player angle 0,
+`radiusSquared = 75*75 + 8 = 5633`, `push(movementDir=1, radius=75, wall, center=(0,0), rsq, ft=1)`:
+```
+push_result=1
+push_pos=75,0
+```
+
+Fixture E — `Utils::getLineCircleIntersection(a, b, {10,0}, {10,10}, r²=100)` and a miss with r²=1:
+```
+lci_code2=1 a=10,0 b=0,0
+lci_code0=0
+```
+
+Note the `radiusSquared` convention: `radius*radius + 8.f` for wall collision
+(the `+8.f` is inside the same float expression as the square).

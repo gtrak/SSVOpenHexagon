@@ -31,3 +31,12 @@ echo "=== ostream float formatting (hg::Utils::concat) ==="
 echo "=== timepoint formatting (hg::Utils::formatTimepoint) ==="
 "$CXX" "${FLAGS[@]}" -o "$OUT/timestamp" "$HERE/timestamp_probe.cpp"
 "$OUT/timestamp"
+
+echo "=== gameplay geometry (CWall/CPlayer/line-circle) ==="
+"$CXX" "${FLAGS[@]}" -include "$HERE/pch.hpp" -o "$OUT/gameplay" \
+  "$HERE/gameplay_probe.cpp" "$HERE/stubs.cpp" \
+  "$ROOT/src/SSVOpenHexagon/Components/CWall.cpp" \
+  "$ROOT/src/SSVOpenHexagon/Components/CPlayer.cpp" \
+  "$ROOT/src/SSVOpenHexagon/Utils/Geometry.cpp" \
+  "$ROOT/src/SSVOpenHexagon/Utils/Ticker.cpp"
+"$OUT/gameplay"
