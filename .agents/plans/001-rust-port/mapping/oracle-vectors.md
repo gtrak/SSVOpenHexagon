@@ -191,3 +191,28 @@ big-endian-encodes the u64 length prefix. So `HEX` starts `05000000` (LE u32) bu
 `to_le_bytes` for the file format and `to_be_bytes` for the packet format.
 
 Corrected `PHEX` (the packet form) is shown in the block above.
+
+## SFML key/button enum values (from the pinned fork)
+
+Source: `vittorioromeo/SFML@dacceddbd1adee49c7bfd120266e200800550394`,
+`include/SFML/Window/Keyboard.hpp` and `Mouse.hpp`. `ssvs::KKey = sf::Keyboard::Key`,
+`ssvs::MBtn = sf::Mouse::Button`. These values are the bind serialization surface
+(config stores bind *names* like `kSpace`, but the in-memory enum must match).
+
+`enum Key` (KeyCount = 101), sequential from `Unknown = -1`:
+
+```
+Unknown=-1 A=0 B=1 C=2 D=3 E=4 F=5 G=6 H=7 I=8 J=9 K=10 L=11 M=12 N=13 O=14 P=15
+Q=16 R=17 S=18 T=19 U=20 V=21 W=22 X=23 Y=24 Z=25 Num0=26 Num1=27 Num2=28 Num3=29
+Num4=30 Num5=31 Num6=32 Num7=33 Num8=34 Num9=35 Escape=36 LControl=37 LShift=38
+LAlt=39 LSystem=40 RControl=41 RShift=42 RAlt=43 RSystem=44 Menu=45 LBracket=46
+RBracket=47 Semicolon=48 Comma=49 Period=50 Apostrophe=51 Slash=52 Backslash=53
+Grave=54 Equal=55 Hyphen=56 Space=57 Enter=58 Backspace=59 Tab=60 PageUp=61
+PageDown=62 End=63 Home=64 Insert=65 Delete=66 Add=67 Subtract=68 Multiply=69
+Divide=70 Left=71 Right=72 Up=73 Down=74 Numpad0=75 Numpad1=76 Numpad2=77 Numpad3=78
+Numpad4=79 Numpad5=80 Numpad6=81 Numpad7=82 Numpad8=83 Numpad9=84 F1=85 F2=86 F3=87
+F4=88 F5=89 F6=90 F7=91 F8=92 F9=93 F10=94 F11=95 F12=96 F13=97 F14=98 F15=99
+Pause=100 KeyCount=101
+```
+
+`enum Button` (ButtonCount = 5): `Left=0 Right=1 Middle=2 XButton1=3 XButton2=4`.
