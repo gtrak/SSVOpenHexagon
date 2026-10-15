@@ -536,3 +536,46 @@ fork is `include/SSVOpenHexagon/SSVUtilsJson/JsonCpp/jsoncpp.inl` (pinned).
   (`imguiLuaConsoleHasInput()` gating `updateInput`, C++ `HGUpdate.cpp:649`) only
   matters when it is actually shown. Keep it behind the same gates; do not let it
   perturb replay paths.
+
+## D-023 — Issue 14 scope corrections: the console belongs to `HexagonGame`, and the C++ metadata pipeline is compiled OUT by default
+
+Both found by reading the source while preparing issue 14 (D-012: source beats contract).
+
+**(a) The console is HEXAGONGAME's, not MenuGame's.** The 14 contract's file table says
+`crates/oh-menu/src/lua_console.rs`. Wrong: every piece of it lives on `HexagonGame`
+— the state (`ilcCmdLog`, `ilcHistory`, `ilcHistoryPos`, `ilcCmdBuffer`,
+`ilcTrackBuffer`, `ilcShowConsole`, `ilcShowConsoleNext`, `ilcLuaTracked`,
+`ilcLuaTrackedNames`, `ilcLuaTrackedResults`, `ilcDeltaClock`:
+`include/.../HexagonGame.hpp:108-118`), the methods
+(`postUpdate_ImguiLuaConsole` `HGUpdate.cpp:1287`, `ilcTextEditCallback` `:1149`,
+`drawImguiLuaConsole` `HGGraphics.cpp:318`), and the gate
+(`imguiLuaConsoleHasInput()` `HexagonGame.cpp:272` gating `HexagonGame::updateInput`
+`HGUpdate.cpp:649`). `MenuGame.cpp` has no `ilc*`/imgui-console code at all.
+⇒ the port belongs in `crates/oh-game` (plus the `oh-app`/render wiring), NOT `oh-menu`.
+
+**(b) The metadata collection is a BUILD FLAG that is OFF.** `CMakeLists.txt:11-17` is
+`if(FALSE) ... set(SSVOH_PRODUCE_LUA_METADATA TRUE) ... else() set(... FALSE) endif()`.
+Every part of the pipeline is `#ifdef SSVOH_PRODUCE_LUA_METADATA`:
+`LuaMetadataProxy::~LuaMetadataProxy` body (`LuaMetadataProxy.cpp:160-179` — with the
+flag off the destructor body is **empty**, so `addFnEntry` is NEVER called),
+`arg()`/`doc()` (returning without storing), and the type-to-string machinery
+(`LuaMetadataProxy.hpp:48,97,105`). Consequently, **in the shipped build
+`getMetadata()` has zero entries**: `printDocs` prints 11 category headers and no
+function entries, `getAllFunctionNames()` returns an empty vector, and
+`getDocsForFunction(name)` returns `"UNKNOWN FUNCTION"` for every name — so the
+console's `?fn` command and `!help`'s doc lookup are inert as shipped.
+- **This is why `_RELEASE/luadocs.md` is a 2021 artifact and cannot be reproduced**
+  (D-021): it was captured from a build made while the flag was still `TRUE`. The
+  flag was disabled later; the capture was never regenerated.
+- **Consequence for issue 14:** port BOTH behaviours, and make the production side a
+  **build-time "produce metadata" mode**, faithful to `#ifdef`. The default (flag off)
+  must yield the empty-metadata behaviour — printing the 11 headers only, an empty
+  name list, and `"UNKNOWN FUNCTION"`. The flag-on mode must produce the real docs (the
+  `oh-lua` `LuaMetadata` infrastructure for it already exists: `add_fn_entry`,
+  `for_fn_entries`, `PREFIX_HEADERS` (11, verbatim), `resolve_arg_names`).
+  Do NOT pin output against `_RELEASE/luadocs.md`, and do NOT invent a function-count
+  expectation for the default build — the default build documents **zero** functions.
+- **`print_docs` is reachable headlessly** (`mainPrintLuaDocs`, `main.cpp:167-189`:
+  headless assets + a null-window `HexagonGame` + `initLuaAndPrintDocs`), so it IS
+  testable in this port without a window. The console itself is window-gated and
+  debug-gated, so it does not touch replay determinism.
