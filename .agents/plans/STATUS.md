@@ -13,7 +13,7 @@ Decisions log: `.agents/plans/001-rust-port/DECISIONS.md`
 
 | # | Title | Depends | State | Commit | Notes |
 |---|---|---|---|---|---|
-| 01 | Workspace scaffold, C++ test-port, `oh-math`+`oh-rng` | — | in-flight | 3301f230 (wip) | oh-rng green (15 oracle tests); oh-math build+36 tests green; finishing fmt/clippy + skills |
+| 01 | Workspace scaffold, C++ test-port, `oh-math`+`oh-rng` | — | LANDED | 43659e33 | gate green (4/4); 36 tests; skills lib-pcg.md+lib-ssvutils.md landed |
 | 02 | `oh-replay` byte-exact + zlib + packet codec | 01 | SPECD | — | `issue-002-impl.md` written; oracle pins ready |
 | 03 | `oh-data`: structs + comment-tolerant JSON loaders | 01 | SPECD | — | mapping/data-json.md landed |
 | 04 | `oh-config`: all keys, binds, joystick | 01 | OPEN | — | key table in mapping/data-json.md §6 |
