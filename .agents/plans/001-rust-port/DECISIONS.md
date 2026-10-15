@@ -82,3 +82,22 @@ contradicting one must report it rather than silently diverge.
   kills every in-flight generation.
 - **Rule:** a slow-but-answering backend is not wedged; judge by the log
   signature. Never restart while an agent is working.
+
+## D-008 — JSON parser divergences (Rust is stricter than the JsonCpp fork)
+
+Verified from real source by the `oh-data` skills pass
+(`.agents/skills/lib-jsoncpp.md`, `.agents/skills/lib-serde-json.md`); the C++
+fork is `include/SSVOpenHexagon/SSVUtilsJson/JsonCpp/jsoncpp.inl` (pinned).
+
+| # | Divergence | C++ fork | Rust (`oh-data`) | Impact |
+|---|---|---|---|---|
+| 1 | Trailing input after the root value | **Accepted** — `parse` does `readValue()` then only skips comments; no end-of-input check (`jsoncpp.inl:126-131`) | `serde_json::from_str` rejects it ("trailing characters") | Rust rejects some inputs the game accepts. No shipped file does this; keep, but note. |
+| 2 | Non-finite reals (`1e999`) | Accepted → `inf` (`decodeDouble` has no finiteness check) | `Number::from_f64` returns `None` → parse error | Rust rejects. No shipped file does this. |
+| 3 | Trailing commas | Rejected: objects `"Missing '}' or object member name"` (`:391`), arrays the generic syntax error (`:170`). **The fork has no `allowTrailingCommas_`.** | Rejected, different wording | Behaviour matches. |
+| 4 | Unterminated `/*` | Rejected (`tokenError`) | Rejected | Matches. |
+| 5 | Comment positions | Accepted before root, after root, before object keys, after object separators, after array elements. **NOT** between an object key string and `:` | Reproduced by `strip_comments` in `crates/oh-data/src/json.rs` | Pinned by the `comments.rs` tests. |
+| 6 | Float **writing** | `sprintf("%#.16g")` + zero-trim (`jsoncpp.inl:1876-1902`) | `oh-data` reimplements `%#.16g`-and-trim, deliberately **bypassing** `serde_json::to_string` (serde_json 1.0.154 serializes floats via the `zmij` shortest-round-trip algorithm, `ser.rs:1716-1724`) | **Do not substitute `serde_json::to_string` on the write path** — it would change the output bytes. |
+
+- **Decision:** keep the stricter Rust behaviour for 1–2 (no shipped file exercises
+  them), pin 3–5 with tests, and treat 6 as a hard rule for any future write path.
+- **Landed by:** issue 003; recorded here so later config/profile writers comply.
