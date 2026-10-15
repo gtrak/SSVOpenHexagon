@@ -265,7 +265,10 @@ mod tests {
         t.run_update(|_| n += 1);
         assert_eq!(n, 50, "the C++ default cap is 50");
         assert_eq!(t.get_loops(), 50.0);
-        assert!((t.get_time() - 50.0).abs() < f32::EPSILON, "50 slices consumed, 50 remain");
+        assert!(
+            (t.get_time() - 50.0).abs() < f32::EPSILON,
+            "50 slices consumed, 50 remain"
+        );
 
         // The remainder drains on the next frame, still capped.
         t.set_frame_time(0.0);

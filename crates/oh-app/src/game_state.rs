@@ -26,8 +26,8 @@
 //! fnGoToMenu", main.cpp:457-462) — writes the current-slot atomic
 //! directly; [`GameEngine::set_game_state`] writes the same store.
 
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use oh_render::graphics::DrawTarget;
 
@@ -164,10 +164,25 @@ mod tests {
     impl DrawTarget for NullTarget {
         fn clear_black(&mut self) {}
         fn set_view(&mut self, _view: oh_render::view::View) {}
-        fn draw_vertices(&mut self, _vertices: &[oh_render::draw::Vertex], _states: oh_render::draw::RenderStates) {}
+        fn draw_vertices(
+            &mut self,
+            _vertices: &[oh_render::draw::Vertex],
+            _states: oh_render::draw::RenderStates,
+        ) {
+        }
         fn draw_sprite(&mut self, _sprite: &oh_render::texture::Sprite) {}
-        fn draw_text(&mut self, _text: &oh_render::font::Text, _states: oh_render::draw::RenderStates) {}
-        fn draw_rectangle(&mut self, _rect: &oh_render::types::RectangleShape, _states: oh_render::draw::RenderStates) {}
+        fn draw_text(
+            &mut self,
+            _text: &oh_render::font::Text,
+            _states: oh_render::draw::RenderStates,
+        ) {
+        }
+        fn draw_rectangle(
+            &mut self,
+            _rect: &oh_render::types::RectangleShape,
+            _states: oh_render::draw::RenderStates,
+        ) {
+        }
         fn save_screenshot(&mut self, _path: &str) {}
     }
 
@@ -180,7 +195,9 @@ mod tests {
 
     impl GameState for RecordingState {
         fn update_from_timer(&self, ft: f32) {
-            self.log.borrow_mut().push(format!("{}:update({ft})", self.name));
+            self.log
+                .borrow_mut()
+                .push(format!("{}:update({ft})", self.name));
         }
         fn draw(&self, _target: &mut dyn DrawTarget) {
             self.log.borrow_mut().push(format!("{}:draw", self.name));
@@ -197,10 +214,7 @@ mod tests {
             name: "game",
             log: log.clone(),
         };
-        (
-            GameEngine::new(Rc::new(menu), Rc::new(game)),
-            log,
-        )
+        (GameEngine::new(Rc::new(menu), Rc::new(game)), log)
     }
 
     /// Fresh engine: the current state is the menu (C++ `mainClient` boots
@@ -225,7 +239,11 @@ mod tests {
         engine.update_from_timer(0.25);
         assert_eq!(
             *log.borrow(),
-            vec!["menu:update(0.25)", "game:update(0.25)", "menu:update(0.25)"]
+            vec![
+                "menu:update(0.25)",
+                "game:update(0.25)",
+                "menu:update(0.25)"
+            ]
         );
     }
 
