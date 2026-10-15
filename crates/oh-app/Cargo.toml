@@ -26,3 +26,6 @@ oh-math = { path = "../oh-math" }
 # composition crate's public API to the Lua backend).
 oh-lua = { path = "../oh-lua" }
 oh-assets = { path = "../oh-assets" }
+oh-data = { path = "../oh-data" }
+oh-replay = { path = "../oh-replay" }
+oh-rng = { path = "../oh-rng" }

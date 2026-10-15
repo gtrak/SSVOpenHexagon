@@ -12,11 +12,14 @@
 //!
 //! Modules (issue 15 step (a)):
 //! - [`camera`] — the `oh_game::camera::Camera` → `oh_render::view::Camera`
-//!   conversion (both port the same C++ `ssvs::Camera`).
+//!   conversion (both port the same C++ `ssvs::Camera`);
+//! - [`bridge`] — `AppDraw` (the per-frame draw state + scratch) and
+//!   `draw()` (the `HexagonGame::draw` bridge).
 //!
 //! Out of scope for step (a) (steps (b)/(c)): the `main.rs` binary,
 //! argument parsing, `-printLuaDocs`, the winit/glow window + event pump,
 //! MenuGame↔HexagonGame switching, signals, the FPS text timing loop, and
 //! the egui console overlay (issue 14 step (b)).
 
+pub mod bridge;
 pub mod camera;
