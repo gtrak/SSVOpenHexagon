@@ -224,3 +224,34 @@ fork is `include/SSVOpenHexagon/SSVUtilsJson/JsonCpp/jsoncpp.inl` (pinned).
   from its source, not from its name or its plan prose — the same rule as
   "a plausible claim about a language is still a claim".
 - **Landed by:** issues 006/012; recorded here.
+
+## D-013 — Engine/Lua state sharing: one store, reentrant lock
+
+- **Context:** `oh-lua` depends on `oh-game` (its `api/state.rs` builds `GameApiState`
+  from gameplay types), so `oh-game -> oh-lua` as a *normal* dependency is a cycle.
+  But the 285 Lua lambdas and the engine update loop must mutate **one** storage of
+  `level_status`/`status`/`walls`/`rng`/timelines — copies diverge and replay parity
+  breaks (`l_setPulseMin`, `t_*` writes lost).
+- **Decision:**
+  1. Extract the shared data + the `GameApi`/`AssetsApi` traits + a
+     `ReentrantMutex<T>` into `oh_game::lua_state`.
+  2. `oh-lua`'s `GameApiState` becomes `{ shared: SharedState, run_lua_file, assets,
+     backend }` + `Deref<Target = SharedState>`; the `State` alias becomes
+     `Arc<ReentrantMutex<GameApiState>>`; the 285 lambda bodies stay unchanged.
+  3. `HexagonGame<S>` is generic over `S: Deref<Target = SharedState>`; Lua
+     callbacks are injected via a `ScriptHost` trait defined in `oh-game` and
+     implemented by the composition (never a normal `oh-game -> oh-lua` dependency).
+  4. `oh-game` may dev-depend on `oh-lua` + `oh-assets` so tests can compose the
+     full stack against the real `_RELEASE` packs.
+- **Reentrancy is required, not stylistic:** `t_eval`/`e_eval`/`ct_eval` append
+  deferred closures that run Lua **while the state guard is held**
+  (`crates/oh-lua/src/api/main_timeline.rs:37-40`), and lambdas call
+  `lock(&st).backend.*` at 148 sites. A plain `std::sync::Mutex` self-deadlocks.
+- **Verified on this box:** the dev-dependency cycle is legal (built a two-crate
+  workspace with `a -> b` normal + `b -> a` dev; `cargo build` succeeded);
+  `mlua`'s `send` feature is NOT enabled, so `Send`/`Sync` is not forced.
+- **Guardrails required of the implementation:** keep all of issue 007's tests green
+  (285-name exact-set, api.rs, runtime.rs, menu-context); prove reentrancy with a
+  test that re-enters through a lambda AND a test that the depth counter returns to
+  zero; document the `unsafe` raw-pointer contract and drop order explicitly.
+- **Landed by:** issue 009.
