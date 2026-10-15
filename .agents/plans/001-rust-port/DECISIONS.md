@@ -497,3 +497,42 @@ fork is `include/SSVOpenHexagon/SSVUtilsJson/JsonCpp/jsoncpp.inl` (pinned).
 - **Rule (D-014/D-018 family):** an artifact that looks like an oracle must be
   dated against the source before it is used as one. `_RELEASE/luadocs.md` is a
   historical build output, not a contract.
+
+## D-022 — ImGui analogue for issue 14: `egui` 0.37 (+ `egui-winit`, `egui_glow`), verified compatible with the D-011 stack
+
+- **D-004 left this as "assess".** Assessed, with a real build (not docs):
+  `cargo new` + `egui = "0.37"`, `egui-winit = { version = "0.37",
+  default-features = false, features = ["links"] }`, `egui_glow = "0.37"`,
+  `winit = "0.30"`, `glow = "0.18"` → **builds clean** and the resolved lockfile
+  keeps `winit 0.30.13` (the D-011 version), so the console can share the existing
+  window/event-loop stack.
+- **Caveat to handle in the lane (not a blocker):** `egui_glow 0.37` depends on
+  **`glow 0.17`**, while `oh-render` uses **`glow 0.18`** — both end up in the
+  lockfile. They are different Rust types over the same GL context, so the
+  integration must not try to pass `oh-render`'s `glow::Context` straight into
+  `egui_glow`; give the console its own `glow 0.17` context/loader for the shared
+  GL context (or bridge the function-pointer tables). Record what you actually did.
+- **Scope discipline (what the console actually needs):** the C++
+  `postUpdate_ImguiLuaConsole` is ~190 lines and `drawImguiLuaConsole` is a
+  `window == nullptr` early-return + `Imgui::render`. The ImGui surface used is
+  small and listed exactly in the source: `Begin/BeginChild/EndChild`, `Text/
+  TextUnformatted`, `Separator`, `SameLine`, `PushStyleVar/PopStyleVar`
+  (`ImGuiStyleVar_ItemSpacing`), `PushStyleColor/PopStyleColor` (`ImGuiCol_Text`),
+  `SetScrollHereY`, `SetNextWindowSize` (`ImGuiCond_FirstUseEver`),
+  `GetStyle/GetFrameHeightWithSpacing`, `InputText` with
+  `EnterReturnsTrue | CallbackCompletion | CallbackHistory` and an
+  `ImGuiInputTextCallbackData` callback (`ilcTextEditCallback`: completion,
+  history Up/Down, the `?` Lua-docs prefix), `Checkbox`, `DragFloat`,
+  `SetItemDefaultFocus`, `SetKeyboardFocusHere`. `egui` covers all of these
+  (`egui::TextEdit::singleline` + `TextEditOutput.cursor_range` /
+  `TextEditState::store` for completion+history; `egui::Window`/`ScrollArea`/
+  `Frame` for the layout).
+- **Behaviour over pixels (per the 14 contract):** the console is a developer tool.
+  Command history, tracked variables, tab completion, error display and the F1
+  toggle must match; exact pixel layout must not be chased.
+- **The console is gated twice** — `window == nullptr` returns, and
+  `!Config::getDebug() || Config::getOfficial()` forces it hidden — so it is
+  **irrelevant to headless determinism**, and its input suppression
+  (`imguiLuaConsoleHasInput()` gating `updateInput`, C++ `HGUpdate.cpp:649`) only
+  matters when it is actually shown. Keep it behind the same gates; do not let it
+  perturb replay paths.
