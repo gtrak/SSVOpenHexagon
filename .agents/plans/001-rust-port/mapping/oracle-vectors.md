@@ -216,3 +216,59 @@ Pause=100 KeyCount=101
 ```
 
 `enum Button` (ButtonCount = 5): `Left=0 Right=1 Middle=2 XButton1=3 XButton2=4`.
+
+## RNG wrapper (`hg::random_number_generator`) — what the game actually uses
+
+**This section supersedes the plain-engine distributions above for game behavior.**
+`random_number_generator::random_number_generator(seed)` constructs `pcg32_fast{seed}`
+and then calls `advance(1)` (from `src/SSVOpenHexagon/Core/RandomNumberGenerator.cpp`).
+Because the engine is `output_previous == true`, that makes the first value drawn
+through the wrapper equal to the **fresh engine's second** output. The plain-engine
+`int=`/`real=` blocks above are the *unshifted* stream and are NOT what the game
+observes.
+
+Reproduce:
+```
+g++ -std=c++20 -Iinclude -I. -Iextlibs/vrm_pp/include -Iextlibs/SSVUtils/include \
+    -o rngwrap2 /tmp/ohoracle/rngwrap2.cpp /tmp/ohoracle/stubs.cpp \
+    src/SSVOpenHexagon/Core/RandomNumberGenerator.cpp
+./rngwrap2
+```
+
+Seed 12345, `hg::random_number_generator`:
+
+```
+# get_int<int>(0,5)   (libstdc++ uniform_int_distribution)
+w_int=0
+w_int=4
+w_int=4
+w_int=5
+w_int=1
+w_int=0
+w_int=1
+w_int=0
+
+# get_real<float>(0.f,1.f)  (value + exact f32 bits)
+w_real_f32=0.0838740915   bits=0x3dabc62e
+w_real_f32=0.832831502    bits=0x3f553472
+w_real_f32=0.791422367    bits=0x3f4a9aa8
+w_real_f32=0.920383453    bits=0x3f6b9e40
+w_real_f32=0.250387728    bits=0x3e8032d2
+w_real_f32=0.0313274004   bits=0x3d005129
+w_real_f32=0.261056721    bits=0x3e85a93a
+w_real_f32=0.162473187    bits=0x3e265f5f
+
+# get_real<double>(0.0,1.0) (value + exact f64 bits)
+w_real_f64=0.83283152386636339   bits=4605676699026370329
+w_real_f64=0.92038342654505334   bits=4606465296458928981
+w_real_f64=0.031327400181998435  bits=4584675575204950738
+w_real_f64=0.16247318667849914   bits=4595021733754399310
+w_real_f64=0.60167052605211302   bits=4603594585859132629
+```
+
+Note: `get_real<float>` and `get_real<double>` consume a **different number of
+engine draws** (`generate_canonical` uses `__m` draws: 1 for float, 2 for double),
+so the two streams are not interleavable — each was taken from a fresh wrapper.
+
+Tests must assert the **bit patterns** for the real distributions (float equality
+cannot distinguish the last ulp).
