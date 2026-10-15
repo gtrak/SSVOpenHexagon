@@ -149,52 +149,63 @@ fn lemire_u32(rng: &mut Pcg32Fast, n: u32) -> u32 {
 ///
 /// Mirrors the C++ `get_real<T>` template; the game uses `float` (Lua API,
 /// HGUpdate camera shake) and `double` (parity with the C++ template).
-pub trait RealDist: Sized + PartialOrd {
+pub trait RealDist:
+    Copy
+    + PartialOrd
+    + std::ops::Sub<Output = Self>
+    + std::ops::Add<Output = Self>
+    + std::ops::Mul<Output = Self>
+{
     /// `std::generate_canonical<T, T::digits>` from the engine (u32).
     fn canonical(rng: &mut Pcg32Fast) -> Self;
 }
 
 impl RealDist for f32 {
-    /// `generate_canonical<float, 24>` (`bits/random.tcc`):
-    /// `__b = 24`, `__r = 2^32 + 1` (exact in `long double`),
-    /// `__log2r = log2(2^32 + 1)` truncates to `32`,
-    /// `__m = max(1, (24 + 32 - 1) / 32) = 1` draw.
+    /// `generate_canonical<float, 24>`: `__m = 1` engine draw.
     ///
-    /// `__tmp *= __r` converts `4294967297.0L` to `f32`, which is exactly
-    /// `2^32`, so this is `f32(x) / 2^32` in the C++ order of operations.
+    /// Bit-exact effective form (verified against the oracle vectors, plain
+    /// engine and wrapper streams, g++ 15.2): `f32(x1) / 2^32`.
+    /// `x1 as f32` rounds exactly like the C++ `float(x1)` cast; the division
+    /// by the power of two `2^32` is exact.
     fn canonical(rng: &mut Pcg32Fast) -> f32 {
-        let r: f32 = 4294967297.0; // f32(4294967297.0L) == 4294967296.0f == 2^32
-        let mut sum = 0.0f32;
-        let mut tmp = 1.0f32;
-        // for (__k = __m; __k != 0; --__k) — one iteration:
-        sum += f32::from(rng.next_u32()) * tmp;
-        tmp *= r;
-        let mut ret = sum / tmp;
+        let x1 = rng.next_u32();
+        let mut ret = (x1 as f32) / 4294967296.0f32; // / 2^32
         if ret >= 1.0f32 {
-            ret = f32::next_after(1.0f32, 0.0f32);
+            // libstdc++ clamps to `nextafter(1.0f, 0.0f)`. The pinned
+            // toolchain (1.97.1) has no `f32::next_after`, so it is computed
+            // from the IEEE-754 bit encoding: `1.0f` is a positive normal
+            // with a nonzero mantissa, so one ulp toward 0 is exactly a
+            // one-bit decrement of the bit pattern (`0x3F7FFFFF`).
+            ret = f32::from_bits(f32::to_bits(1.0f32).wrapping_sub(1));
         }
         ret
     }
 }
 
 impl RealDist for f64 {
-    /// `generate_canonical<double, 53>` (`bits/random.tcc`):
-    /// `__b = 53`, `__log2r = 32` (truncated),
-    /// `__m = max(1, (53 + 32 - 1) / 32) = 2` draws.
-    /// `__r` is exact in `f64` (`2^32 + 1 < 2^53`).
+    /// `generate_canonical<double, 53>`: `__m = 2` engine draws.
+    ///
+    /// Bit-exact effective form (verified against the oracle vectors, plain
+    /// engine and wrapper streams, g++ 15.2): `(x1 + x2 * 2^32) / 2^64`.
+    /// `x2 * 2^32` is exact in f64 (x2 < 2^32); the accumulation `x1 + …`
+    /// rounds to 53 bits exactly as the C++ `double` accumulation; the
+    /// division by `2^64` is an exact power-of-two scale.
+    ///
+    /// Note: `get_real<f32>` and `get_real<f64>` consume different numbers of
+    /// engine draws (1 vs 2) and are NOT interleavable — the oracle vectors
+    /// for each type come from a fresh engine/wrapper.
     fn canonical(rng: &mut Pcg32Fast) -> f64 {
-        let r: f64 = 4294967297.0;
-        let mut sum = 0.0f64;
-        let mut tmp = 1.0f64;
-        // for (__k = __m; __k != 0; --__k) — k = 2 (first engine draw):
-        sum += f64::from(rng.next_u32()) * tmp;
-        tmp *= r;
-        // k = 1 (second engine draw):
-        sum += f64::from(rng.next_u32()) * tmp;
-        tmp *= r;
-        let mut ret = sum / tmp;
+        let x1 = rng.next_u32();
+        let x2 = rng.next_u32();
+        // C++ accumulation order: x1 first (scale 1.0), then x2 (scale 2^32).
+        let mut ret = (x1 as f64 + x2 as f64 * 4294967296.0f64) / 1.8446744073709552e19; // / 2^64
         if ret >= 1.0f64 {
-            ret = f64::next_after(1.0f64, 0.0f64);
+            // libstdc++ clamps to `nextafter(1.0, 0.0)`. The pinned toolchain
+            // (1.97.1) has no `f64::next_after`, so it is computed from the
+            // IEEE-754 bit encoding: `1.0` is a positive normal with a
+            // nonzero mantissa, so one ulp toward 0 is exactly a one-bit
+            // decrement of the bit pattern (`0x3FEFFFFFFFFFFFFF`).
+            ret = f64::from_bits(f64::to_bits(1.0f64).wrapping_sub(1));
         }
         ret
     }
@@ -228,8 +239,7 @@ mod tests {
     fn oracle_raw_stream_seed_12345() {
         let mut rng = Pcg32Fast::from_seed(12345);
         let expected = [
-            0u32, 360236480, 3576984158, 3399133164, 3953016716, 1075407150,
-            134550159, 1121230050,
+            0u32, 360236480, 3576984158, 3399133164, 3953016716, 1075407150, 134550159, 1121230050,
         ];
         for &e in &expected {
             assert_eq!(rng.next_u32(), e, "raw engine stream mismatch (seed 12345)");
@@ -298,13 +308,13 @@ mod tests {
         // 0.250387728, 0.0313274004, 0.261056721  (oracle, %.9g)
         let expected_bits = [
             0x00000000u32, // 0
-            0x3DABC62E, // 0.0838740915
-            0x3F553472, // 0.832831502
-            0x3F4A9AA8, // 0.791422367
-            0x3F6B9E40, // 0.920383453
-            0x3E8032D2, // 0.250387728
-            0x3D005129, // 0.0313274004
-            0x3E85A93A, // 0.261056721
+            0x3DABC62E,    // 0.0838740915
+            0x3F553472,    // 0.832831502
+            0x3F4A9AA8,    // 0.791422367
+            0x3F6B9E40,    // 0.920383453
+            0x3E8032D2,    // 0.250387728
+            0x3D005129,    // 0.0313274004
+            0x3E85A93A,    // 0.261056721
         ];
         for &bits in &expected_bits {
             let got = uniform_real::<f32>(&mut rng, 0.0, 1.0);
@@ -326,7 +336,9 @@ mod tests {
         // 0.083874091506004333, 0.79142236263324306, 0.250387739138767,
         // 0.26105671423285443 (C++ probe)
         let expected_bits = [
-            0x3FB578C5C0000000u64, 0x3FE95354FD9AA68E, 0x3FD0065A4BBAE790,
+            0x3FB578C5C0000000u64,
+            0x3FE95354FD9AA68E,
+            0x3FD0065A4BBAE790,
             0x3FD0B52738820145,
         ];
         for &bits in &expected_bits {
@@ -359,22 +371,84 @@ mod tests {
     }
 
     /// Pins the `hg::random_number_generator` ctor behavior: engine seeded
-    /// from the seed, then `advance(1)` — so the first draw is the second raw
-    /// value of the engine stream, and `seed()` returns the stored seed.
+    /// from the seed, then `advance(1)` — so with `output_previous == true`
+    /// the first draw is the **fresh engine's second** raw value, and
+    /// `seed()` returns the stored seed.
     ///
-    /// The `[0, 4, 4, 5]` int stream is the C++ probe's
-    /// `hgint05` (engine advanced by 1, `uniform_int_distribution<int>{0,5}`).
+    /// Raw stream (seed 12345): `[0, 360236480, 3576984158, ...]` — the
+    /// full-width u32 range returns the raw engine value, so the first two
+    /// draws must be raw[1] and raw[2], proving the one-step shift.
     #[test]
     fn rng_ctor_seeds_engine_and_advances_one() {
         let mut g = RandomNumberGenerator::new(12345);
         assert_eq!(g.seed(), 12345);
-        // raw stream (seed 12345): [0, 360236480, 3576984158, ...]
-        // full-width int range returns the raw engine value (post-advance).
         assert_eq!(g.get_int(0u32, u32::MAX), 360236480);
         assert_eq!(g.get_int(0u32, u32::MAX), 3576984158);
-        let expected_int05 = [0i32, 4, 4, 5];
-        for &e in &expected_int05 {
-            assert_eq!(g.get_int(0, 5), e, "hg wrapper int{0,5} stream mismatch");
+    }
+
+    /// Pins `get_int<int>(0,5)` through the wrapper on a fresh
+    /// `random_number_generator{12345}` — the "w_int=..." block of the oracle
+    /// (oracle-vectors.md, "RNG wrapper" section).
+    #[test]
+    fn rng_wrapper_int05_seed_12345() {
+        let mut g = RandomNumberGenerator::new(12345);
+        let expected = [0i32, 4, 4, 5, 1, 0, 1, 0];
+        for &e in &expected {
+            assert_eq!(
+                g.get_int(0, 5),
+                e,
+                "wrapper int{{0,5}} stream mismatch (seed 12345)"
+            );
+        }
+    }
+
+    /// Pins `get_real<float>(0.f, 1.f)` through the wrapper on a fresh
+    /// `random_number_generator{12345}`, bit-exactly — the "w_real_f32=..."
+    /// block of the oracle. One engine draw per value (`__m = 1`).
+    #[test]
+    fn rng_wrapper_real_f32_seed_12345() {
+        let mut g = RandomNumberGenerator::new(12345);
+        let expected_bits = [
+            0x3DABC62Eu32, // 0.0838740915
+            0x3F553472,    // 0.832831502
+            0x3F4A9AA8,    // 0.791422367
+            0x3F6B9E40,    // 0.920383453
+            0x3E8032D2,    // 0.250387728
+            0x3D005129,    // 0.0313274004
+            0x3E85A93A,    // 0.261056721
+            0x3E265F5F,    // 0.162473187
+        ];
+        for &bits in &expected_bits {
+            let got = g.get_real(0.0f32, 1.0f32);
+            assert_eq!(
+                got.to_bits(),
+                bits,
+                "wrapper real<float>{{0,1}} stream mismatch (seed 12345)"
+            );
+        }
+    }
+
+    /// Pins `get_real<double>(0.0, 1.0)` through the wrapper on a fresh
+    /// `random_number_generator{12345}`, bit-exactly — the "w_real_f64=..."
+    /// block of the oracle. Two engine draws per value (`__m = 2`), so this
+    /// stream is not interleavable with the f32 one.
+    #[test]
+    fn rng_wrapper_real_f64_seed_12345() {
+        let mut g = RandomNumberGenerator::new(12345);
+        let expected_bits = [
+            0x3FEAA68E4BC2AF19u64, // 0.83283152386636339
+            0x3FED73C7F1995355,    // 0.92038342654505334
+            0x3FA00A251E8032D2,    // 0.031327400181998435
+            0x3FC4CBEBDFA16A4E,    // 0.16247318667849914
+            0x3FE340E28C0B8CD5,    // 0.60167052605211302
+        ];
+        for &bits in &expected_bits {
+            let got = g.get_real(0.0f64, 1.0f64);
+            assert_eq!(
+                got.to_bits(),
+                bits,
+                "wrapper real<double>{{0,1}} stream mismatch (seed 12345)"
+            );
         }
     }
 
@@ -399,9 +473,9 @@ mod tests {
         let mut rng = Pcg32Fast::from_seed(12345);
         let expected = [
             -2147483648i32, // raw[0] = 0 -> 0 + 2^31 (mod 2^32)
-            -1787247168, // raw[1] = 360236480
-            1429500510, // raw[2] = 3576984158
-            1251649516, // raw[3] = 3399133164
+            -1787247168,    // raw[1] = 360236480
+            1429500510,     // raw[2] = 3576984158
+            1251649516,     // raw[3] = 3399133164
         ];
         for &e in &expected {
             assert_eq!(
