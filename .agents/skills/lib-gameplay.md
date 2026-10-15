@@ -290,6 +290,18 @@ tp)` walks actions, `waiting` halts, `proceed` advances the index; a finished
 timeline is cleared + runner reset by the manager. `wait_for` compares the
 elapsed wall-clock delta (>=0) against the duration.
 
+**Every `clear()` of a timeline must be paired with a runner reset — this is NOT
+optional (D-019).** `HexagonGame::setLevelData` (the `newGame` path) does
+`eventTimeline.clear(); eventTimelineRunner = {};` (`HexagonGame.cpp:668-669`),
+`messageTimeline... + messageTimelineRunner = {};` (`:672-673`) and
+`timeline.clear(); timelineRunner = {};` (`:686-687`). A runner that survives its
+timeline keeps `current_idx` / `wait_start_tp`, so the NEXT game's first
+`t_wait`/`e_wait` measures against the PREVIOUS game's clock: the spawn schedule
+shifts and a live run no longer replays to the same death time. Only levels that
+wait early and heavily expose it (`orthoplex/bipolarity` does; `cube/apeirogon`
+and `experimental/autotest0` do not) — which is exactly how it survived a 2-level
+determinism harness.
+
 ## LevelStatus (§6)
 
 `float` fields (defaults): `incTime=15.f`, `pulseMin=75.f`, `pulseMax=80.f`,
@@ -351,5 +363,8 @@ distribution semantics are documented in `lib-pcg.md` (crate `oh-rng`).
 - Ticker overflow is dropped; time-pause over-run is dropped (whole frame
   counts as paused); status times are f64.
 - Do NOT "fix" `updateTriangleWidthTransition` (4.5→0, not 3→-1.5).
+- `setLevelData` resets **each timeline AND its runner** (§9) — a clear without
+  the runner reset leaks simulation state across `newGame` and breaks replay
+  parity (D-019).
 - `transformHue`/`getColorFromHue`/easing live in `oh-math` (see `lib-ssvutils.md`
   for `transformHue`'s `3.14f` approximation).
