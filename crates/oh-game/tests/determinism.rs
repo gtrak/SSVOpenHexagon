@@ -1,4 +1,9 @@
-//! Issue 009 step (c): the ported `test/ReplayExecution.t.cpp` (D-018).
+//! Issue 009 step (c) + step (d): the ported `test/ReplayExecution.t.cpp`
+//! (2 pairs, 25 iterations — D-018) and
+//! `test/ReplayExecutionBenchmark.t.cpp` (4 pairs, 100 iterations — the set
+//! that exposed D-019, pinned by
+//! `engine_reuse_after_second_new_game_is_deterministic`), plus a regression
+//! guard for the second-`newGame` determinism.
 //!
 //! # What this test is (and is not)
 //!
@@ -206,6 +211,158 @@ fn replay_execution_random_inputs_policy() {
             "random-input self-consistency"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Issue 009 step (d): the ported `test/ReplayExecutionBenchmark.t.cpp` — the
+// 4-pair level set at 100 iterations. It is the 2-pair test with exactly
+// three differences (verified against the C++ file): 4 pairs (adding
+// `orthoplex`/`arcadia` and `orthoplex`/`bipolarity`), 100 iterations, and
+// the commented-out `std::cerr` line + no windowed block. The assertions are
+// the same three self-consistency checks (D-018) — NO expected numbers. This
+// coverage is what exposed D-019 (the stale timeline runners across
+// `newGame`), pinned by
+// `engine_reuse_after_second_new_game_is_deterministic` below.
+// ---------------------------------------------------------------------------
+
+/// The C++ benchmark's `packs` array, verbatim (`i % 4` indexing — all four
+/// are used; `orthoplex` appears twice, once per level).
+const BENCH_PACKS: [&str; 4] = [
+    "ohvrvanilla_vittorio_romeo_cube_1",
+    "ohvrvanilla_vittorio_romeo_experimental_1",
+    "ohvrvanilla_vittorio_romeo_orthoplex_1",
+    "ohvrvanilla_vittorio_romeo_orthoplex_1",
+];
+/// The C++ benchmark's `levels` array, verbatim (re-derived via `buildPackId`
+/// against the shipped `pack.json`s — D-018 correction; `arcadia` / `bipolarity`
+/// ship in `_RELEASE/Packs/orthoplex/Levels/`).
+const BENCH_LEVELS: [&str; 4] = [
+    "ohvrvanilla_vittorio_romeo_cube_1_apeirogon",
+    "ohvrvanilla_vittorio_romeo_experimental_1_autotest0",
+    "ohvrvanilla_vittorio_romeo_orthoplex_1_arcadia",
+    "ohvrvanilla_vittorio_romeo_orthoplex_1_bipolarity",
+];
+
+/// One C++ benchmark `doTest(i, differentHG)` iteration (identical to
+/// `do_test` above, but indexed over the 4-pair set; the fixed
+/// `alwaysSpinRight` policy applies — same documented deviation as the
+/// 2-pair loop).
+fn bench_do_test(assets: &Arc<oh_assets::Assets>, i: usize, different_hg: bool) {
+    let root = release_dir();
+    let c = compose(assets.clone(), root.clone(), false);
+    c.game.set_always_spin_right(true);
+    // C++: `hg.newGame(packs[i % packs.size()], levels[i % levels.size()],
+    // true /* firstPlay */, 1.f /* diffMult */, false);`
+    c.game.new_game(
+        BENCH_PACKS[i % BENCH_PACKS.len()],
+        BENCH_LEVELS[i % BENCH_LEVELS.len()],
+        true,
+        1.0,
+        false,
+    );
+    let (score, rf) = run_live_to_death(&c.game);
+    assert!(score > 0.0, "live run died with zero played time");
+
+    // C++: `TEST_ASSERT(score2.has_value())` + `TEST_ASSERT_EQ(score,
+    // replayPlayedTimeSeconds)` — the same engine, or a fresh one.
+    let score2 = if different_hg {
+        let c2 = compose(assets.clone(), root, false);
+        c2.game
+            .run_replay_until_death_and_get_score(&rf, 1, 1.0)
+            .expect("replay playback did not terminate")
+    } else {
+        c.game
+            .run_replay_until_death_and_get_score(&rf, 1, 1.0)
+            .expect("replay playback did not terminate")
+    };
+    // The C++ `std::cerr << score << " == " << replayPlayedTimeSeconds` line
+    // is commented out in the benchmark file — not ported.
+    assert_eq!(
+        score, score2.played_time_seconds,
+        "D-018 self-consistency (benchmark 4-pair set): the live run must replay to the identical played time (exact ==, as the C++)"
+    );
+}
+
+/// The C++ benchmark headless loop: `for(int i = 0; i < 100; ++i) {
+/// doTest(i, false, nullptr); doTest(i, true, nullptr); }` — 100 iterations
+/// × both variants × the 4-pair set (200 doTest calls; the windowed half is
+/// absent in the C++ benchmark file — no Rust equivalent). **Self-consistent,
+/// NOT C++-verified** (D-018: no expected numbers anywhere in the C++ file).
+#[test]
+fn replay_execution_benchmark_headless_loop() {
+    let assets = load_release();
+    for i in 0..100 {
+        bench_do_test(&assets, i, false);
+        bench_do_test(&assets, i, true);
+    }
+}
+
+/// D-019 regression guard: a SECOND `new_game` on the SAME engine must stay
+/// deterministic.
+///
+/// C++ `setLevelData` resets each timeline **and its runner**:
+/// `eventTimeline.clear(); eventTimelineRunner = {};` (`HexagonGame.cpp:668-669`),
+/// `messageTimeline... + messageTimelineRunner = {};` (`:672-673`),
+/// `timeline.clear(); timelineRunner = {};` (`:686-687`). The port
+/// originally cleared the three timelines but kept `main_timeline_runner` /
+/// `event_timeline_runner` (stale `current_idx` / `wait_start_tp`), so the
+/// first `t_wait` / `e_wait` of the NEXT game measured against the previous
+/// game's clock: the spawn schedule shifted and the death time moved (D-019).
+/// Levels that wait early and heavily on the timelines expose it —
+/// `orthoplex/bipolarity` does; `apeirogon` / `autotest0` happen not to (which
+/// is why the 2-pair harness passed). `bipolarity.lua`'s `onInit` ends with
+/// `t_wait(12 / getMusicDMSyncFactor())` and its `onStep` schedules
+/// `e_wait(...)`s.
+///
+/// The assertion shape D-019's discrimination isolated: a live run that
+/// follows a previous `newGame` on the same engine must still replay to the
+/// identical played time (exact `==`). **Self-consistent, NOT
+/// C++-verified** (D-018).
+#[test]
+fn engine_reuse_after_second_new_game_is_deterministic() {
+    let assets = load_release();
+    let root = release_dir();
+    let c = compose(assets.clone(), root.clone(), false);
+    c.game.set_always_spin_right(true);
+
+    // Game 1: a normal `newGame` on a fresh engine.
+    c.game.new_game(
+        "ohvrvanilla_vittorio_romeo_orthoplex_1",
+        "ohvrvanilla_vittorio_romeo_orthoplex_1_bipolarity",
+        true,
+        1.0,
+        false,
+    );
+    let (score1, _) = run_live_to_death(&c.game);
+    assert!(score1 > 0.0, "game 1 died with zero played time");
+
+    // Game 2: the SAME level via a second `newGame` on the SAME engine — the
+    // restart path in the real game too (D-019). With the D-019 bug this
+    // live run's spawn schedule shifts (its first wait measured against
+    // game 1's runner clock) and it no longer replays to the identical
+    // played time.
+    c.game.new_game(
+        "ohvrvanilla_vittorio_romeo_orthoplex_1",
+        "ohvrvanilla_vittorio_romeo_orthoplex_1_bipolarity",
+        true,
+        1.0,
+        false,
+    );
+    let (score2, rf2) = run_live_to_death(&c.game);
+    assert!(score2 > 0.0, "game 2 died with zero played time");
+
+    // Replay game 2's recording on a FRESH engine (D-019's discrimination:
+    // the replay itself is deterministic — the live run is what must match
+    // it after a previous `newGame`).
+    let c2 = compose(assets.clone(), root, false);
+    let score3 = c2
+        .game
+        .run_replay_until_death_and_get_score(&rf2, 1, 1.0)
+        .expect("replay playback did not terminate");
+    assert_eq!(
+        score2, score3.played_time_seconds,
+        "D-019: the second newGame on the same engine must replay to the identical played time (exact ==)"
+    );
 }
 
 // ---------------------------------------------------------------------------
