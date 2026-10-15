@@ -17,6 +17,7 @@ oh-game = { path = "../oh-game" }
 oh-render = { path = "../oh-render" }
 oh-config = { path = "../oh-config" }
 oh-math = { path = "../oh-math" }
+oh-data = { path = "../oh-data" }
 
 [dev-dependencies]
 # The real headless composition for the bridge tests (mirrors
@@ -26,6 +27,5 @@ oh-math = { path = "../oh-math" }
 # composition crate's public API to the Lua backend).
 oh-lua = { path = "../oh-lua" }
 oh-assets = { path = "../oh-assets" }
-oh-data = { path = "../oh-data" }
 oh-replay = { path = "../oh-replay" }
 oh-rng = { path = "../oh-rng" }

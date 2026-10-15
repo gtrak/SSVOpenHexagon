@@ -17,8 +17,9 @@
 //!   `draw()` (the `HexagonGame::draw` bridge).
 //!
 //! Issue 15 step (b): the `open-hexagon` binary pieces — [`args`] (the
-//! `main.cpp:80-154` CLI surface); the composition / lifecycle / mode
-//! modules land with the later step-(b) milestones.
+//! `main.cpp:80-154` CLI surface), [`lifecycle`] (the `mainClient`
+//! folder/config scope-guard pieces, `main.cpp:275-291`); the composition /
+//! mode modules land with the later step-(b) milestones.
 //!
 //! Out of scope for step (b) (step (c)): the winit/glow window + event
 //! pump, MenuGame↔HexagonGame switching, signals, the FPS text timing loop,
@@ -27,3 +28,4 @@
 pub mod args;
 pub mod bridge;
 pub mod camera;
+pub mod lifecycle;
