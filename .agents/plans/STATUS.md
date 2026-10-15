@@ -19,7 +19,7 @@ Decisions log: `.agents/plans/001-rust-port/DECISIONS.md`
 | 04 | `oh-config`: all keys, binds, joystick | 01 | LANDED | b354e40d | gate 4/4; 20 tests incl. real config.json (101 keys) + all overrides; discrimination-verified |
 | 05 | `oh-assets`: pack/level discovery + asset registry | 01,03 | LANDED | cfa5c896 | gate 4/4; 17 tests; counts independently re-derived (8 packs, 9 cube levels, 57 music+style, 37 levels) |
 | 06 | `oh-lua` runtime: LuaContext analogue + conversions | 01 | LANDED | 48dba310 | gate 4/4; 24 tests; %.14g + _setGlobal throw verified against real LuaJIT source |
-| 07 | `oh-lua` game API: all globals + callbacks | 06,03,04 | in-flight | — | WIP ~4.6k lines; 291 systematic errors (closure arity / ArgTuple); worker timed out; needs a bounded fix pass |
+| 07 | `oh-lua` game API: all globals + callbacks | 06,03,04 | LANDED | 3f5d06eb | gate 4/4; 241 tests; 285-name exact-set test, name count reconciled independently, mutation reddens it |
 | 08 | `oh-game` types: walls, player, custom walls, status | 01,02 | LANDED | 65f0a9cc | gate 4/4 on a clean checkout; 24 tests; oracle vectors + discrimination-verified |
 | 09 | `oh-game` update loop (HGUpdate/HexagonGame) headless | 08,07 | OPEN | — | mapping/gameplay.md §13-15 ready |
 | 10 | `oh-render` backend (window/input/vertex/shader/font) | 01 | LANDED | e31d4d86 | gate 4/4 on clean checkout; 49 tests; GL smoke skips-with-reason (D-011) |
