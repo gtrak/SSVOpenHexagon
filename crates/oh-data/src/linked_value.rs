@@ -96,6 +96,7 @@ impl JsonConvertible for Vec<String> {
 }
 
 /// C++ `ssvuj::LinkedValue<T>`.
+#[derive(Clone)]
 pub struct LinkedValue<T: JsonConvertible> {
     name: &'static str,
     value: T,
@@ -144,6 +145,12 @@ impl<T: JsonConvertible + Clone> LinkedValue<T> {
     #[must_use = "mirrors the C++ [[nodiscard]]"]
     pub fn get(&self) -> &T {
         &self.value
+    }
+
+    /// C++ implicit conversion to `T&` (the `LinkedValue(name()).getCombos()`
+    /// mutation path, e.g. `Config::getTrigger`).
+    pub fn get_mut(&mut self) -> &mut T {
+        &mut self.value
     }
 
     /// C++ `operator=` from `T`.

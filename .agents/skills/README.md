@@ -26,6 +26,7 @@ library (vendored C++, third-party C++ dependency, or Rust crate), written from
 |---|---|---|---|
 | `lib-pcg.md` | PCG engine (`pcg32_fast` + oracle vectors) | `extlibs/SSVUtils/include/SSVUtils/Internal/PCG/pcg_random.hpp` | issue 001 |
 | `lib-ssvutils.md` | SSVUtils core (Frametime/Math/Containers/Rnd) | `extlibs/SSVUtils/include/SSVUtils/Core/**` | issue 001 |
+| `lib-binds.md` | SSVStart Trigger/Combo + OH bind layer (key/button enums, JSON bind format, BindControl) | `extlibs/SSVStart/include/SSVStart/{Input,Utils}/**`, `Global/Config.*`, `Core/{Joystick,BindControl}.*` | issue 004 |
 | `lib-ssvstart.md` | SSVStart | `extlibs/SSVStart` | (pending) |
 | `lib-ssvmenusystem.md` | SSVMenuSystem | `extlibs/SSVMenuSystem` | (pending) |
 | `lib-sfml.md` | SFML (custom fork) | CMake pin + call sites | (pending) |

@@ -1,0 +1,13 @@
+[package]
+name = "oh-config"
+description = "Port of SSVOpenHexagon's Global/Config (all config keys, keyboard/joystick binds, SSVStart trigger/combo model)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+oh-math = { path = "../oh-math" }
+oh-data = { path = "../oh-data" }
+
+[dev-dependencies]
