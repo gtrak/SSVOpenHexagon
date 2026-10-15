@@ -1,0 +1,8 @@
+[package]
+name = "oh-menu-system"
+description = "Port of SSVMenuSystem (Menu/Category/ItemBase/Items/Controller): menu data model + navigation"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+oh-math = { path = "../oh-math" }
