@@ -31,7 +31,7 @@ library (vendored C++, third-party C++ dependency, or Rust crate), written from
 | `lib-ssvstart.md` | SSVStart | `extlibs/SSVStart` | (pending) |
 | `lib-ssvmenusystem.md` | SSVMenuSystem | `extlibs/SSVMenuSystem` | (pending) |
 | `lib-sfml.md` | SFML (custom fork) | CMake pin + call sites | (pending) |
-| `lib-luajit.md` | LuaJIT | CMake pin + LuaWrapper | (pending) |
+| `lib-luajit.md` | LuaJIT (5.1 C API; all-double numbers, `%.14g` C-API number strings vs 17-digit Lua `tostring`, 5.1 truthiness/hex/`newproxy`, `error()` tracebacks, sandbox surface, `_getGlobal`/`_setGlobal` dotted-name semantics) | CMake pin `vittorioromeo/LuaJIT@4dc5ffb` (`LUAJIT_DISABLE_FFI`), luajit-src 210.5.12 (Rust), `src/SSVOpenHexagon/{Utils/LuaWrapper.cpp,Core/LuaScripting.cpp}`, verified empirically via `crates/oh-lua` tests | issue 006 |
 | `lib-zlib.md` | zlib | `compress2`/`uncompress` usage | (pending) |
 | `lib-libsodium.md` | libsodium | `Online/Sodium.*` | (pending) |
 | `lib-sqlite.md` | SQLite + sqlite_orm | `Online/Database.cpp` | (pending) |
@@ -40,7 +40,7 @@ library (vendored C++, third-party C++ dependency, or Rust crate), written from
 | `lib-steam.md` | Steamworks SDK | `Core/Steam.cpp` | (pending) |
 | `lib-discord.md` | Discord Game SDK | `Core/Discord.cpp` | (pending) |
 | `lib-rsfml.md` | rsfml (Rust) | crate source | (pending) |
-| `lib-mlua.md` | mlua (Rust) | crate source | (pending) |
+| `lib-mlua.md` | mlua 0.10.5 (luajit+vendored: `Lua::new` safe-stdlib set, `Chunk::eval`, `Value`/`Error` mapping, `create_function` closure form, `Value::to_string` formatting trap, `FunctionToPush` port incl. last-N arg window) | `~/.cargo/registry/src/**/mlua-0.10.5/src/`, `crates/oh-lua/src/**` | issue 006 |
 | `lib-jsoncpp.md` | JsonCpp fork (ssvuj reader/writer, comment + trailing-comma tolerance, `%#.16g` floats) | `include/SSVOpenHexagon/SSVUtilsJson/JsonCpp/{json.hpp,jsoncpp.inl}`, `Utils/Io.hpp` | issue 003 |
 | `lib-gameplay.md` | Gameplay types: CWall/CPlayer/CCustomWall(+Manager)/SpeedData/HexagonGameStatus/Ticker/timeline2/CustomTimeline/FastVertexVectorTris/PointInPolygon — vertex ordering, collision-escape walk, push displacement, curve-rotation sign, RNG-in-update coupling, time bookkeeping | `include/SSVOpenHexagon/{Components,Core,Data,Utils}/**` + `src/SSVOpenHexagon/{Components,Core,Utils}/**`, `mapping/gameplay.md` | issue 008 |
 | `lib-serde-json.md` | serde_json 1.0.154 (Value/from_str/Number f64-f32, float formatting vs JsonCpp) | `~/.cargo/registry/src/**/serde_json-1.0.154/src/` | issue 003 |
