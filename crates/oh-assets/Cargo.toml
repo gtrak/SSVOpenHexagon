@@ -1,0 +1,11 @@
+[package]
+name = "oh-assets"
+description = "Port of SSVOpenHexagon's Global/Assets + Global/AssetStorage (pack/level/style/music discovery, asset registry, error accumulation)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+oh-data = { path = "../oh-data" }
+oh-math = { path = "../oh-math" }
+
+[dev-dependencies]
