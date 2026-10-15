@@ -24,7 +24,7 @@ Decisions log: `.agents/plans/001-rust-port/DECISIONS.md`
 | 09 | `oh-game` update loop (HGUpdate/HexagonGame) headless | 08,07 | OPEN | — | mapping/gameplay.md §13-15 ready |
 | 10 | `oh-render` backend (window/input/vertex/shader/font) | 01 | LANDED | e31d4d86 | gate 4/4 on clean checkout; 49 tests; GL smoke skips-with-reason (D-011) |
 | 11 | `oh-render` graphics: stages, draw methods, cameras | 10,08 | OPEN | — | |
-| 12 | `oh-menu-system`: SSVMenuSystem analogue | 01 | OPEN | — | |
+| 12 | `oh-menu-system`: SSVMenuSystem analogue | 01 | LANDED | 232a868c | gate 4/4; 252 tests; contract's Controller claim corrected from source |
 | 13 | `oh-menu` MenuGame: all states, dialog box | 11,12,07 | OPEN | — | |
 | 14 | Lua console overlay + `-printLuaDocs` | 13,07 | OPEN | — | |
 | 15 | `oh-app`: boot, game loop, CLI, modes | 13,11,09 | OPEN | — | |
