@@ -13,6 +13,7 @@ members = [
     "crates/oh-menu-system",
     "crates/oh-menu",
     "crates/oh-app",
+    "crates/oh-net",
 ]
 # Later issues add workspace members as they land (PLAN.md architecture
 # table): oh-timeline, oh-replay, oh-data, oh-config, oh-assets, oh-lua,
@@ -34,6 +35,12 @@ flate2 = { version = "1", default-features = false, features = ["zlib"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+# sodiumoxide (0.2.7) is the contract choice for issue 016 (DECISIONS.md D-004
+# sodium entry): it wraps libsodium 1.0.18 (built from source by
+# libsodium-sys) and exposes the exact primitives the C++ uses — crypto_kx
+# keypair/session keys, crypto_secretbox(_open)_easy, crypto_generichash,
+# randombytes. See .agents/skills/lib-libsodium.md.
+sodiumoxide = "0.2.7"
 
 # Profile tuning is finalized by issue 22 (builds/CI). opt-level is the
 # default; recorded here so later issues have a place to change it.

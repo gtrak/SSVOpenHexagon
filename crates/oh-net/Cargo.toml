@@ -1,0 +1,16 @@
+[package]
+name = "oh-net"
+description = "Byte-exact port of SSVOpenHexagon's Online wire protocol (SFML Packet codec, CTSP/STC packets, libsodium key exchange + secretbox, protocol version)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# The `sf::Packet`-compatible wire codec is oh-replay's `Packet` (pinned to
+# the same fork source and the same oracle vectors — see src/packet.rs).
+# oh-net also needs oh-replay's `ReplayFile`/`CompressedReplayFile`
+# packet forms for `CTSPReplay`/`CTSPCompressedReplay`.
+oh-replay = { path = "../oh-replay" }
+# libsodium bindings — see .agents/skills/lib-libsodium.md for the exact
+# primitive mapping (crypto_kx, crypto_secretbox(_open)_easy,
+# crypto_generichash, randombytes).
+sodiumoxide = { workspace = true }
