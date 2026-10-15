@@ -15,7 +15,7 @@ Decisions log: `.agents/plans/001-rust-port/DECISIONS.md`
 |---|---|---|---|---|---|
 | 01 | Workspace scaffold, C++ test-port, `oh-math`+`oh-rng` | — | LANDED | 43659e33 | gate green (4/4); 36 tests; skills lib-pcg.md+lib-ssvutils.md landed |
 | 02 | `oh-replay` byte-exact + zlib + packet codec | 01 | SPECD | — | `issue-002-impl.md` written; oracle pins ready |
-| 03 | `oh-data`: structs + comment-tolerant JSON loaders | 01 | SPECD | — | mapping/data-json.md landed |
+| 03 | `oh-data`: structs + comment-tolerant JSON loaders | 01 | LANDED | ec166f35 | gate 4/4; 17 tests incl. real _RELEASE parse; discrimination-verified; skills pending |
 | 04 | `oh-config`: all keys, binds, joystick | 01 | OPEN | — | key table in mapping/data-json.md §6 |
 | 05 | `oh-assets`: pack/level discovery + asset registry | 01,03 | OPEN | — | discussed in mapping/data-json.md §4-5 |
 | 06 | `oh-lua` runtime: LuaContext analogue + conversions | 01 | OPEN | — | |

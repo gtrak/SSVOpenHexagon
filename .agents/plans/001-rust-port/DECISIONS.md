@@ -48,3 +48,22 @@ contradicting one must report it rather than silently diverge.
   workers; a code/skill contradiction triggers a minimal factual skill correction
   reported under "skill corrections".
 - **Landed by:** each issue that first touches a library.
+
+## D-006 — Worker dispatch settings (infrastructure)
+
+- **Decision:** dispatch implementation workers at `thinking=medium`
+  (`model: "local/local:medium"`) and keep concurrency at 1–2.
+- **Evidence:** during plan 001 execution, `xhigh` thinking produced per-worker
+  contexts of 7.7M tokens and hour-long silent generations; the `tinyllb` KV
+  bin-pack admission gate then wedged (`current_kv=0.0` but
+  `ema_kv_per_flow=0.9059 > max_threshold=0.90`), holding **every** request
+  forever — workers reported "no activity" while consuming **0 tokens**.
+  Restarting `tinyllb` (`systemctl --user restart tinyllb.service`) cleared it
+  and latency went 55s → 0.3s. Diagnosis used
+  `journalctl --user -u tinyllb.service` (look for
+  `kv bin-pack: holding — projected over threshold`) and
+  `curl :8000/metrics | grep num_running_reqs` (direct-to-engine vs through-LB
+  latency comparison).
+- **Do NOT edit `~/.config/tinyllb/config.yaml`** to work around this — it is the
+  user's infrastructure. Reduce worker thinking instead, and restart the service
+  if it wedges.
