@@ -58,12 +58,12 @@ pub use font::{Font, Text};
 pub use gl::GlParts;
 pub use graphics::{
     death_flash_effect, draw_background, draw_background_menu, draw_frame, draw_key_icons,
-    draw_level_info, draw_particles, draw_swap_particles, draw_trail_particles,
-    init_flash_effect, init_key_icons, init_text, render_states_for_stage, update_flash,
-    update_key_icons, update_level_info, update_particles, update_swap_particles,
-    update_trail_particles, FrameInput, FragmentShaderIds, DrawState, DrawTarget,
-    PBParticleUpdateParams, Particle, RenderStage, SwapParticle, SwapParticleSpawnInfo,
-    SwapParticleUpdateParams, TrailParticle, TrailParticleUpdateParams,
+    draw_level_info, draw_particles, draw_swap_particles, draw_trail_particles, init_flash_effect,
+    init_key_icons, init_text, render_states_for_stage, update_flash, update_key_icons,
+    update_level_info, update_particles, update_swap_particles, update_trail_particles, DrawState,
+    DrawTarget, FragmentShaderIds, FrameInput, PBParticleUpdateParams, Particle, RenderStage,
+    SwapParticle, SwapParticleSpawnInfo, SwapParticleUpdateParams, TrailParticle,
+    TrailParticleUpdateParams,
 };
 pub use input::InputState;
 pub use oh_config::{Button, Key};
@@ -71,9 +71,8 @@ pub use oh_math::hg::color::Color;
 pub use oh_math::ssvs::vector2::Vec2;
 pub use shader::{Shader, ShaderRegistry, ShaderType, Uniform};
 pub use text_draw::{
-    draw_text, draw_text_message, draw_text_personal_best, draw_text_time_and_status,
-    diff_format, format_time, get_scaled_character_size, time_format, update_text,
-    TextUpdateInput,
+    diff_format, draw_text, draw_text_message, draw_text_personal_best, draw_text_time_and_status,
+    format_time, get_scaled_character_size, time_format, update_text, TextUpdateInput,
 };
 pub use texture::{Image, RenderTexture, Sprite, Texture};
 pub use types::{FloatRect, RectangleShape, VideoMode};

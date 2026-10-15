@@ -276,11 +276,10 @@ impl RectangleShape {
         let mut max_x = f32::NEG_INFINITY;
         let mut max_y = f32::NEG_INFINITY;
         for c in corners {
-            let shifted = c
-                - Vec2::new(
-                    self.origin.x + self.outline_thickness,
-                    self.origin.y + self.outline_thickness,
-                );
+            let shifted = c - Vec2::new(
+                self.origin.x + self.outline_thickness,
+                self.origin.y + self.outline_thickness,
+            );
             let scaled = Vec2::new(shifted.x * self.scale.x, shifted.y * self.scale.y);
             let rad = oh_math::ssvu::math::to_rad(self.rotation);
             let (sin, cos) = rad.sin_cos();

@@ -15,8 +15,8 @@
 use oh_config::Config;
 use oh_math::hg::color::Color;
 use oh_math::hg::string::to_uppercase;
-use oh_math::ssvu::math::PI;
 use oh_math::ssvs::vector2::Vec2;
+use oh_math::ssvu::math::PI;
 
 use crate::draw::RenderStates;
 use crate::font::Text;
@@ -57,14 +57,16 @@ pub fn diff_format(diff: f32) -> String {
     let sign = if v < 0.0 { "-" } else { "" };
     let digits: String = mant.chars().filter(|c| c.is_ascii_digit()).collect();
 
-    if exp < -4 || exp >= 6 {
+    if !(-4..6).contains(&exp) {
         // C `%g` exponent form: "d[.dddd]e±dd" (exponent >= 2 digits).
         let mut m = digits;
         while m.len() > 1 && m.ends_with('0') {
             m.pop();
         }
+        // "d.ddd..." — `str::strip_prefix(Predicate)` removes at most ONE
+        // character, so trim the fraction's leading zeros with a matcher.
         let (digits_part, frac_part) = m.split_at(1);
-        let frac = frac_part.strip_prefix(|c: char| c == '0').unwrap_or(frac_part);
+        let frac = frac_part.trim_start_matches('0');
         let m = if frac.is_empty() {
             digits_part.to_string()
         } else {
@@ -76,18 +78,25 @@ pub fn diff_format(diff: f32) -> String {
     if exp >= 0 {
         if (exp + 1) as usize <= digits.len() {
             let (i, f) = digits.split_at((exp + 1) as usize);
-            let f = f.strip_suffix(|c: char| c == '0').unwrap_or(f);
+            // `strip_suffix(Predicate)` removes at most one char — use the
+            // char-matcher form for the whole trailing-zero run.
+            let f = f.trim_end_matches('0');
             if f.is_empty() {
                 format!("{sign}{i}")
             } else {
                 format!("{sign}{i}.{f}")
             }
         } else {
-            format!("{sign}{digits}{}", "0".repeat((exp + 1) as usize - digits.len()))
+            format!(
+                "{sign}{digits}{}",
+                "0".repeat((exp + 1) as usize - digits.len())
+            )
         }
     } else {
-        // exp in [-4, -1]: "0.0...d..."
-        let mut f = format!("{}{}", "0".repeat(-exp as usize), digits);
+        // exp in [-4, -1]: 0.00d... — the zeros after the decimal point
+        // number `-exp - 1` (1e-4 = 0.0001 → 3 zeros), then the 6
+        // significant digits, then trailing-zero strip.
+        let mut f = format!("{}{}", "0".repeat((-exp - 1) as usize), digits);
         while f.ends_with('0') {
             f.pop();
         }
@@ -132,6 +141,7 @@ pub struct TextUpdateInput<'a> {
     /// `lua.doesVariableExist(name)` → `lua.readVariable<std::string>(name)`;
     /// `None` when the function is not available or the variable is absent
     /// (C++ throws / `continue`s — see the tracked-variable loop).
+    #[allow(clippy::type_complexity)] // mirrors the C++ `std::optional<std::function<...>>`
     pub lua_variable: Option<&'a dyn Fn(&str) -> Option<String>>,
     /// `status.getTimeSeconds()` (double in C++ → f64).
     pub time_seconds: f64,
@@ -226,11 +236,7 @@ pub fn update_text(state: &mut DrawState, config: &Config, input: &TextUpdateInp
         if config.get_show_tracked_variables() && !input.tracked_variables.is_empty() {
             os.push('\n');
             for (variable_name, display) in input.tracked_variables {
-                let Some(value) = input
-                    .lua_variable
-                    .map(|read| read(variable_name))
-                    .flatten()
-                else {
+                let Some(value) = input.lua_variable.and_then(|read| read(variable_name)) else {
                     continue;
                 };
 
@@ -249,19 +255,16 @@ pub fn update_text(state: &mut DrawState, config: &Config, input: &TextUpdateInp
     // Set in-game timer text.
     if !input.score_overridden {
         // By default, use the timer for scoring.
-        state
-            .time_text
-            .set_string(if input.started {
-                format_time(input.time_seconds)
-            } else {
-                "0".to_string()
-            });
+        state.time_text.set_string(if input.started {
+            format_time(input.time_seconds)
+        } else {
+            "0".to_string()
+        });
     } else {
         // Alternative scoring — the Lua variable holds the string.
         let value = input
             .lua_variable
-            .map(|read| read(input.score_override))
-            .flatten()
+            .and_then(|read| read(input.score_override))
             .unwrap_or_default();
         state.time_text.set_string(value);
     }
@@ -274,23 +277,19 @@ pub fn update_text(state: &mut DrawState, config: &Config, input: &TextUpdateInp
 
     // Set information text.
     state.text.set_string(os);
-    state
-        .text
-        .set_character_size(scaled(20.0));
+    state.text.set_character_size(scaled(20.0));
     state.text.set_origin(Vec2::new(0.0, 0.0));
 
     // Set FPS text, if option is enabled.
     if config.get_show_fps() {
         // C++ `ssvu::toStr(window->getFPS())` = `std::to_string` (6 decimals).
-        state.fps_text.set_string(format!("{:.6}", input.fps as f64));
         state
             .fps_text
-            .set_character_size(scaled(20.0));
+            .set_string(format!("{:.6}", input.fps as f64));
+        state.fps_text.set_character_size(scaled(20.0));
     }
 
-    state
-        .message_text
-        .set_character_size(scaled(32.0));
+    state.message_text.set_character_size(scaled(32.0));
     state.message_text.set_origin(Vec2::new(
         state.message_text.get_global_bounds().get_width() / 2.0,
         0.0,
@@ -299,12 +298,13 @@ pub fn update_text(state: &mut DrawState, config: &Config, input: &TextUpdateInp
     let growth = state.pb_text_growth.sin();
     // C++: `getScaledCharacterSize(64.f) + growth * 10.f` — the unsigned
     // base is widened to float, the sum truncated back to unsigned.
-    state.pb_text.set_character_size(
-        (scaled(64.0) as f32 + growth * 10.0) as u32,
-    );
     state
         .pb_text
-        .set_origin(Vec2::new(state.pb_text.get_global_bounds().get_width() / 2.0, 0.0));
+        .set_character_size((scaled(64.0) as f32 + growth * 10.0) as u32);
+    state.pb_text.set_origin(Vec2::new(
+        state.pb_text.get_global_bounds().get_width() / 2.0,
+        0.0,
+    ));
 
     // --------------------------------------------------------------------
     if input.must_show_replay_ui {
@@ -318,9 +318,7 @@ pub fn update_text(state: &mut DrawState, config: &Config, input: &TextUpdateInp
 
         replay.push_str(&format!(" BY {}", input.replay_player_name));
 
-        state
-            .replay_text
-            .set_character_size(scaled(16.0));
+        state.replay_text.set_character_size(scaled(16.0));
         state.replay_text.set_string(replay);
     } else {
         state.replay_text.set_string("");
@@ -369,7 +367,9 @@ pub fn draw_text_time_and_status(
 
     if config.get_show_status_text() {
         state.text.set_fill_color(color_text);
-        state.text.set_origin(state.text.get_local_bounds().get_nw());
+        state
+            .text
+            .set_origin(state.text.get_local_bounds().get_nw());
         // C++: `getGlobalBottom(timeText)` — the timer's CURRENT global
         // bounds (position/origin as set above, or from the last frame when
         // the timer is hidden).
@@ -393,10 +393,9 @@ pub fn draw_text_time_and_status(
                 state.level_info_rectangle.get_global_bounds().get_top() - padding,
             ));
         } else {
-            state.fps_text.set_position(Vec2::new(
-                padding,
-                config.get_height() as f32 - padding,
-            ));
+            state
+                .fps_text
+                .set_position(Vec2::new(padding, config.get_height() as f32 - padding));
         }
 
         target.draw_text(&state.fps_text, states);
@@ -467,7 +466,7 @@ pub fn draw_text_message(
             config.get_height() as f32 / 5.5,
         ),
         color_text,
-        1.0 /* outlineThickness */,
+        1.0, /* outlineThickness */
         config.get_draw_text_outlines(),
         |t| target.draw_text(t, states),
     );
@@ -491,7 +490,7 @@ pub fn draw_text_personal_best(
             config.get_height() as f32 - config.get_height() as f32 / 4.0,
         ),
         color_text,
-        4.0 /* outlineThickness */,
+        4.0, /* outlineThickness */
         config.get_draw_text_outlines(),
         |t| target.draw_text(t, states),
     );
@@ -554,7 +553,7 @@ mod tests {
         assert_eq!(diff_format(1.0), "1");
         assert_eq!(diff_format(1.5), "1.5");
         assert_eq!(diff_format(0.25), "0.25");
-        assert_eq!(diff_format(1.23456789), "1.23457");
+        assert_eq!(diff_format(1.23456789_f64 as f32), "1.23457");
     }
 
     #[test]

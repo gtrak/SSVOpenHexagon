@@ -221,7 +221,10 @@ mod tests {
         // pulse 1.5 * pulseMin 0.5 -> p = 3.
         refresh_pulse(Some(&mut bg), 800, 450, 1.0, false, 1.5, 0.5);
         assert_eq!(bg.get_rotation(), 90.0);
-        assert_eq!(bg.get_view().get_size(), Vec2::new(800.0 * 3.0, 450.0 * 3.0));
+        assert_eq!(
+            bg.get_view().get_size(),
+            Vec2::new(800.0 * 3.0, 450.0 * 3.0)
+        );
         assert_eq!(bg.get_center(), Vec2::new(0.0, 0.0));
 
         // NoPulse -> p = 1.
@@ -237,7 +240,14 @@ mod tests {
         // deterministic jitter: always returns the range min.
         let jitter = |a: f32, b: f32| a.min(b);
 
-        update_camera_shake(Some(&mut bg), Some(&mut ov), &mut pre, &mut shake, 1.0, &jitter);
+        update_camera_shake(
+            Some(&mut bg),
+            Some(&mut ov),
+            &mut pre,
+            &mut shake,
+            1.0,
+            &jitter,
+        );
         // captured at (0,0) and (400,225)
         assert_eq!(
             pre,
@@ -251,12 +261,28 @@ mod tests {
         assert_eq!(bg.get_center(), Vec2::new(-9.0, -9.0));
         assert_eq!(ov.get_center(), Vec2::new(400.0 - 9.0, 225.0 - 9.0));
 
-        // run until done, then one more frame restores the pre-shake centres.
+        // run until done — the pre-shake centres stay captured until the
+        // NEXT frame (C++ `cameraShake <= 0` branch), which restores them.
         while shake > 0.0 {
-            update_camera_shake(Some(&mut bg), Some(&mut ov), &mut pre, &mut shake, 1.0, &jitter);
+            update_camera_shake(
+                Some(&mut bg),
+                Some(&mut ov),
+                &mut pre,
+                &mut shake,
+                1.0,
+                &jitter,
+            );
         }
+        assert!(pre.is_some());
+        update_camera_shake(
+            Some(&mut bg),
+            Some(&mut ov),
+            &mut pre,
+            &mut shake,
+            1.0,
+            &jitter,
+        );
         assert!(pre.is_none());
-        update_camera_shake(Some(&mut bg), Some(&mut ov), &mut pre, &mut shake, 1.0, &jitter);
         assert_eq!(bg.get_center(), Vec2::new(0.0, 0.0));
         assert_eq!(ov.get_center(), Vec2::new(400.0, 225.0));
         assert!(pre.is_none());

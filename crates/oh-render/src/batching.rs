@@ -101,14 +101,7 @@ impl GlBatchUploader {
             gl.bind_vertex_array(Some(vao));
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
             gl.enable_vertex_attrib_array(0);
-            gl.vertex_attrib_pointer_f32(
-                0,
-                2,
-                glow::FLOAT,
-                false,
-                (VERTEX_STRIDE * 2) as i32,
-                0,
-            );
+            gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, (VERTEX_STRIDE * 2) as i32, 0);
             gl.enable_vertex_attrib_array(1);
             gl.vertex_attrib_pointer_f32(
                 1,
@@ -143,15 +136,19 @@ impl GlBatchUploader {
         };
         unsafe {
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
-            let _ = gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::DYNAMIC_DRAW);
+            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::DYNAMIC_DRAW);
 
             gl.bind_vertex_array(Some(self.vao));
             gl.use_program(Some(self.program));
-            gl.uniform_2_f32(Some(&self.u_center), view.get_center().x, view.get_center().y);
+            gl.uniform_2_f32(
+                Some(&self.u_center),
+                view.get_center().x,
+                view.get_center().y,
+            );
             gl.uniform_2_f32(Some(&self.u_size), view.get_size().x, view.get_size().y);
             gl.uniform_1_f32(Some(&self.u_rotation), to_rad(view.get_rotation()));
 
-            let _ = gl.draw_arrays(glow::TRIANGLES, 0, vertices.len() as i32);
+            gl.draw_arrays(glow::TRIANGLES, 0, vertices.len() as i32);
             gl.bind_vertex_array(None);
         }
     }

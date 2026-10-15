@@ -34,14 +34,14 @@ use std::borrow::Cow;
 use oh_config::Config;
 use oh_math::hg::color::{component_clamp, get_color_darkened, Color};
 use oh_math::hg::move_towards::get_move_towards_zero;
-use oh_math::ssvu::math::{to_rad, PI, TAU};
 use oh_math::ssvs::vector2::{get_vec_from_rad, Vec2};
+use oh_math::ssvu::math::{to_rad, PI, TAU};
 
 use crate::camera::{draw_set_camera_centers, PreShakeCenters};
 use crate::draw::{RenderStates, Vertex, VertexBatch};
 use crate::font::{Font, Text};
-use crate::texture::{Sprite, Texture};
 use crate::text_draw::{self, diff_format};
+use crate::texture::{Sprite, Texture};
 use crate::types::RectangleShape;
 use crate::view::{Camera, View};
 
@@ -340,6 +340,16 @@ pub struct FrameInput<'a> {
     /// C++ `getColorPlayer()`.
     pub player_color: Color,
 
+    // ---- menu background (HGGraphics.cpp lines 122–141) ----
+    /// C++ `state >= States::SMain` — the menu-hexagon background is only
+    /// rendered from the main state up (in-menu screens use the plain
+    /// background only).
+    pub menu_background_enabled: bool,
+    /// C++ `fourByThree` (the menu hexagon radius: 75 vs 100).
+    pub menu_four_by_three: bool,
+    /// C++ `styleData.getCapColorResult()` (menu background cap ring).
+    pub cap_color: Color,
+
     /// C++ `ssvu::getRndR` — the **non-game** RNG (draw-time jitter; PB
     /// particles). Pass a closure wrapping the chosen engine.
     pub jitter: &'a dyn Fn(f32, f32) -> f32,
@@ -436,6 +446,26 @@ pub fn draw_frame(state: &mut DrawState, input: &mut FrameInput, target: &mut im
             background_tris.as_slice(),
             get_render_states(RenderStage::BackgroundTris),
         );
+
+        // C++ `state >= States::SMain` → the menu-hexagon background
+        // (default render states — no shader, no blend).
+        if input.menu_background_enabled {
+            let mut menu_tris = VertexBatch::new_tris();
+            draw_background_menu(
+                &mut menu_tris,
+                Vec2::new(0.0, 0.0),
+                input.sides,
+                config.get_darken_uneven_background_chunk() && input.darken_uneven_background_chunk,
+                config.get_black_and_white(),
+                input.menu_four_by_three,
+                input.background_colors,
+                input.bg_tile_radius,
+                input.bg_rot_off,
+                input.main_color,
+                input.cap_color,
+            );
+            target.draw_vertices(menu_tris.as_slice(), RenderStates::default());
+        }
     }
 
     // ------------------------------------------------------------------------
@@ -468,14 +498,15 @@ pub fn draw_frame(state: &mut DrawState, input: &mut FrameInput, target: &mut im
         pivot_quads_3d.reserve((num_pivot_quads as f32 * depth) as usize);
         player_tris_3d.reserve((num_player_tris as f32 * depth) as usize);
 
-        let pulse3d_effect = if config.get_no_pulse() { 1.0 } else { input.pulse3d };
+        let pulse3d_effect = if config.get_no_pulse() {
+            1.0
+        } else {
+            input.pulse3d
+        };
         let effect = input.three_d_skew * config.get_3d_multiplier() * pulse3d_effect;
 
         // Vertical-only skew on the background camera (baked by `apply()`).
-        let background = state
-            .background_camera
-            .as_mut()
-            .expect("checked above");
+        let background = state.background_camera.as_mut().expect("checked above");
         background.set_skew(Vec2::new(1.0, 1.0 + effect));
 
         let rad_rot = to_rad(background.get_rotation()) + PI / 2.0;
@@ -508,10 +539,8 @@ pub fn draw_frame(state: &mut DrawState, input: &mut FrameInput, target: &mut im
             let mut override_color;
 
             if !config.get_black_and_white() {
-                override_color = get_color_darkened(
-                    input.three_d_override_color,
-                    input.three_d_darken_mult,
-                );
+                override_color =
+                    get_color_darkened(input.three_d_override_color, input.three_d_darken_mult);
             } else {
                 override_color = get_color_darkened(
                     Color::new(255, 255, 255, input.main_color.a),
@@ -528,17 +557,14 @@ pub fn draw_frame(state: &mut DrawState, input: &mut FrameInput, target: &mut im
             // Draw pivot layers.
             {
                 let vs = pivot_quads_3d.as_slice_mut();
-                for k in j * num_pivot_quads..(j + 1) * num_pivot_quads {
-                    vs[k].position += new_pos;
-                    vs[k].color = override_color;
+                for v in &mut vs[j * num_pivot_quads..(j + 1) * num_pivot_quads] {
+                    v.position += new_pos;
+                    v.color = override_color;
                 }
             }
 
             if input.three_d_override_color == input.main_color {
-                override_color = get_color_darkened(
-                    input.wall_color,
-                    input.three_d_darken_mult,
-                );
+                override_color = get_color_darkened(input.wall_color, input.three_d_darken_mult);
                 adjust_alpha(
                     &mut override_color,
                     i,
@@ -550,18 +576,15 @@ pub fn draw_frame(state: &mut DrawState, input: &mut FrameInput, target: &mut im
             // Draw wall layers.
             {
                 let vs = wall_quads_3d.as_slice_mut();
-                for k in j * num_wall_quads..(j + 1) * num_wall_quads {
-                    vs[k].position += new_pos;
-                    vs[k].color = override_color;
+                for v in &mut vs[j * num_wall_quads..(j + 1) * num_wall_quads] {
+                    v.position += new_pos;
+                    v.color = override_color;
                 }
             }
 
             // Apply player color if no 3D override is present.
             if input.three_d_override_color == input.main_color {
-                override_color = get_color_darkened(
-                    input.player_color,
-                    input.three_d_darken_mult,
-                );
+                override_color = get_color_darkened(input.player_color, input.three_d_darken_mult);
                 adjust_alpha(
                     &mut override_color,
                     i,
@@ -573,9 +596,9 @@ pub fn draw_frame(state: &mut DrawState, input: &mut FrameInput, target: &mut im
             // Draw player layers.
             {
                 let vs = player_tris_3d.as_slice_mut();
-                for k in j * num_player_tris..(j + 1) * num_player_tris {
-                    vs[k].position += new_pos;
-                    vs[k].color = override_color;
+                for v in &mut vs[j * num_player_tris..(j + 1) * num_player_tris] {
+                    v.position += new_pos;
+                    v.color = override_color;
                 }
             }
         }
@@ -609,10 +632,7 @@ pub fn draw_frame(state: &mut DrawState, input: &mut FrameInput, target: &mut im
 
     // ------------------------------------------------------------------------
     // 7. The flat layers.
-    target.draw_vertices(
-        input.wall_quads,
-        get_render_states(RenderStage::WallQuads),
-    );
+    target.draw_vertices(input.wall_quads, get_render_states(RenderStage::WallQuads));
     target.draw_vertices(input.cap_tris, get_render_states(RenderStage::CapTris));
     target.draw_vertices(
         input.pivot_quads,
@@ -813,11 +833,7 @@ pub struct PBParticleUpdateParams<'a> {
 /// C++ `HexagonGame::updateParticles(mFT)` (mapping §5.8) — cull out-of-bounds
 /// (256 px margin), advance position/rotation, spawn PB star particles every
 /// 2.75 s while `mustSpawnPBParticles`.
-pub fn update_particles(
-    ft: f32,
-    particles: &mut Vec<Particle>,
-    p: &mut PBParticleUpdateParams,
-) {
+pub fn update_particles(ft: f32, particles: &mut Vec<Particle>, p: &mut PBParticleUpdateParams) {
     const PADDING: f32 = 256.0;
     let width = p.width as f32;
     let height = p.height as f32;
@@ -852,10 +868,7 @@ pub fn update_particles(
 /// rotation, scale, alpha, velocity x, velocity y, angular velocity.
 fn make_pb_particle(p: &PBParticleUpdateParams) -> Particle {
     let mut sprite = Sprite::new(p.tx_star_particle.clone());
-    sprite.set_position(Vec2::new(
-        (p.rnd_real)(-64.0, p.width as f32 + 64.0),
-        -64.0,
-    ));
+    sprite.set_position(Vec2::new((p.rnd_real)(-64.0, p.width as f32 + 64.0), -64.0));
     sprite.set_rotation((p.rnd_real)(0.0, 360.0));
 
     let scale = (p.rnd_real)(0.75, 1.35);
@@ -965,9 +978,9 @@ pub struct SwapParticleUpdateParams<'a> {
 /// `velocity·mFT`; burst spawns from a pending
 /// [`SwapParticleSpawnInfo`]:
 /// - `ready == false` (after swap): 20 × (expand 0.45, speed ×1.0, scale
-///   ×1.0, alpha 45) then 10 × (expand 3.14, speed ×0.45, scale ×0.75, alpha
+///   ×1.0, alpha 45) then 10 × (expand `PI`, speed ×0.45, scale ×0.75, alpha
 ///   35);
-/// - `ready == true` (blip): 14 × (expand 3.14, speed ×1.3, scale ×0.4,
+/// - `ready == true` (blip): 14 × (expand `PI`, speed ×1.3, scale ×0.4,
 ///   alpha 140).
 pub fn update_swap_particles(
     ft: f32,
@@ -997,11 +1010,11 @@ pub fn update_swap_particles(
             }
 
             for _ in 0..10 {
-                swap_particles.push(make_swap_particle(&p, &si, 3.14, 0.45, 0.75, 35.0));
+                swap_particles.push(make_swap_particle(&p, &si, PI, 0.45, 0.75, 35.0));
             }
         } else {
             for _ in 0..14 {
-                swap_particles.push(make_swap_particle(&p, &si, 3.14, 1.3, 0.4, 140.0));
+                swap_particles.push(make_swap_particle(&p, &si, PI, 1.3, 0.4, 140.0));
             }
         }
     }
@@ -1051,6 +1064,7 @@ fn make_swap_particle(
 /// (`window->onRecreation += [this] { initKeyIcons(); }`); the textures come
 /// from the assets (`keyArrow.png`, `keyFocus.png`, `keySwap.png`,
 /// `replayIcon.png`).
+#[allow(clippy::too_many_arguments)] // faithful C++ signature
 pub fn init_key_icons(
     key_icon_left: &mut Sprite,
     key_icon_right: &mut Sprite,
@@ -1133,12 +1147,9 @@ pub fn update_key_icons(
     );
 
     key_icon_swap.set_position(bottom_right);
-    key_icon_focus
-        .set_position(key_icon_swap.get_position() - final_padding_x);
-    key_icon_right
-        .set_position(key_icon_focus.get_position() - final_padding_x);
-    key_icon_left
-        .set_position(key_icon_right.get_position() - final_padding_x);
+    key_icon_focus.set_position(key_icon_swap.get_position() - final_padding_x);
+    key_icon_right.set_position(key_icon_focus.get_position() - final_padding_x);
+    key_icon_left.set_position(key_icon_right.get_position() - final_padding_x);
 
     // ------------------------------------------------------------------------
 
@@ -1172,16 +1183,16 @@ pub fn draw_key_icons(
     let off_color = Color::new(color_text.r, color_text.g, color_text.b, OFF_OPACITY);
     let on_color = Color::new(color_text.r, color_text.g, color_text.b, ON_OPACITY);
 
-    state
-        .key_icon_left
-        .set_color(if input_movement == -1 {
-            on_color
-        } else {
-            off_color
-        });
-    state
-        .key_icon_right
-        .set_color(if input_movement == 1 { on_color } else { off_color });
+    state.key_icon_left.set_color(if input_movement == -1 {
+        on_color
+    } else {
+        off_color
+    });
+    state.key_icon_right.set_color(if input_movement == 1 {
+        on_color
+    } else {
+        off_color
+    });
     state
         .key_icon_focus
         .set_color(if input_focused { on_color } else { off_color });
@@ -1234,6 +1245,7 @@ fn trim_26(s: &str) -> Cow<'_, str> {
 /// `TODO(issue-009-wiring)`: called from `HexagonGame::update()`; the level
 /// name/pack/author/difficulty come from `levelData` / `getPackName()` /
 /// `difficultyMult`.
+#[allow(clippy::too_many_arguments)] // faithful C++ signature
 pub fn update_level_info(
     state: &mut DrawState,
     config: &Config,
@@ -1325,10 +1337,7 @@ pub fn update_level_info(
         t.set_character_size((12.0 / zoom) as u32);
         t.set_string("BY");
         t.set_origin(t.get_local_bounds().get_se());
-        let sw = state
-            .level_info_text_author
-            .get_global_bounds()
-            .get_sw();
+        let sw = state.level_info_text_author.get_global_bounds().get_sw();
         t.set_position(Vec2::new(sw.x - t_padding, sw.y));
     }
 
@@ -1349,11 +1358,7 @@ pub fn update_level_info(
 
 /// C++ `HexagonGame::drawLevelInfo(mStates)` (mapping §3.7) — rectangle +
 /// the five text lines, all with the given (Text-stage) states.
-pub fn draw_level_info(
-    state: &mut DrawState,
-    states: RenderStates,
-    target: &mut impl DrawTarget,
-) {
+pub fn draw_level_info(state: &mut DrawState, states: RenderStates, target: &mut impl DrawTarget) {
     target.draw_rectangle(&state.level_info_rectangle, states);
     target.draw_text(&state.level_info_text_level, states);
     target.draw_text(&state.level_info_text_pack, states);
@@ -1380,6 +1385,7 @@ pub fn draw_level_info(
 /// `colors[i mod n]` (Black in B&W; the final sector, when `sides` is even,
 /// darkened ×1.4 with the uneven-chunk flag). No vertices when `colors` is
 /// empty.
+#[allow(clippy::too_many_arguments)] // faithful C++ signature
 pub fn draw_background(
     vertices: &mut VertexBatch,
     center: Vec2,
@@ -1440,26 +1446,30 @@ fn get_orbit_point(center: &Vec2, rad: f32, radius: f32) -> Vec2 {
 /// colour, inner ring at `hexagonRadius` in the cap colour; radius 75 for
 /// 4:3 windows, 100 otherwise. `main_color` / `cap_color` are the C++
 /// `getMainColor()` / `getCapColorResult()` (B&W → White/Black).
+#[allow(clippy::too_many_arguments)] // faithful C++ signature
 pub fn draw_background_menu(
     vertices: &mut VertexBatch,
     center: Vec2,
     sides: u32,
-    four_by_three: bool,
+    darken_uneven_background_chunk: bool,
     black_and_white: bool,
+    four_by_three: bool,
     colors: &[Color],
     bg_tile_radius: f32,
     bg_rot_off: f32, // degrees
     main_color: Color,
     cap_color: Color,
 ) {
+    // C++ `reserve_more(sides * 3 + sides * 6)` then
+    // `drawBackgroundImpl` (with the uneven-chunk darkening) +
+    // `drawBackgroundMenuHexagonImpl`.
     vertices.reserve_more((sides * 3 + sides * 6) as usize);
 
     if colors.is_empty() {
         return;
     }
 
-    // Same sector pass as drawBackgroundImpl (reserve already done above, so
-    // run the sector math directly).
+    // Sector pass (drawBackgroundImpl).
     let div = TAU / sides as f32 * 1.0001;
     let half_div = div / 2.0;
     let distance = bg_tile_radius;
@@ -1467,14 +1477,18 @@ pub fn draw_background_menu(
 
     for i in 0..sides {
         let angle = rot_off + div * i as f32;
-        let current_color = colors[(i as usize) % colors.len()];
+        let mut current_color = colors[(i as usize) % colors.len()];
+
+        let must_darken = (i % 2 == 0 && i == sides - 1) && darken_uneven_background_chunk;
+
+        if black_and_white {
+            current_color = Color::BLACK;
+        } else if must_darken {
+            current_color = get_color_darkened(current_color, 1.4);
+        }
 
         vertices.push_color_positions(
-            if black_and_white {
-                Color::BLACK
-            } else {
-                current_color
-            },
+            current_color,
             &[
                 center,
                 get_orbit_point(&center, angle + half_div, distance),
@@ -1548,14 +1562,6 @@ mod tests {
         events: Vec<DrawEvent>,
     }
 
-    impl Recording {
-        fn vertex_events(&self) -> impl Iterator<Item = &DrawEvent> {
-            self.events
-                .iter()
-                .filter(|e| matches!(e, DrawEvent::Vertices { .. }))
-        }
-    }
-
     impl DrawTarget for Recording {
         fn clear_black(&mut self) {
             self.events.push(DrawEvent::Clear);
@@ -1564,8 +1570,10 @@ mod tests {
             self.events.push(DrawEvent::SetView(view));
         }
         fn draw_vertices(&mut self, vertices: &[Vertex], states: RenderStates) {
-            self.events
-                .push(DrawEvent::Vertices { count: vertices.len(), states });
+            self.events.push(DrawEvent::Vertices {
+                count: vertices.len(),
+                states,
+            });
         }
         fn draw_sprite(&mut self, _sprite: &Sprite) {
             self.events.push(DrawEvent::Sprite);
@@ -1684,27 +1692,35 @@ mod tests {
             Some(107),
             Some(108),
         ];
-        let mut hook_calls: Vec<(RenderStage, f32)> = Vec::new();
-        let hook = |s: RenderStage, ft: f32| hook_calls.push((s, ft));
+        use std::cell::RefCell;
+        use std::rc::Rc;
 
-        // shaders off → always default.
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let calls_box = calls.clone();
+        let hook: Box<dyn Fn(RenderStage, f32)> =
+            Box::new(move |s, ft| calls_box.borrow_mut().push((s, ft)));
+
+        // shaders off → always default (hook not called).
         assert_eq!(
             render_states_for_stage(false, &ids, RenderStage::Text, 1.0, Some(&hook)),
             RenderStates::default()
         );
 
-        // no bound id → default.
+        // no bound id → default (hook not called).
         assert_eq!(
             render_states_for_stage(true, &ids, RenderStage::PivotQuads3D, 1.0, Some(&hook)),
             RenderStates::default()
         );
+        assert!(
+            calls.borrow().is_empty(),
+            "hook must not fire for default states"
+        );
 
         // bound id → with_shader, and the onRenderStage hook fires first
         // with the frame time 60/fps (fps 120 → 0.5).
-        let st =
-            render_states_for_stage(true, &ids, RenderStage::WallQuads, 0.5, Some(&hook));
+        let st = render_states_for_stage(true, &ids, RenderStage::WallQuads, 0.5, Some(&hook));
         assert_eq!(st, RenderStates::with_shader(104));
-        assert_eq!(hook_calls, vec![(RenderStage::WallQuads, 0.5)]);
+        assert_eq!(*calls.borrow(), vec![(RenderStage::WallQuads, 0.5)]);
     }
 
     // ---------------------------------------------------------------------
@@ -1794,6 +1810,9 @@ mod tests {
             main_color,
             wall_color: Color::new(200, 200, 200, 255),
             player_color: Color::new(50, 50, 250, 255),
+            menu_background_enabled: false,
+            menu_four_by_three: false,
+            cap_color: Color::WHITE,
             jitter: &jitter,
             on_render_stage: None,
         };
@@ -1828,29 +1847,71 @@ mod tests {
         let expected: Vec<DrawEvent> = vec![
             DrawEvent::Clear,
             DrawEvent::SetView(state.background_camera.unwrap().get_view()),
-            DrawEvent::Vertices { count: 18, states: RenderStates::with_shader(0) },
+            DrawEvent::Vertices {
+                count: 18,
+                states: RenderStates::with_shader(0),
+            },
             DrawEvent::SetView(state.background_camera.unwrap().get_view()),
-            DrawEvent::Vertices { count: 6, states: RenderStates::with_shader(1) },
-            DrawEvent::Vertices { count: 6, states: RenderStates::with_shader(2) },
-            DrawEvent::Vertices { count: 3, states: RenderStates::with_shader(3) },
-            DrawEvent::Vertices { count: 6, states: RenderStates::with_shader(4) },
-            DrawEvent::Vertices { count: 6, states: RenderStates::with_shader(5) },
-            DrawEvent::Vertices { count: 6, states: RenderStates::with_shader(6) },
-            DrawEvent::Vertices { count: 3, states: RenderStates::with_shader(7) },
+            DrawEvent::Vertices {
+                count: 6,
+                states: RenderStates::with_shader(1),
+            },
+            DrawEvent::Vertices {
+                count: 6,
+                states: RenderStates::with_shader(2),
+            },
+            DrawEvent::Vertices {
+                count: 3,
+                states: RenderStates::with_shader(3),
+            },
+            DrawEvent::Vertices {
+                count: 6,
+                states: RenderStates::with_shader(4),
+            },
+            DrawEvent::Vertices {
+                count: 6,
+                states: RenderStates::with_shader(5),
+            },
+            DrawEvent::Vertices {
+                count: 6,
+                states: RenderStates::with_shader(6),
+            },
+            DrawEvent::Vertices {
+                count: 3,
+                states: RenderStates::with_shader(7),
+            },
             DrawEvent::SetView(state.overlay_camera.unwrap().get_view()),
-            DrawEvent::Text { states: RenderStates::with_shader(8) },
-            DrawEvent::Text { states: RenderStates::with_shader(8) },
-            DrawEvent::Text { states: RenderStates::with_shader(8) },
+            DrawEvent::Text {
+                states: RenderStates::with_shader(8),
+            },
+            DrawEvent::Text {
+                states: RenderStates::with_shader(8),
+            },
+            DrawEvent::Text {
+                states: RenderStates::with_shader(8),
+            },
             DrawEvent::Sprite,
             DrawEvent::Sprite,
             DrawEvent::Sprite,
             DrawEvent::Sprite,
-            DrawEvent::Rectangle { states: RenderStates::with_shader(8) },
-            DrawEvent::Text { states: RenderStates::with_shader(8) },
-            DrawEvent::Text { states: RenderStates::with_shader(8) },
-            DrawEvent::Text { states: RenderStates::with_shader(8) },
-            DrawEvent::Text { states: RenderStates::with_shader(8) },
-            DrawEvent::Text { states: RenderStates::with_shader(8) },
+            DrawEvent::Rectangle {
+                states: RenderStates::with_shader(8),
+            },
+            DrawEvent::Text {
+                states: RenderStates::with_shader(8),
+            },
+            DrawEvent::Text {
+                states: RenderStates::with_shader(8),
+            },
+            DrawEvent::Text {
+                states: RenderStates::with_shader(8),
+            },
+            DrawEvent::Text {
+                states: RenderStates::with_shader(8),
+            },
+            DrawEvent::Text {
+                states: RenderStates::with_shader(8),
+            },
             DrawEvent::Screenshot("screenshot.png".into()),
         ];
         assert_eq!(rec.events, expected, "draw() stage/event sequence");
@@ -1878,9 +1939,7 @@ mod tests {
         state.overlay_camera = Some(ov);
 
         let wall_quads = quad(0.0);
-        let ids: FragmentShaderIds = [
-            None, None, None, None, None, None, None, None, None,
-        ];
+        let ids: FragmentShaderIds = [None, None, None, None, None, None, None, None, None];
         let mut must_take_screenshot = false;
         let jitter: Box<dyn Fn(f32, f32) -> f32> = jitter_max();
 
@@ -1921,6 +1980,9 @@ mod tests {
             main_color,
             wall_color: Color::new(200, 200, 200, 255),
             player_color: Color::new(50, 50, 250, 255),
+            menu_background_enabled: false,
+            menu_four_by_three: false,
+            cap_color: Color::WHITE,
             jitter: &jitter,
             on_render_stage: None,
         };
@@ -1967,12 +2029,10 @@ mod tests {
         // The recording only keeps counts — assert the arithmetic through a
         // second direct check: rebuild the 3D copies exactly like draw_frame
         // and assert vertex positions/colours.
+        // Mirror the two `unsafe_emplace_other` copies (capacity is 12).
         let mut wall_3d = VertexBatch::new_tris();
-        let mut i_copy = 0usize;
-        while (i_copy as f32) < 2.0 {
-            wall_3d.verts.extend_from_slice(&wall_quads);
-            i_copy += 1;
-        }
+        wall_3d.push_vertices(&wall_quads);
+        wall_3d.push_vertices(&wall_quads);
         for j in 0..2 {
             let i = 2.0 - j as f32 - 1.0;
             let offset = 1.0 * ((i + 1.0) * 1.0) * (2.0 * 3.6) * 1.4;
@@ -1980,19 +2040,21 @@ mod tests {
             let mut oc = get_color_darkened(override_color, 2.0);
             let new_alpha = (oc.a as f32 / 2.0) - i * 1.0;
             oc.a = component_clamp(new_alpha);
-            for k in (j * 6)..((j + 1) * 6) {
-                wall_3d.verts[k].position += new_pos;
-                wall_3d.verts[k].color = oc;
+            let vs = wall_3d.as_slice_mut();
+            for v in &mut vs[j * 6..(j + 1) * 6] {
+                v.position += new_pos;
+                v.color = oc;
             }
         }
         // Layer j=0 (vertices 0..6) got the bigger offset; layer j=1 (6..12)
         // the smaller one.
-        assert!((wall_3d.verts[0].position.x - dx0).abs() < 1e-4);
-        assert!((wall_3d.verts[0].position.y - dy0).abs() < 1e-4);
-        assert!((wall_3d.verts[6].position.x - dx1).abs() < 1e-4);
-        assert!((wall_3d.verts[6].position.y - dy1).abs() < 1e-4);
-        assert_eq!(wall_3d.verts[0].color, Color::new(75, 60, 45, 126));
-        assert_eq!(wall_3d.verts[6].color, Color::new(75, 60, 45, 127));
+        let vs = wall_3d.as_slice();
+        assert!((vs[0].position.x - dx0).abs() < 1e-4);
+        assert!((vs[0].position.y - dy0).abs() < 1e-4);
+        assert!((vs[6].position.x - dx1).abs() < 1e-4);
+        assert!((vs[6].position.y - dy1).abs() < 1e-4);
+        assert_eq!(vs[0].color, Color::new(75, 60, 45, 126));
+        assert_eq!(vs[6].color, Color::new(75, 60, 45, 127));
         // The frame's camera now carries the vertical skew (1, 1 + effect).
         assert_eq!(
             state.background_camera.unwrap().get_skew(),
@@ -2005,6 +2067,9 @@ mod tests {
         // Shaders OFF → every state is the default; disable rendering → no
         // events at all.
         let mut config = Config::default();
+        // Config's default is shaders ON — this test exercises the
+        // shaders-off path explicitly.
+        config.set_shaders(false);
         assert!(!config.get_shaders());
 
         let mut state = make_draw_state();
@@ -2019,7 +2084,15 @@ mod tests {
         let mut must_take_screenshot = false;
         let jitter: Box<dyn Fn(f32, f32) -> f32> = jitter_max();
         let ids: FragmentShaderIds = [
-            Some(1), Some(2), Some(3), Some(4), Some(5), Some(6), Some(7), Some(8), Some(9),
+            Some(1),
+            Some(2),
+            Some(3),
+            Some(4),
+            Some(5),
+            Some(6),
+            Some(7),
+            Some(8),
+            Some(9),
         ];
 
         let mut input = FrameInput {
@@ -2056,31 +2129,78 @@ mod tests {
             main_color: Color::WHITE,
             wall_color: Color::WHITE,
             player_color: Color::WHITE,
+            menu_background_enabled: false,
+            menu_four_by_three: false,
+            cap_color: Color::WHITE,
             jitter: &jitter,
             on_render_stage: None,
         };
 
         let mut rec = Recording::default();
-        draw_frame(&mut state, &mut input, &mut rec);
+        {
+            draw_frame(&mut state, &mut input, &mut rec);
 
-        // Every vertex/text/rect event uses the default states (shaders
-        // disabled).
-        for e in &rec.events {
-            match e {
-                DrawEvent::Vertices { states, .. }
-                | DrawEvent::Text { states }
-                | DrawEvent::Rectangle { states } => {
-                    assert_eq!(*states, RenderStates::default(), "shader off ⇒ default");
+            // Every vertex/text/rect event uses the default states
+            // (shaders disabled).
+            for e in &rec.events {
+                match e {
+                    DrawEvent::Vertices { states, .. }
+                    | DrawEvent::Text { states }
+                    | DrawEvent::Rectangle { states } => {
+                        assert_eq!(*states, RenderStates::default(), "shader off ⇒ default");
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
-        }
+        } // `input` (and its &config borrow) ends here
 
         // Disable game rendering → nothing is emitted.
         config.set_disable_game_rendering(true);
-        let before = rec.events.len();
-        draw_frame(&mut state, &mut input, &mut rec);
-        assert_eq!(rec.events.len(), before);
+        {
+            let mut input = FrameInput {
+                config: &config,
+                fragment_shader_ids: &ids,
+                has_died: false,
+                level_status_camera_shake: 0.0,
+                sides: 3,
+                darken_uneven_background_chunk: false,
+                show_player_trail: false,
+                pulse3d: 1.0,
+                must_show_replay_ui: false,
+                must_take_screenshot: &mut must_take_screenshot,
+                fps: 60.0,
+                input_movement: 0,
+                input_focused: false,
+                input_swap: false,
+                color_text: Color::WHITE,
+                wall_quads: &[],
+                pivot_quads: &[],
+                player_tris: &[],
+                cap_tris: &[],
+                background_colors: &[Color::new(7, 8, 9, 255)],
+                bg_tile_radius: 500.0,
+                bg_rot_off: 0.0,
+                three_d_depth: 1.0,
+                three_d_skew: 0.18,
+                three_d_spacing: 1.0,
+                three_d_darken_mult: 1.5,
+                three_d_alpha_mult: 0.5,
+                three_d_alpha_falloff: 3.0,
+                three_d_perspective_mult: 1.0,
+                three_d_override_color: Color::WHITE,
+                main_color: Color::WHITE,
+                wall_color: Color::WHITE,
+                player_color: Color::WHITE,
+                menu_background_enabled: false,
+                menu_four_by_three: false,
+                cap_color: Color::WHITE,
+                jitter: &jitter,
+                on_render_stage: None,
+            };
+            let before = rec.events.len();
+            draw_frame(&mut state, &mut input, &mut rec);
+            assert_eq!(rec.events.len(), before);
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -2089,7 +2209,7 @@ mod tests {
 
     #[test]
     fn flash_polygon_layout_and_update() {
-        let batch = init_flash_effect(255, 128, 0, 800, 450);
+        let mut batch = init_flash_effect(255, 128, 0, 800, 450);
         let v = batch.as_slice();
         assert_eq!(v.len(), 6);
         let c = Color::new(255, 128, 0, 0);
@@ -2161,7 +2281,10 @@ mod tests {
 
     #[test]
     fn draw_background_b_and_w_and_uneven_darkening() {
-        let colors = [Color::new(255, 255, 255, 255), Color::new(100, 100, 100, 255)];
+        let colors = [
+            Color::new(255, 255, 255, 255),
+            Color::new(100, 100, 100, 255),
+        ];
 
         // 4 sides, even; sector 3 (i == sides-1, odd) is NOT darkened.
         let mut v = VertexBatch::new_tris();
@@ -2175,7 +2298,7 @@ mod tests {
             10.0,
             90.0,
         );
-        assert_ne!(v.as_slice()[9].color, get_color_darkened(colors[3], 1.4));
+        assert_ne!(v.as_slice()[9].color, get_color_darkened(colors[1], 1.4));
 
         // 6 sides: sector 5 is odd → not darkened; sector 4 (even, not last)
         // not darkened; use 5? i==sides-1 must be even → sides even. With 4:
@@ -2215,16 +2338,7 @@ mod tests {
 
         // empty colours → no vertices.
         let mut v = VertexBatch::new_tris();
-        draw_background(
-            &mut v,
-            Vec2::new(0.0, 0.0),
-            3,
-            false,
-            false,
-            &[],
-            10.0,
-            0.0,
-        );
+        draw_background(&mut v, Vec2::new(0.0, 0.0), 3, false, false, &[], 10.0, 0.0);
         assert!(v.is_empty());
     }
 
@@ -2238,26 +2352,31 @@ mod tests {
             6,
             false,
             false,
+            false,
             &colors,
             10000.0,
             0.0,
             Color::new(10, 20, 30, 255),
             Color::new(40, 50, 60, 255),
         );
-        // 6 sectors × (3 + 3 + 3) = 54.
+        // 6 sectors × 3 + 6 × (3 + 3) = 54.
         assert_eq!(v.as_slice().len(), 54);
 
-        // Ring radii per sector: outer 110 (main colour), inner 100 (cap).
-        // Per-sector layout: fan @ 0..3, outer ring @ 3..6, inner ring @ 6..9.
+        // C++ layout: ALL sectors first (0..18), then the rings
+        // (drawBackgroundMenuHexagonImpl): sector 0 outer ring @ 18..21,
+        // inner ring @ 21..24; radii 110 (main colour) / 100 (cap).
         let verts = v.as_slice();
         let a110 = (110.0 * half6().cos(), 110.0 * half6().sin());
         let a100 = (100.0 * half6().cos(), 100.0 * half6().sin());
-        assert!((verts[4].position.x - a110.0).abs() < 1e-3);
-        assert!((verts[4].position.y - a110.1).abs() < 1e-3);
-        assert_eq!(verts[4].color, Color::new(10, 20, 30, 255));
-        assert!((verts[7].position.x - a100.0).abs() < 1e-3);
-        assert_eq!(verts[7].color, Color::new(40, 50, 60, 255));
-        assert!((verts[3].position.x - 0.0).abs() < 1e-6); // ring centre
+        assert_eq!(verts[18].position, Vec2::new(0.0, 0.0)); // ring centre
+        assert!((verts[19].position.x - a110.0).abs() < 1e-3);
+        assert!((verts[19].position.y - a110.1).abs() < 1e-3);
+        assert_eq!(verts[19].color, Color::new(10, 20, 30, 255));
+        assert!((verts[22].position.x - a100.0).abs() < 1e-3);
+        assert_eq!(verts[22].color, Color::new(40, 50, 60, 255));
+        // sectors: colour cycles by mod index.
+        assert_eq!(verts[0].color, Color::BLUE);
+        assert_eq!(verts[3].color, Color::GREEN);
     }
 
     fn half6() -> f32 {
@@ -2280,7 +2399,14 @@ mod tests {
         let mut swap = Sprite::new(empty_texture());
         let mut replay = Sprite::new(empty_texture());
 
-        update_key_icons(&mut left, &mut right, &mut focus, &mut swap, &mut replay, &config);
+        update_key_icons(
+            &mut left,
+            &mut right,
+            &mut focus,
+            &mut swap,
+            &mut replay,
+            &config,
+        );
 
         let s = 2.0 / 1.27;
         let scaled_half = 32.0 * s;
@@ -2344,7 +2470,10 @@ mod tests {
             state.key_icon_focus.get_color(),
             Color::new(200, 210, 220, 90)
         );
-        assert_eq!(state.key_icon_swap.get_color(), Color::new(200, 210, 220, 90));
+        assert_eq!(
+            state.key_icon_swap.get_color(),
+            Color::new(200, 210, 220, 90)
+        );
         assert_eq!(rec.events, vec![DrawEvent::Sprite; 4]);
 
         // Replay UI: the fifth sprite appears with the on colour.
@@ -2357,13 +2486,16 @@ mod tests {
             true,
             &mut rec,
         );
-        assert_eq!(state.replay_icon.get_color(), Color::new(200, 210, 220, 255));
+        assert_eq!(
+            state.replay_icon.get_color(),
+            Color::new(200, 210, 220, 255)
+        );
         assert_eq!(rec.events.len(), 4 + 5);
     }
 
     #[test]
     fn update_level_info_layout_and_trim() {
-        let mut config = Config::default();
+        let config = Config::default();
         let mut state = make_draw_state();
         let long_name = "X".repeat(40);
 
@@ -2388,20 +2520,13 @@ mod tests {
 
         let s = 1.0 / 1.27;
         let padding = 8.0 * s;
-        let w = config.get_width() as f32;
         let h = config.get_height() as f32;
-        let expected_pos = Vec2::new(
-            padding + 162.5 * s,
-            h - padding - 37.5 * s,
-        );
+        let expected_pos = Vec2::new(padding + 162.5 * s, h - padding - 37.5 * s);
         assert!((rect.get_position().x - expected_pos.x).abs() < 1e-4);
         assert!((rect.get_position().y - expected_pos.y).abs() < 1e-4);
 
         // Trim + uppercase.
-        assert_eq!(
-            state.level_info_text_level.get_string(),
-            &"X".repeat(26)
-        );
+        assert_eq!(state.level_info_text_level.get_string(), &"X".repeat(26));
         assert_eq!(state.level_info_text_pack.get_string(), "MY PACK");
         assert_eq!(state.level_info_text_author.get_string(), "SOME AUTHOR");
         assert_eq!(state.level_info_text_by.get_string(), "BY");
@@ -2431,12 +2556,24 @@ mod tests {
         assert_eq!(
             rec.events,
             vec![
-                DrawEvent::Rectangle { states: RenderStates::with_shader(8) },
-                DrawEvent::Text { states: RenderStates::with_shader(8) },
-                DrawEvent::Text { states: RenderStates::with_shader(8) },
-                DrawEvent::Text { states: RenderStates::with_shader(8) },
-                DrawEvent::Text { states: RenderStates::with_shader(8) },
-                DrawEvent::Text { states: RenderStates::with_shader(8) },
+                DrawEvent::Rectangle {
+                    states: RenderStates::with_shader(8)
+                },
+                DrawEvent::Text {
+                    states: RenderStates::with_shader(8)
+                },
+                DrawEvent::Text {
+                    states: RenderStates::with_shader(8)
+                },
+                DrawEvent::Text {
+                    states: RenderStates::with_shader(8)
+                },
+                DrawEvent::Text {
+                    states: RenderStates::with_shader(8)
+                },
+                DrawEvent::Text {
+                    states: RenderStates::with_shader(8)
+                },
             ]
         );
     }
@@ -2467,15 +2604,14 @@ mod tests {
                 rnd_real: &rnd,
             },
         );
-        assert!(spawn.is_some(), "copy consumed by value; game-side flag cleared by caller");
+        assert!(
+            spawn.is_some(),
+            "copy consumed by value; game-side flag cleared by caller"
+        );
         assert_eq!(swap.len(), 30, "20 + 10 after-swap burst");
         // first 20: alpha 45; next 10: alpha 35.
-        assert!(swap[..20]
-            .iter()
-            .all(|p| p.sprite.get_color().a == 45));
-        assert!(swap[20..]
-            .iter()
-            .all(|p| p.sprite.get_color().a == 35));
+        assert!(swap[..20].iter().all(|p| p.sprite.get_color().a == 45));
+        assert!(swap[20..].iter().all(|p| p.sprite.get_color().a == 35));
         // deterministic rnd (max): speed = 10 × mult; the "after" first group
         // speedMult 1.0 → 10.
         assert_eq!(swap[0].velocity, get_vec_from_rad(0.45, 10.0));
@@ -2498,10 +2634,8 @@ mod tests {
             },
         );
         assert_eq!(swap.len(), 14);
-        assert!(swap
-            .iter()
-            .all(|p| p.sprite.get_color().a == 140));
-        assert_eq!(swap[0].velocity, get_vec_from_rad(3.14, 13.0));
+        assert!(swap.iter().all(|p| p.sprite.get_color().a == 140));
+        assert_eq!(swap[0].velocity, get_vec_from_rad(PI, 13.0));
     }
 
     #[test]
@@ -2521,7 +2655,19 @@ mod tests {
             },
         );
         assert_eq!(vec[0].sprite.get_color().a, 6);
-        // next frame: 6 − 3.5 = 2.5 → 2 ≤ 3 → dead.
+        // frame 2: 6 − 3.5 = 2.5 → 2 (truncation).
+        update_swap_particles(
+            1.0,
+            &mut vec,
+            SwapParticleUpdateParams {
+                tx_small_circle: &tx,
+                color_player_trail: Color::WHITE,
+                swap_particles_spawn_info: None,
+                rnd_real: &rnd,
+            },
+        );
+        assert_eq!(vec[0].sprite.get_color().a, 2);
+        // frame 3: 2 ≤ 3 at the top → erased.
         update_swap_particles(
             1.0,
             &mut vec,
@@ -2588,8 +2734,10 @@ mod tests {
         assert_eq!(trail[1].sprite.get_position(), Vec2::new(1.0, 2.0));
         assert_eq!(trail[1].angle, 1.0);
 
-        // decay to death (alpha ≤ 3).
-        for _ in 0..5 {
+        // decay to death (alpha ≤ 3, checked at the TOP of the frame):
+        // old 80→60→40→20→0 (erased on frame 6); new 90→70→50→30→10→0
+        // (erased on frame 7).
+        for _ in 0..7 {
             update_trail_particles(
                 1.0,
                 &mut trail,
@@ -2616,7 +2764,7 @@ mod tests {
         let rnd_int: Box<dyn Fn(u32, u32) -> u32> = Box::new(|a, _b| a);
         let mut next_spawn = 0.0;
 
-        let make_params = || PBParticleUpdateParams {
+        let params = PBParticleUpdateParams {
             width: 800,
             height: 450,
             color_main: Color::new(11, 22, 33, 255),
@@ -2629,7 +2777,7 @@ mod tests {
 
         let mut p: Vec<Particle> = Vec::new();
         {
-            let mut params = make_params();
+            let mut params = params;
             update_particles(1.0, &mut p, &mut params);
         }
         // deterministic min: position (−64, −64), rotation 0, scale 0.75,
@@ -2643,7 +2791,16 @@ mod tests {
         // walk it far out of bounds (y > height + 256).
         for _ in 0..200 {
             {
-                let mut params = make_params();
+                let mut params = PBParticleUpdateParams {
+                    width: 800,
+                    height: 450,
+                    color_main: Color::new(11, 22, 33, 255),
+                    tx_star_particle: &tx,
+                    must_spawn_pb_particles: true,
+                    next_pb_particle_spawn: &mut next_spawn,
+                    rnd_real: &rnd,
+                    rnd_int: &rnd_int,
+                };
                 update_particles(1.0, &mut p, &mut params);
             }
             if p.is_empty() {
