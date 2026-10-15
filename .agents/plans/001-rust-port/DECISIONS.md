@@ -184,9 +184,14 @@ fork is `include/SSVOpenHexagon/SSVUtilsJson/JsonCpp/jsoncpp.inl` (pinned).
 
 - **Decision (D-004's SFML entry, ruled 2026-10-15):** the SFML analogue is
   `winit` (window/event loop/input) + `glutin` (GL context) + `glow` (GL bindings),
-  `rodio` (audio device surface), `fontdue`/`ab_glyph` (fonts, uploaded as GL
-  textures), with `oh-config`'s `Key`/`Button` reused for the exact SFML enum
-  integers.
+  `rodio` (audio device surface), `fontdue` (fonts, uploaded as GL textures), with
+  `oh-config`'s `Key`/`Button` reused for the exact SFML enum integers.
+  **Corrections verified against the landed tree (issue 011):** `glutin-winit` is
+  NOT used — `oh-render` drives `glutin::display::Display` directly with
+  `raw-window-handle` 0.6 (`grep -c glutin-winit Cargo.lock crates/oh-render/Cargo.toml`
+  = 0); and `ab_glyph` is not in the dependency tree (fontdue is the actual choice).
+  Exact pinned versions: winit 0.30.13, glutin 0.32.3, glow 0.18.0, rodio 0.23.0,
+  fontdue 0.9.4, raw-window-handle 0.6.2 (`.agents/skills/lib-render-stack.md`).
 - **`rsfml` is REJECTED as unimplementable:** it is the plan's primary candidate
   but **is not on crates.io** (`cargo add rsfml` fails; absent from
   `~/.cargo/registry/src/**`). Verified on this box.
