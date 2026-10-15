@@ -255,3 +255,22 @@ fork is `include/SSVOpenHexagon/SSVUtilsJson/JsonCpp/jsoncpp.inl` (pinned).
   test that re-enters through a lambda AND a test that the depth counter returns to
   zero; document the `unsafe` raw-pointer contract and drop order explicitly.
 - **Landed by:** issue 009.
+
+## D-014 — Verify a worker's FILE CITATION, not just its claim
+
+- **Decision:** when a worker reports "I found X in <file>:<lines>", open that
+  file at those lines. A correct semantic claim with a wrong citation is still a
+  defect in the record, and the citation is what a later reader trusts.
+- **Evidence (issue 011, 2026-10-15):** the worker reported finding the
+  `state >= States::SMain` menu-hexagon background gate "in `HGGraphics.cpp:122-141`".
+  The code it wrote is correct, and the gate does exist — but it is in
+  **`MenuGame.cpp:5773-5780`** (`const bool mainOrAbove{state >= States::SMain};`
+  → `styleData.drawBackgroundMenu(...)`), while `HGGraphics.cpp:122-141` is the
+  wall/custom-wall quad reservation loop. Its in-code comment was right; only the
+  reported citation was wrong, which is why the claim survived review.
+- **Rule:** cited file:line pairs in a report, a commit message, or a mapping doc
+  get checked the same way a number does. (Companion to the plan-process rule that
+  a line number is not evidence of which function it is in.)
+- **Also verified accurate in the same pass:** the `death_shakeCamera` errata
+  (`HexagonGame.cpp:822-853`: `status.cameraShake = 45.f * multiplier`, no
+  `preShakeCenters`) and `death_flashEffect` being unconditional.
