@@ -126,3 +126,30 @@ fork is `include/SSVOpenHexagon/SSVUtilsJson/JsonCpp/jsoncpp.inl` (pinned).
   splits on the last `.`, calls `_getGlobal(tableName)`, and throws
   `VariableDoesntExistException` if that is not a table.
 - **Landed by:** issue 006 (`crates/oh-lua/src/context.rs`).
+
+## D-011 — Render backend: real GL (`winit`+`glutin`+`glow`), not a software rasterizer
+
+- **Decision (D-004's SFML entry, ruled 2026-10-15):** the SFML analogue is
+  `winit` (window/event loop/input) + `glutin` (GL context) + `glow` (GL bindings),
+  `rodio` (audio device surface), `fontdue`/`ab_glyph` (fonts, uploaded as GL
+  textures), with `oh-config`'s `Key`/`Button` reused for the exact SFML enum
+  integers.
+- **`rsfml` is REJECTED as unimplementable:** it is the plan's primary candidate
+  but **is not on crates.io** (`cargo add rsfml` fails; absent from
+  `~/.cargo/registry/src/**`). Verified on this box.
+- **A self-written CPU software rasterizer was proposed and REJECTED.** Rationale:
+  **pack content ships GLSL fragment shaders** (`_RELEASE/Packs/*/Shaders/*.frag` —
+  `pixelate.frag`, `text.frag`, `gradient.frag`, ...), the game binds a fragment
+  shader per `RenderStage`, and the `shdr_*` Lua API sets their uniforms. A CPU
+  rasterizer cannot execute them, so "fully headless" would silently break third-
+  party packs. **A portability/testability concern must not delete a product
+  requirement.**
+- **Headless testing policy (resolves the tension without weakening the product):**
+  1. the pure-logic surface (vertex/quad emission order and counts, text metrics,
+     enum tables, input transitions, camera math, RenderStates mapping) is tested
+     headless with real assertions;
+  2. the GPU path gets ONE smoke test that creates a context, does an offscreen
+     draw + `glReadPixels` readback when a display/context is available, and
+     otherwise **skips with a printed reason** — never a silent pass and never a
+     fake rasterizer standing in for GL.
+- **Landed by:** issue 010.
