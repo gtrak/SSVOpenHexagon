@@ -1,0 +1,28 @@
+[package]
+name = "oh-app"
+description = "The application composition crate (D-020): the draw bridge that drives oh_render::graphics::draw_frame from the engine's state — boot/CLI (15b) and the windowed loop (15c) land here next"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+# Library only — the `main.rs` binary is issue 15 step (b).
+
+[dependencies]
+# The two sides of the bridge: the engine (never depends on the render
+# layer) and the render layer (never depends on the engine). `oh-app` is
+# the composition crate that depends on BOTH (DECISIONS.md D-020; D-013:
+# oh-game must not gain oh-render — oh-lua depends on oh-game, so the
+# adapter cannot live in oh-game or oh-render).
+oh-game = { path = "../oh-game" }
+oh-render = { path = "../oh-render" }
+oh-config = { path = "../oh-config" }
+oh-math = { path = "../oh-math" }
+
+[dev-dependencies]
+# The real headless composition for the bridge tests (mirrors
+# `crates/oh-game/tests/common/mod.rs` — a minimal copy, kept small on
+# purpose; issue 15 step (b) dedupes the two when the binary lands).
+# Dev-only: the LIB must not depend on oh-lua (it would couple the
+# composition crate's public API to the Lua backend).
+oh-lua = { path = "../oh-lua" }
+oh-assets = { path = "../oh-assets" }

@@ -1354,6 +1354,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "oh-app"
+version = "0.1.0"
+dependencies = [
+ "oh-assets",
+ "oh-config",
+ "oh-game",
+ "oh-lua",
+ "oh-math",
+ "oh-render",
+]
+
+[[package]]
 name = "oh-assets"
 version = "0.1.0"
 dependencies = [
