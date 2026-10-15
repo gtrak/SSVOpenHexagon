@@ -23,3 +23,11 @@ echo "=== concat/buildPackId/validator ==="
 "$CXX" "${FLAGS[@]}" -o "$OUT/concat" "$HERE/concat_probe.cpp" "$HERE/stubs.cpp" \
   "$ROOT/src/SSVOpenHexagon/Utils/BuildPackId.cpp" "$ROOT/src/SSVOpenHexagon/Utils/LevelValidator.cpp"
 "$OUT/concat"
+
+echo "=== ostream float formatting (hg::Utils::concat) ==="
+"$CXX" "${FLAGS[@]}" -o "$OUT/format" "$HERE/format_probe.cpp"
+"$OUT/format"
+
+echo "=== timepoint formatting (hg::Utils::formatTimepoint) ==="
+"$CXX" "${FLAGS[@]}" -o "$OUT/timestamp" "$HERE/timestamp_probe.cpp"
+"$OUT/timestamp"

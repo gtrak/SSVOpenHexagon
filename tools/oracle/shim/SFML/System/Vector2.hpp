@@ -9,6 +9,7 @@ template <typename T> struct Vector2 {
     Vector2& operator+=(const Vector2& r){ x+=r.x; y+=r.y; return *this; }
     Vector2& operator-=(const Vector2& r){ x-=r.x; y-=r.y; return *this; }
     Vector2& operator*=(T s){ x*=s; y*=s; return *this; }
+    Vector2& operator/=(T s){ x/=s; y/=s; return *this; }
     T cross(const Vector2& r) const { return x*r.y - y*r.x; }
     T dot(const Vector2& r) const { return x*r.x + y*r.y; }
     // SFML normalized()
@@ -21,6 +22,7 @@ template <typename T> Vector2<T> operator+(Vector2<T> l, const Vector2<T>& r){ r
 template <typename T> Vector2<T> operator-(Vector2<T> l, const Vector2<T>& r){ return {l.x-r.x,l.y-r.y}; }
 template <typename T> Vector2<T> operator*(Vector2<T> l, T s){ return {l.x*s,l.y*s}; }
 template <typename T> Vector2<T> operator*(T s, Vector2<T> r){ return {r.x*s,r.y*s}; }
+template <typename T> Vector2<T> operator/(Vector2<T> l, T s){ return {l.x/s,l.y/s}; }
 using Vector2f = Vector2<float>;
 using Vector2i = Vector2<int>;
 using Vector2u = Vector2<unsigned>;

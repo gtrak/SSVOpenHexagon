@@ -2,3 +2,5 @@
 //! folded into `oh-math` per DECISIONS.md D-002.
 
 pub mod vector2;
+
+pub use vector2::Vec2;

@@ -7,9 +7,10 @@
 //! - `ssvs` — SSVStart subset (`extlibs/SSVStart/include/SSVStart/**`)
 //! - `hg` — SSVOpenHexagon Utils subset (`include/SSVOpenHexagon/Utils/**`)
 //!
-//! Arithmetic fidelity: every C++ `float` is `f32`, every `double` is `f64`,
-//! and no floating-point expression is reordered.
+//! Arithmetic fidelity: every C++ `float` is `f32`, every `double` is
+//! `f64`, and no floating-point expression is reordered.
 
+pub mod hg;
 pub mod ssvs;
 pub mod ssvu;
 
