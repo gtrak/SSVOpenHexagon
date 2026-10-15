@@ -80,14 +80,17 @@ impl Slider {
     }
 
     /// C++ templated `Slider(..., TFuncGet mFuncGet, TFuncSet mFuncSet,
-    /// T mMin, T mMax, T mIncrement)` — the C++ lambdas capture the functors
-    /// by value (`[=]`), so the Rust `TGet`/`TSet` must be `Clone` (closures
-    /// over `Rc`-based game state are, as in the C++ game).
+    /// T mMin, T mMax, T mIncrement)`.
     ///
     /// C++ semantics:
     /// - valueGetter: `ssvu::toStr(mFuncGet())`
     /// - increase: `mFuncSet(ssvu::getClamped(mFuncGet() + mIncrement, mMin, mMax))`
     /// - decrease: `mFuncSet(ssvu::getClamped(mFuncGet() - mIncrement, mMin, mMax))`
+    ///
+    /// The C++ lambdas capture the functors by value (`[=]`); the port
+    /// wraps each functor in an `Rc` shared by the derived closures
+    /// (observable behavior is identical for the copyable functors the
+    /// C++ game passes, e.g. closures over `Rc`-based state).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_value<T, TGet, TSet>(
         menu: Weak<Menu>,
@@ -101,19 +104,23 @@ impl Slider {
     ) -> Self
     where
         T: Copy + PartialOrd + Add<Output = T> + Sub<Output = T> + std::fmt::Display + 'static,
-        TGet: Fn() -> T + Clone + 'static,
-        TSet: Fn(T) + Clone + 'static,
+        TGet: Fn() -> T + 'static,
+        TSet: Fn(T) + 'static,
     {
-        // C++ `[=]` captures the functors by value: each Rust closure
-        // gets its own copy.
-        let get_display = m_func_get.clone();
-        let get_inc = m_func_get.clone();
-        let set_inc = m_func_set.clone();
-        let value_getter = Box::new(move || get_display().to_string());
-        let increase_action =
-            Box::new(move || set_inc(get_clamped(get_inc() + m_increment, m_min, m_max)));
-        let decrease_action =
-            Box::new(move || m_func_set(get_clamped(m_func_get() - m_increment, m_min, m_max)));
+        let get: Rc<dyn Fn() -> T> = Rc::new(m_func_get);
+        let set: Rc<dyn Fn(T)> = Rc::new(m_func_set);
+        let value_getter = {
+            let g = get.clone();
+            Box::new(move || g().to_string())
+        };
+        let increase_action = {
+            let (g, s) = (get.clone(), set.clone());
+            Box::new(move || s(get_clamped(g() + m_increment, m_min, m_max)))
+        };
+        let decrease_action = {
+            let (g, s) = (get, set);
+            Box::new(move || s(get_clamped(g() - m_increment, m_min, m_max)))
+        };
         Slider::new(
             menu,
             category,
@@ -177,7 +184,8 @@ impl Toggle {
 
     /// C++ templated `Toggle(..., TFuncGet mFuncGet, TFuncSet mFuncSet)` —
     /// predicate is `mFuncGet()`, activate is `mFuncSet(true)`, deactivate
-    /// is `mFuncSet(false)` (C++ `[=]` captures ⇒ `Clone` bounds).
+    /// is `mFuncSet(false)` (functors shared through `Rc`, same as
+    /// [`Slider::from_value`]).
     pub(crate) fn from_bool<TGet, TSet>(
         menu: Weak<Menu>,
         category: Weak<Category>,
@@ -186,17 +194,20 @@ impl Toggle {
         m_func_set: TSet,
     ) -> Self
     where
-        TGet: Fn() -> bool + Clone + 'static,
-        TSet: Fn(bool) + Clone + 'static,
+        TGet: Fn() -> bool + 'static,
+        TSet: Fn(bool) + 'static,
     {
-        let set_activate = m_func_set.clone();
+        let get: Rc<dyn Fn() -> bool> = Rc::new(m_func_get);
+        let set: Rc<dyn Fn(bool)> = Rc::new(m_func_set);
+        let get2 = get.clone();
+        let set_activate = set.clone();
         Toggle::new(
             menu,
             category,
             name,
-            Box::new(m_func_get),
+            Box::new(move || get2()),
             Box::new(move || set_activate(true)),
-            Box::new(move || m_func_set(false)),
+            Box::new(move || set(false)),
         )
     }
 }

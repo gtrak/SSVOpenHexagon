@@ -200,16 +200,19 @@ impl Category {
     }
 
     /// `Category::remove` — `items.erase(items.begin() + index);
-    /// index = std::min(index, int(items.size()) - 1);` (C++ is UB if the
-    /// index is out of range; the port only erases a valid index and still
-    /// clamps as C++ does).
+    /// index = std::min(index, int(items.size()) - 1);` — the clamp uses
+    /// the size **after** the erase (C++ is UB if the index is out of
+    /// range; the port only erases a valid index but still clamps as C++).
     pub fn remove(&self) {
         let index = *self.index.borrow();
         let size = self.items.borrow().len() as i32;
-        if (0..size).contains(&index) {
+        let new_size = if (0..size).contains(&index) {
             self.items.borrow_mut().remove(index as usize);
-        }
-        *self.index.borrow_mut() = index.min(size - 1);
+            size - 1
+        } else {
+            size
+        };
+        *self.index.borrow_mut() = index.min(new_size - 1);
     }
 
     /// `Category::sortByName` — `std::sort` by the **virtual** `getName()`

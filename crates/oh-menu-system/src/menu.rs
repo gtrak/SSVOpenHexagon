@@ -129,11 +129,14 @@ impl Menu {
     /// `Menu::goBack` — `lastCategories.pop(); category =
     /// lastCategories.top();` (C++ is UB unless `can_go_back()`).
     pub fn go_back(&self) {
-        let previous = self
-            .last_categories
-            .borrow_mut()
-            .pop()
-            .expect("goBack called with lastCategories.size() <= 1 (C++: UB)");
+        let previous = {
+            let mut stack = self.last_categories.borrow_mut();
+            stack.pop();
+            stack
+                .last()
+                .cloned()
+                .expect("goBack called with lastCategories.size() <= 1 (C++: UB)")
+        };
         *self.category.borrow_mut() = Some(previous);
     }
 
