@@ -25,9 +25,13 @@
 //! and [`dispatch`] (the `main()` dispatch, `main.cpp:604-686`, + the
 //! not-yet-ported `mainServer` stub).
 //!
-//! Out of scope for step (b) (step (c)): the winit/glow window + event
-//! pump, MenuGame↔HexagonGame switching, signals, the FPS text timing loop,
-//! and the egui console overlay (issue 14 step (b)).
+//! Issue 15 step (c): [`game_state`] (the C++ `GameEngine` state-pointer /
+//! `updateFromTimer` / `drawFromTimer` switching surface, spec §1) and the
+//! windowed `mainClient` path (window + `TimerStatic` + MenuGame + the four
+//! callbacks + boot dispatch + `window->run()`, in the C++
+//! `GameWindow::runEvents` order — see `client::main_client` / `windowed`).
+//!
+//! Out of scope here: the egui console overlay (issue 14 step (b)).
 
 pub mod args;
 pub mod bridge;
@@ -35,5 +39,6 @@ pub mod camera;
 pub mod client;
 pub mod compose;
 pub mod dispatch;
+pub mod game_state;
 pub mod lifecycle;
 pub mod print_lua_docs;
