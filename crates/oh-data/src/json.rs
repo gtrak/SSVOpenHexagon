@@ -403,7 +403,7 @@ fn type_error(obj: &Obj, to: &str) -> JsonError {
 #[must_use = "mirrors the C++ [[nodiscard]]"]
 pub fn extr_str<'a>(obj: &'a Obj, key: &str, default: &'a str) -> Result<&'a str, JsonError> {
     if has(obj, key) {
-        as_str(&get_missing_as_null(obj, key))
+        as_str(get_missing_as_null(obj, key))
     } else {
         Ok(default)
     }
@@ -412,7 +412,7 @@ pub fn extr_str<'a>(obj: &'a Obj, key: &str, default: &'a str) -> Result<&'a str
 #[must_use = "mirrors the C++ [[nodiscard]]"]
 pub fn extr_bool(obj: &Obj, key: &str, default: bool) -> Result<bool, JsonError> {
     if has(obj, key) {
-        as_bool(&get_missing_as_null(obj, key))
+        as_bool(get_missing_as_null(obj, key))
     } else {
         Ok(default)
     }
@@ -421,7 +421,7 @@ pub fn extr_bool(obj: &Obj, key: &str, default: bool) -> Result<bool, JsonError>
 #[must_use = "mirrors the C++ [[nodiscard]]"]
 pub fn extr_int(obj: &Obj, key: &str, default: i64) -> Result<i64, JsonError> {
     if has(obj, key) {
-        as_int(&get_missing_as_null(obj, key))
+        as_int(get_missing_as_null(obj, key))
     } else {
         Ok(default)
     }
@@ -430,7 +430,7 @@ pub fn extr_int(obj: &Obj, key: &str, default: i64) -> Result<i64, JsonError> {
 #[must_use = "mirrors the C++ [[nodiscard]]"]
 pub fn extr_float(obj: &Obj, key: &str, default: f64) -> Result<f64, JsonError> {
     if has(obj, key) {
-        as_float(&get_missing_as_null(obj, key))
+        as_float(get_missing_as_null(obj, key))
     } else {
         Ok(default)
     }
@@ -442,7 +442,7 @@ pub fn extr_float(obj: &Obj, key: &str, default: f64) -> Result<f64, JsonError> 
 pub fn extr_vec_f32(obj: &Obj) -> Result<Vec<f32>, JsonError> {
     let mut v = vec![0.0f32; size(obj)];
     for (i, v) in v.iter_mut().enumerate() {
-        *v = as_float(&get_at_or_null(obj, i))? as f32;
+        *v = as_float(get_at_or_null(obj, i))? as f32;
     }
     Ok(v)
 }
@@ -451,7 +451,7 @@ pub fn extr_vec_f32(obj: &Obj) -> Result<Vec<f32>, JsonError> {
 pub fn extr_vec_str(obj: &Obj) -> Result<Vec<String>, JsonError> {
     let mut v = vec![String::new(); size(obj)];
     for (i, v) in v.iter_mut().enumerate() {
-        *v = as_str(&get_at_or_null(obj, i))?.to_string();
+        *v = as_str(get_at_or_null(obj, i))?.to_string();
     }
     Ok(v)
 }
@@ -474,7 +474,7 @@ pub fn extr_map_str_f32(obj: &Obj) -> Result<std::collections::BTreeMap<String, 
 #[must_use = "mirrors the C++ [[nodiscard]]"]
 pub fn extr_color(obj: &Obj) -> Result<oh_math::hg::color::Color, JsonError> {
     let raw: [i64; 4] = (0..4)
-        .map(|i| as_int(&get_at_or_null(obj, i)))
+        .map(|i| as_int(get_at_or_null(obj, i)))
         .collect::<Result<Vec<_>, _>>()
         .map(|v| v.try_into().unwrap())?;
     Ok(oh_math::hg::color::Color {
@@ -750,7 +750,7 @@ fn format_value_16g(value: f64) -> String {
     let digits: String = mant.chars().filter(|c| c != &'.').collect();
     debug_assert_eq!(digits.len(), 16);
 
-    if !(exp >= -4 && exp < 16) {
+    if !(-4..16).contains(&exp) {
         // C++ %g scientific: d[.ddd]e±xx (>=2 exponent digits, no leading 0)
         let mant_s = if digits.len() == 1 {
             digits.clone()

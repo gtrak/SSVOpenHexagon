@@ -70,7 +70,7 @@ pub fn iostream_f32_default(v: f32) -> String {
     let digits: String = mant.chars().filter(|c| c != &'.').collect();
     debug_assert_eq!(digits.len(), 6);
 
-    let sci = exp < -4 || exp >= 6;
+    let sci = !(-4..6).contains(&exp);
     if sci {
         let trimmed: String = {
             let mut d = digits;
