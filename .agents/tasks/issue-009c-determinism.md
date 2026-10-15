@@ -45,6 +45,21 @@ strong signal (it fails loudly on any replay-affecting desync).
 A real `oh_game::seams::ScriptHost` over `oh_lua`, so a level's `.lua` can actually
 run. **This is the hard part — read this whole section before writing code.**
 
+**Start from the existing working template, do not invent a new shape:**
+`crates/oh-lua/tests/api.rs` already (a) builds a `State` =
+`Arc<ReentrantMutex<GameApiState>>` via `GameApiState::new(...)` from the `oh_game`
+gameplay types (see its `game_state(in_menu)` helper, lines 148-176), (b) calls
+`init_lua_api` + `init_level_api` (lines 484-485), and (c) shows how `oh_game`'s
+gameplay types plug into `oh_lua`'s API state. Your composition is the same shape
+with the real `oh_assets::Assets` behind `AssetsApi` and **this crate's
+`HexagonGame`** behind `GameApi` (it already implements `GameApi`:
+`hexagon_game.rs:2092`). The two-phase build is: construct `HexagonGame` with
+`Arc<dyn GameApi>` = a clone of itself (the engine IS the backend), then
+`attach_state(state)` (`hexagon_game.rs:559`) — `attach_state` is required before
+any use, and the `Arc<dyn GameApi>` must be built before the state exists, hence
+the `OnceLock` + two-phase pattern documented at `hexagon_game.rs:336-357` and the
+caller contract at `hexagon_game.rs:555-568`.
+
 The obstacle you WILL hit and must solve correctly: `oh_game::seams::ScriptHost`
 requires `Send + Sync + 'static`, and the engine stores it as
 `Arc<dyn ScriptHost>` inside `Inner<S>`, which must be `Send + Sync` (because
