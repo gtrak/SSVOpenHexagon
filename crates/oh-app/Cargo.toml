@@ -5,7 +5,8 @@ version.workspace = true
 edition.workspace = true
 
 [lib]
-# Library only — the `main.rs` binary is issue 15 step (b).
+# Library + the `open-hexagon` binary (issue 15 step (b)); the windowed
+# loop (step (c)) lands in the same binary.
 
 [dependencies]
 # The two sides of the bridge: the engine (never depends on the render
@@ -18,14 +19,22 @@ oh-render = { path = "../oh-render" }
 oh-config = { path = "../oh-config" }
 oh-math = { path = "../oh-math" }
 oh-data = { path = "../oh-data" }
-
-[dev-dependencies]
-# The real headless composition for the bridge tests (mirrors
-# `crates/oh-game/tests/common/mod.rs` — a minimal copy, kept small on
-# purpose; issue 15 step (b) dedupes the two when the binary lands).
-# Dev-only: the LIB must not depend on oh-lua (it would couple the
-# composition crate's public API to the Lua backend).
+# The step-(b) composition (`compose.rs`) implements the `ScriptHost`
+# seam over `oh-lua` IN THE LIB (promoted from the step-(a) test tree per
+# the 15b spec): `oh-app -> oh-lua -> oh-game` is acyclic, and the binary
+# (same package) needs the Lua host to run `-printLuaDocs` / headless
+# replays. Step (a)'s "dev-only" constraint was about the DRAW BRIDGE not
+# coupling to the Lua backend; the composition crate legitimately does.
 oh-lua = { path = "../oh-lua" }
 oh-assets = { path = "../oh-assets" }
 oh-replay = { path = "../oh-replay" }
 oh-rng = { path = "../oh-rng" }
+
+[features]
+# D-023/D-024: forward onto oh-lua so the `open-hexagon` binary's
+# `-printLuaDocs` (and any composition in this package) sees the flag-ON
+# metadata store when the workspace is built with the feature (the C++
+# `SSVOH_PRODUCE_LUA_METADATA` build; default OFF = the shipped build).
+produce-lua-metadata = ["oh-lua/produce-lua-metadata"]
+
+[dev-dependencies]
