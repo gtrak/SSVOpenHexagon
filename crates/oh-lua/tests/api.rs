@@ -4,6 +4,7 @@
 //! `src/SSVOpenHexagon/Core/*.cpp`, per mapping/lua-api.md §1/§2) and the
 //! spread-argument closure semantics of `add_lua_fn!`.
 
+use oh_game::lua_state::ReentrantMutex;
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
@@ -145,7 +146,7 @@ const GAME_ONLY: [&str; 4] = [
 /// A fresh game context (C++ `HexagonGame` state, `in_menu == false`,
 /// headless so no window reads happen).
 fn game_state(in_menu: bool) -> State {
-    Arc::new(Mutex::new(GameApiState::new(
+    Arc::new(ReentrantMutex::new(GameApiState::new(
         RandomNumberGenerator::new(42),
         LevelStatus::new(true, 800.0),
         HexagonGameStatus::default(),

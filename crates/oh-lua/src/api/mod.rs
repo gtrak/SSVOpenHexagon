@@ -61,9 +61,12 @@ mod style_level;
 mod utils;
 mod wall_creation;
 
-pub use state::{ft_to_seconds, AssetsApi, GameApi, GameApiState, SharedLua};
+pub use state::{
+    ft_to_seconds, AssetsApi, GameApi, GameApiState, ReentrantMutex, ReentrantMutexGuard,
+    SharedLua, SharedState,
+};
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
 use crate::context::LuaContext;
 use crate::error::LuaError;
@@ -71,14 +74,15 @@ use crate::{destroy_malicious_functions, redefine_io_open, redefine_random};
 
 /// The shared state handle every registered closure locks (C++ captured
 /// `this` / references; the `'static` closures need the `Arc`).
-pub type State = Arc<Mutex<GameApiState>>;
+pub type State = Arc<ReentrantMutex<GameApiState>>;
 
-/// Locks the shared state; a poisoned lock is recovered (same convention as
-/// `get_metadata`).
-fn lock(state: &State) -> MutexGuard<'_, GameApiState> {
-    state
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+/// Locks the shared state. Reentrant (DECISIONS.md D-013): `t_eval` /
+/// `e_eval` / `ct_eval` closures run Lua while the guard is held, and
+/// lambdas call `lock(&st).backend.*`, whose engine implementation
+/// re-locks the same state on the same thread (a
+/// `std::sync::Mutex` would self-deadlock there).
+fn lock(state: &State) -> ReentrantMutexGuard<'_, GameApiState> {
+    state.lock()
 }
 
 /// The C++ `hg::LuaScripting::init` shared registration (random shims →

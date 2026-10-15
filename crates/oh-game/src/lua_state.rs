@@ -31,11 +31,11 @@
 //! signatures return `Result<_, LuaError>`, an `oh-lua` type this crate
 //! cannot name.
 
-use std::cell::Cell;
 use std::cell::UnsafeCell;
 use std::collections::HashSet;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use oh_data::pack_data::PackData;
 use oh_data::style_data::StyleData;
@@ -53,8 +53,8 @@ use crate::{
 ///
 /// The C++ lambdas capture `this` (`HexagonGame&`); the Rust port captures
 /// this trait object. Method signatures are the issue-007 contract
-/// verbatim, minus the `Send + Sync` supertraits (see module docs).
-pub trait GameApi {
+/// verbatim.
+pub trait GameApi: Send + Sync {
     // -- Config -----------------------------------------------------------
     /// C++ `Config::getWidth()`.
     fn get_width(&self) -> u32;
@@ -341,36 +341,50 @@ impl SharedState {
 ///
 /// # Single-thread contract (read before using)
 ///
-/// This is a *logical* mutex for a single-threaded game, not a blocking
-/// thread-mutex:
+/// This is a *logical* mutex for the single-threaded game, not a
+/// cross-thread blocking mutex:
 ///
-/// * Share it ONLY through `Rc` (composition code never wraps it in an
-///   `Arc`). `Rc` makes the handle `!Send`, so the type system keeps the
-///   lock on one thread. (With `Arc` two threads could each `lock` and
-///   alias the value — that is NOT a supported use.)
+/// * It may be shared through `Arc` (the `oh-lua` `State` handle does —
+///   the timeline closures captured by the 007 lambdas must be `Send`,
+///   which forces the `GameApi`/`AssetsApi` trait objects, and thus the
+///   whole `GameApiState`, to be `Send`). In practice ALL locking
+///   happens on the single game thread, so no blocking ever occurs.
 /// * `lock` on the owning thread re-enters: it bumps a depth counter and
-///   hands out another guard; it never blocks (there is nothing to block
-///   on — no other thread can hold an `Rc` to this lock).
-/// * The guard derefs to `&mut T` exactly like a `MutexGuard`; a nested
-///   lock is the same thread's own recursion and is serialized by program
-///   order.
+///   hands out another guard.
+/// * The guard derefs to `&mut T` exactly like a `MutexGuard`; nested
+///   locks on the owning thread are serialized by program order.
 /// * Panic-safe: guards are RAII, so a panic inside a nested lock
 ///   decrements the depth on unwind (no "depth leak" that would leave the
 ///   lock permanently unusable); there is no poisoning to observe.
 ///
 /// # No `unsafe` across the shared-state path
 ///
-/// The `unsafe` is confined to the two `deref` impls below; every other
-/// use site (`SharedState` access in the engine, all 285 issue-007
-/// lambdas) is safe code. Soundness argument: all access to `value`
-/// happens through a live guard, guards are created/dropped only on the
-/// single owning thread (enforced by `Rc`), and nested guards on that
-/// thread are serialized by program order — the same invariants a
-/// reentrant mutex documents for `&self -> &mut T` access.
+/// The `unsafe` is confined to the two `deref` impls below and the manual
+/// `Sync` impl next to the struct (needed because `UnsafeCell` is `!Sync`
+/// for all `T`, while the 007 `Send` timeline closures must capture
+/// `Arc<State>`); every other use site (`SharedState` access in the
+/// engine, all 285 issue-007 lambdas) is safe code. Soundness argument:
+/// all access to `value` happens through a live guard, and in this
+/// codebase every lock happens on the single game thread (see the `State`
+/// docs in `oh-lua` and the composition in `oh-game` tests), so nested
+/// guards on that thread are serialized by program order — the same
+/// invariants a reentrant mutex documents for `&self -> &mut T` access.
 pub struct ReentrantMutex<T> {
     value: UnsafeCell<T>,
-    depth: Cell<u32>,
+    depth: AtomicU32,
 }
+
+// `UnsafeCell` is `!Sync` for all `T`, so the auto-impl cannot make
+// `ReentrantMutex<T>` `Sync` — but the 007 lambdas capture `Arc<State>`
+// into `Send` timeline closures, which needs it. Soundness argument:
+// the only interior-mutability hazard is two guards being alive at once;
+// in this codebase every `lock()` happens on the single game thread (the
+// type docs' contract), and the depth counter is atomic, so sharing the
+// HANDLE across threads (which the `Send` timeline closures require)
+// never races on the counter.
+// SAFETY: see the argument above; mirrors the single-thread usage
+// contract documented on the type.
+unsafe impl<T: Send> Sync for ReentrantMutex<T> {}
 
 impl<T> ReentrantMutex<T> {
     /// Creates the lock guarding `value` (depth 0 = unlocked).
@@ -378,15 +392,15 @@ impl<T> ReentrantMutex<T> {
     pub fn new(value: T) -> Self {
         Self {
             value: UnsafeCell::new(value),
-            depth: Cell::new(0),
+            depth: AtomicU32::new(0),
         }
     }
 
     /// Locks (or re-enters, on the owning thread) the value.
     pub fn lock(&self) -> ReentrantMutexGuard<'_, T> {
-        let depth = self.depth.get();
+        let depth = self.depth.load(Ordering::Relaxed);
         debug_assert!(depth < u32::MAX - 1, "reentrant depth overflow");
-        self.depth.set(depth + 1);
+        self.depth.store(depth + 1, Ordering::Relaxed);
         ReentrantMutexGuard(self)
     }
 
@@ -394,7 +408,7 @@ impl<T> ReentrantMutex<T> {
     /// hook standing in for "the depth counter returned to zero".
     #[must_use]
     pub fn is_locked(&self) -> bool {
-        self.depth.get() > 0
+        self.depth.load(Ordering::Relaxed) > 0
     }
 }
 
@@ -436,9 +450,9 @@ impl<T> DerefMut for ReentrantMutexGuard<'_, T> {
 
 impl<T> Drop for ReentrantMutexGuard<'_, T> {
     fn drop(&mut self) {
-        let depth = self.0.depth.get();
+        let depth = self.0.depth.load(Ordering::Relaxed);
         debug_assert!(depth > 0, "lock depth underflow");
-        self.0.depth.set(depth - 1);
+        self.0.depth.store(depth - 1, Ordering::Relaxed);
     }
 }
 
