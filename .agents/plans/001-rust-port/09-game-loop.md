@@ -45,15 +45,38 @@ from issue 07 and the types from issue 08. Rendering calls are abstracted behind
 
 ## Verification
 
-- **Determinism harness**: given a packed level + seed + a recorded input vector,
-  run headlessly and assert the exact final score / frame count / RNG draws. This
-  is the core "1:1" evidence; the input vector is generated from a C++ run or from
-  a fixed RNG-driven policy implemented identically in both.
+- **Determinism harness** (`crates/oh-game/tests/determinism.rs`): given a packed
+  level + seed + a policy-driven input vector, run headlessly and assert the exact
+  final score / frame count / RNG draws. The policy is the C++ test's own
+  (`executeRandomInputs` / `alwaysSpinRight`, `test/ReplayExecution.t.cpp:40-51`),
+  so it is reproducible without an external input file.
 - Port the C++ tests in `test/ReplayExecution.t.cpp` and
-  `test/ReplayExecutionBenchmark.t.cpp` to Rust, asserting the same outcomes.
+  `test/ReplayExecutionBenchmark.t.cpp` to Rust, asserting the same outcomes —
+  i.e. **the self-consistency property they actually assert** (see the CORRECTION
+  below; they carry no expected numbers).
 - Lua-callback ordering test: a level script that logs callbacks; assert the order
   matches the C++ firing points.
 - `tools/gate.sh` green.
+
+### CORRECTION (D-018) — what the C++ replay tests actually assert
+
+This section previously claimed the C++ tests "encode expected scores ... port those
+numbers verbatim as the pin". **That is false** (verified against the source this
+session). `test/ReplayExecution.t.cpp` contains exactly three assertions
+(lines 81, 104, 109): the replay was created, playback terminated, and
+`TEST_ASSERT_EQ(score, replayPlayedTimeSeconds)` — the live run's played-time equals
+the replay run's played-time. There is **no numeric literal in the file**; it is a
+*self-consistency* check, not an oracle. Nor is there an external input vector: the
+inputs come from the engine's own RNG. So the ported test must be labelled
+**self-consistent, not C++-verified**, and the C++-derived evidence for this issue is
+the `oracle_gameplay.rs` geometry vectors plus any new `tools/oracle/` probes.
+
+The C++ tests DO name real shipped content (re-derived via `buildPackId`): pack
+`ohvrvanilla_vittorio_romeo_cube_1` (⇒ `_RELEASE/Packs/cube`, version 1) with level
+`..._apeirogon`, and pack `ohvrvanilla_vittorio_romeo_experimental_1` (⇒
+`_RELEASE/Packs/experimental`) with level `..._autotest0`. The harness can use these
+exact ids. Note `autotest0.json` has `difficultyMults: []` while the test passes
+`diffMult = 1.f` — mirror that, do not "fix" it.
 
 ## Notes / risks
 

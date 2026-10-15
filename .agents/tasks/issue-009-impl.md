@@ -22,7 +22,8 @@ Read first:
 4. `.agents/plans/001-rust-port/mapping/lua-api.md` §5 (callbacks) — the exact Lua
    invocation points
 5. `test/ReplayExecution.t.cpp` + `test/ReplayExecutionBenchmark.t.cpp` — the C++
-   tests that encode expected scores for known level/seed/replay combos
+   tests. NOTE (D-018): they assert self-consistency
+   (`score == replayPlayedTimeSeconds`), NOT hard-coded scores.
 6. The real C++: `src/SSVOpenHexagon/Core/HGUpdate.cpp`, `HexagonGame.cpp`,
    `include/SSVOpenHexagon/Core/HexagonGame.hpp`
 
@@ -68,10 +69,26 @@ Read first:
    sequence. Derive the expectation from a C++ run if you can (see below);
    otherwise pin the Rust value and clearly mark it as self-consistent, not
    C++-verified.
-3. **Port `test/ReplayExecution.t.cpp`**: it encodes expected scores for known
-   combos — reproduce those numbers as the pin. If a number cannot be reproduced,
-   report that explicitly as a gap; do NOT adjust the expected value to match your
-   implementation.
+3. **Port `test/ReplayExecution.t.cpp`** — but see the CORRECTION below: it
+   carries **no expected numbers**. What it asserts is `score ==
+   replayPlayedTimeSeconds` (the live run's played-time equals the replay run's),
+   i.e. *self-consistency*. Reproduce exactly that property (both the same-game and
+   the `differentHG` variants) and label it **self-consistent, not C++-verified**.
+   Do NOT invent a numeric pin, and do NOT present a self-consistent number as
+   C++-verified.
+
+   **CORRECTION (D-018, verified against source):** earlier drafts of this spec
+   claimed the C++ test "encodes expected scores for known level/seed/replay
+   combos". That is false. `grep -n TEST_ASSERT test/ReplayExecution.t.cpp` gives
+   lines 81/104/109 only: `rf.has_value()`, `score2.has_value()`, and
+   `TEST_ASSERT_EQ(score, replayPlayedTimeSeconds)` (a plain `==` on two computed
+   doubles, `TestUtils.hpp:174`). No literals. There is also no external input
+   vector — inputs come from the engine's own RNG (`executeRandomInputs` /
+   `alwaysSpinRight`, lines 40-51). The packs it names ARE real and shipped:
+   `_RELEASE/Packs/cube` (level `apeirogon`) and `_RELEASE/Packs/experimental`
+   (level `autotest0`) — level ids are `packId + "_" + levelId`
+   (`MenuGame.cpp:4840`). Note `autotest0.json` has `"difficultyMults": []` while
+   the test passes `diffMult = 1.f`; mirror that, do not fix it.
 4. A callback-ordering test (a level script that logs; assert the order matches the
    C++ firing points).
 5. `v0` sanity: a 1000-tick headless run of a real level completes without panic

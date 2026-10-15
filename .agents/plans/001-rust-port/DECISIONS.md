@@ -336,3 +336,53 @@ fork is `include/SSVOpenHexagon/SSVUtilsJson/JsonCpp/jsoncpp.inl` (pinned).
   and `git clean`.
 - **General rule:** in a shared tree, the orchestrator's write operations may only
   name paths owned by a *dead* lane. Never a glob, never a stash, never a checkout.
+
+## D-018 — `test/ReplayExecution.t.cpp` does NOT encode expected scores (corrects the 09 contract)
+
+- **The claim (plan 09, "Notes / risks"):** "The C++ `test/ReplayExecution.t.cpp`
+  encodes expected scores for known level/seed/replay combos — port those numbers
+  verbatim as the pin." The task spec (`issue-009-impl.md`, verification item 3)
+  repeats it.
+- **The source (verified this session):** the file has exactly three assertions
+  (`grep -n TEST_ASSERT test/ReplayExecution.t.cpp` → lines 81, 104, 109):
+  - `TEST_ASSERT(rf.has_value())` — a replay was produced;
+  - `TEST_ASSERT(score2.has_value())` — replay playback terminated;
+  - `TEST_ASSERT_EQ(score, replayPlayedTimeSeconds)` (line 109) — the **live run's**
+    `playedTimeSeconds` equals the **replay run's** `playedTimeSeconds`.
+  There is **no numeric literal anywhere in the file**. `TEST_ASSERT_EQ` is
+  `TEST_ASSERT_OP(lhs, ==, rhs)` (`test/TestUtils.hpp:174`): a plain `==` on the two
+  *computed* doubles.
+- **What that means:** the C++ test is a **self-consistency** check — "a deterministic
+  engine replays its own recording to the identical played-time" — not an oracle. It
+  cannot supply a C++-derived expectation, and no amount of porting will make it one.
+  A *score* pin would have to come from a full C++ game build (SFML+LuaJIT+ImGui),
+  which the plan already records as unavailable (09 "Notes on getting C++
+  expectations", same as D-004/D-011's situation).
+- **Consequence for the 09 harness:** the honest evidence is
+  (a) the ported `TEST_ASSERT_EQ(score, replay_played_time)` self-consistency
+  property (live run == replay run, both `differentHG` variants), clearly labelled
+  **self-consistent, NOT C++-verified**; plus
+  (b) whatever *is* C++-derived: the existing `oracle_gameplay.rs` vectors and
+  per-frame step math via `tools/oracle/` probes. Never present (a) as C++-verified
+  (this is the plan's own instruction, 09 "Notes").
+- **Also false in the same note:** "the input vector is generated from a C++ run" —
+  the C++ test generates inputs in-process from `getRndBool()`/RNG
+  (`executeRandomInputs` at line 40-51, `alwaysSpinRight`), i.e. from the engine's own
+  RNG, again self-consistent — so there is no external input vector to import either.
+- **CORRECTION (my own first draft of this entry was wrong — D-014):** I initially
+  wrote that the packs/levels the test names are not shipped. They **are**. Verified
+  by re-deriving `buildPackId` (`Utils/BuildPackId.cpp`: space→underscore on each
+  field, joined by `_`, trailing version) against the shipped `pack.json`s:
+  `_RELEASE/Packs/cube/pack.json` = {disambiguator `ohvrvanilla`, author
+  `vittorio romeo`, name `cube`, version 1} → packId
+  `ohvrvanilla_vittorio_romeo_cube_1` (matches the test's `packs[0]`), and
+  `_RELEASE/Packs/cube/Levels/apeirogon.json` → levelId
+  `ohvrvanilla_vittorio_romeo_cube_1_apeirogon` (matches the test's `levels[0]`);
+  likewise `experimental` → `ohvrvanilla_vittorio_romeo_experimental_1` +
+  `autotest0`. So the harness **can** use the real shipped packs and the exact
+  level ids the C++ test uses. Level-id format is `packId + "_" + levelId`
+  (`MenuGame.cpp:4840`); the score validator appends `_m_<diffMult>`
+  (`LevelValidator.cpp:16`, `LevelData.cpp:42`).
+- **Rule (D-012 restated):** when a contract makes a claim about a source file, the
+  source wins. Contributed by orchestrator verification before dispatch, so the
+  worker is not sent chasing numbers that do not exist.

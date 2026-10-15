@@ -21,11 +21,11 @@ Decisions log: `.agents/plans/001-rust-port/DECISIONS.md`
 | 06 | `oh-lua` runtime: LuaContext analogue + conversions | 01 | LANDED | 48dba310 | gate 4/4; 24 tests; %.14g + _setGlobal throw verified against real LuaJIT source |
 | 07 | `oh-lua` game API: all globals + callbacks | 06,03,04 | LANDED | 3f5d06eb | gate 4/4; 241 tests; 285-name exact-set test, name count reconciled independently, mutation reddens it |
 | 08 | `oh-game` types: walls, player, custom walls, status | 01,02 | LANDED | 65f0a9cc | gate 4/4 on a clean checkout; 24 tests; oracle vectors + discrimination-verified |
-| 09 | `oh-game` update loop (HGUpdate/HexagonGame) headless | 08,07 | in-flight | 287b8056 (a+b) | D-013 steps (a) shared state + (b) GameApiState refactor landed; 007's suite green; update loop still owed |
+| 09 | `oh-game` update loop (HGUpdate/HexagonGame) headless | 08,07 | in-flight | a406f5a8 | Update loop PORTED (`update.rs` 1523 lines, `hexagon_game.rs` 2177, `seams.rs` 346; gate 4/4, 298 tests). STILL OWED: `tests/determinism.rs` harness + the test-side composition (real `ScriptHost`/`AssetsApi` adapters). D-018: the C++ replay test asserts self-consistency only — no expected numbers exist |
 | 10 | `oh-render` backend (window/input/vertex/shader/font) | 01 | LANDED | e31d4d86 | gate 4/4 on clean checkout; 49 tests; GL smoke skips-with-reason (D-011) |
 | 11 | `oh-render` graphics: stages, draw methods, cameras | 10,08 | LANDED | cd0a4748, d30f1363 | gate 4/4 (285 tests, +33: 63 lib + 12 draw + golden guard); RenderStage order + per-stage shader binding asserted; golden-frame guard skips-with-reason headless (D-011); free-function port, no oh-render→oh-game dep; 009 wiring TODO seams marked |
 | 12 | `oh-menu-system`: SSVMenuSystem analogue | 01 | LANDED | 232a868c | gate 4/4; 252 tests; contract's Controller claim corrected from source |
-| 13 | `oh-menu` MenuGame: all states, dialog box | 11,12,07 | in-flight | 960e92ba (wip branch) | MenuGame ported (4.3k lines), lib builds; integration tests need fixes |
+| 13 | `oh-menu` MenuGame: all states, dialog box | 11,12,07 | LANDED | a406f5a8 | gate 4/4; MenuGame ported (4.3k lines) + tests fixed against the C++ source (dialog centre uses `calculateFMaxAndWAndH`; `diffMultIdx` = index of the 1.0× mult; raw `++` on right). Filled a real gap: the `getSaveLastLoginUsername() ? getLastLoginUsername() : ""` branch (`MenuGame.cpp:6152-6154`) |
 | 14 | Lua console overlay + `-printLuaDocs` | 13,07 | OPEN | — | |
 | 15 | `oh-app`: boot, game loop, CLI, modes | 13,11,09 | OPEN | — | |
 | 16 | `oh-net` protocol: packets, sodium, shared codecs | 01,02 | OPEN | — | packet encoding rules in oracle-vectors.md |
