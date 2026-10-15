@@ -287,13 +287,15 @@ surface"):
   against the `tools/oracle/shim/` `Packet` shim + system libsodium 1.0.18;
   46 checks, all `ok=1`, deterministic (two-run diff clean). Vectors:
   `mapping/oracle-vectors.md` ("Net wire vectors").
-- `crates/oh-net/tests/wire.rs` — 21 tests: byte-exact encodes for all 30
+- `crates/oh-net/tests/wire.rs` — 20 tests: byte-exact encodes for all 30
   packet shapes (15 CTS + 15 STC incl. the own-score Some/None pair), full
   decode round-trips, the kx/secretbox/generichash cross-implementation KATs
   (Rust output == the C++ probe's pinned bytes), and the exact `PInvalid`
   error strings (11 negative cases).
-- `crates/oh-net/src/sodium.rs` unit tests — 20 tests (key sizes,
+- `crates/oh-net/src/sodium.rs` unit tests — 9 tests (key sizes,
   exchange symmetry incl. random keypairs, fixed key/nonce seal+open,
   tamper rejection, `sodiumKeyToString`, `sodiumHash` determinism, nonce
-  freshness).
-- `cargo test -p oh-net`: 41 tests green; clippy `-D warnings` clean.
+  freshness); with `packet.rs` (8) and `protocol.rs` (4) that is the
+  21-test lib suite.
+- `cargo test -p oh-net`: 41 tests green (21 lib + 20 wire); clippy
+  `-D warnings` clean.
