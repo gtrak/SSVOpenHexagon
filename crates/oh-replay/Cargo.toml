@@ -1,0 +1,13 @@
+[package]
+name = "oh-replay"
+description = "Byte-exact port of SSVOpenHexagon's Core/Replay (replay file format, zlib compression, SFML packet codec)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# flate2's backend selection (system libz, byte-exact with the C++ build's
+# `compress2`) lives in the root [workspace.dependencies] — see
+# DECISIONS.md D-006 and .agents/skills/lib-flate2.md.
+flate2 = { workspace = true }
+oh-math = { path = "../oh-math" }
+oh-rng = { path = "../oh-rng" }

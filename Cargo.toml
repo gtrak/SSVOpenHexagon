@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/oh-math",
     "crates/oh-rng",
+    "crates/oh-replay",
 ]
 # Later issues add workspace members as they land (PLAN.md architecture
 # table): oh-timeline, oh-replay, oh-data, oh-config, oh-assets, oh-lua,
@@ -16,7 +17,11 @@ edition = "2021"
 # Pinned for later issues (issue 02: flate2; issues 03+: serde, serde_json,
 # thiserror). Resolved workspace-wide; harmless while unused.
 [workspace.dependencies]
-flate2 = "1"
+# flate2 on its `zlib` feature (system libz via libz-sys), NOT the default
+# miniz_oxide rust backend: the replay CZHEX oracle pin requires the *same
+# deflate implementation as the C++ build (system zlib `compress2`, level 9)
+# — see DECISIONS.md D-006 and .agents/skills/lib-flate2.md.
+flate2 = { version = "1", default-features = false, features = ["zlib"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
