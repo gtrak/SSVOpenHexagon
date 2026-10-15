@@ -7,3 +7,12 @@ edition.workspace = true
 [dependencies]
 oh-math = { path = "../oh-math" }
 oh-rng = { path = "../oh-rng" }
+oh-data = { path = "../oh-data" }
+oh-config = { path = "../oh-config" }
+oh-replay = { path = "../oh-replay" }
+
+# Issue 009 composition/tests only — never a normal dependency (that would
+# cycle: oh-lua already depends on oh-game).
+[dev-dependencies]
+oh-lua = { path = "../oh-lua" }
+oh-assets = { path = "../oh-assets" }

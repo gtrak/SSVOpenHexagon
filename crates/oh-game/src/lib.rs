@@ -24,6 +24,7 @@ pub mod custom_timeline;
 pub mod custom_wall;
 pub mod custom_wall_manager;
 pub mod level_status;
+pub mod lua_state;
 pub mod player;
 pub mod polygon;
 pub mod speed_data;
@@ -38,6 +39,7 @@ pub use custom_timeline::{CustomTimeline, CustomTimelineHandle, CustomTimelineMa
 pub use custom_wall::CCustomWall;
 pub use custom_wall_manager::CCustomWallManager;
 pub use level_status::LevelStatus;
+pub use lua_state::{GameApi, ReentrantMutex, SharedState};
 pub use player::CPlayer;
 pub use speed_data::SpeedData;
 pub use status::HexagonGameStatus;
