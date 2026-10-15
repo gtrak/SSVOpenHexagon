@@ -196,3 +196,17 @@ ZERO `* **\`` entry lines; feature-on mode → entry lines present and
   behaviour. The D-019 fix and the determinism harness are untouchable.
 - New dependencies in `oh-game` (egui must NOT be added to `oh-game` — that
   would break headless capability; docs live in `oh-lua`).
+
+## PROGRESS NOTE (orchestrator, post-timeout of run 046e3463)
+
+Scope items 1 and 2 are DONE and committed at `b85f7004`: the cargo feature
+`produce-lua-metadata` (default off) with the gated `Drop`, `docs.rs`
+(`print_docs`/`get_all_function_names`/`get_docs_for_function`), and the
+discrimination test pair — both modes 30/30 green, workspace 309 passed.
+A resumed worker picks up at **scope item 3 (oh-game console core) and item 4
+(initLuaAndPrintDocs)**, plus the STATUS.md row update. Do not redo item 1/2;
+read `b85f7004` first. Two lessons from the timed-out run: (a) NEVER hold the
+`get_metadata()` guard across a `docs::*` call — the store lock is
+non-reentrant and it self-deadlocks (already fixed in `runtime.rs`); (b) run
+`cargo test -p <crate>` for EACH mode right after writing tests, before moving
+to the next file, and commit early.
