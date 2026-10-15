@@ -465,3 +465,35 @@ fork is `include/SSVOpenHexagon/SSVUtilsJson/JsonCpp/jsoncpp.inl` (pinned).
   markers are the *integration* debt they name, tracked against 15 — they are not
   a defect in the loop, and no `oh-game` behaviour depends on them (headless
   determinism is unaffected, which is why the D-019 bug was findable at all).
+
+## D-021 — `_RELEASE/luadocs.md` is a STALE 2021 capture: NOT a valid oracle for issue 14
+
+- **The temptation:** `_RELEASE/luadocs.md` (69 KB, `-printLuaDocs` stdout with real
+  Steam/Discord boot log lines above the docs) looks like a perfect oracle for
+  issue 14's `print_docs` — it has exactly the C++ format
+  (`## <prefixHeader>` then `* **\`ret name(args)\`**: docs`) and 252 entries.
+- **It is stale.** It was committed once, `3b166a84` "Refacotring", **2021-03-29**.
+  Verified against the *current* source:
+  - `LuaMetadata.hpp` defines `NUM_CATEGORIES = 11` with `prefixCategories{u_, a_,
+    t_, e_, l_, s_, w_, cw_, ct_, shdr_, Miscellaneous}`, and the file's own
+    comment says "There are 9 categories" (stale comment). The capture contains
+    only **9** `## ` headers — `## Custom Timeline Functions (ct_)` and
+    `## Shader Functions (shdr_)` are **absent** (0 occurrences of `ct_`/`shdr_`).
+  - The 252 captured names vs the **285** currently registered
+    (`oh-lua/tests/api.rs::REGISTERED_NAMES`): 33 missing = the 8 `ct_*` + 13
+    `shdr_*` + 12 others. Each of those 12 has a real `.doc(...)` in the current
+    C++ (checked `u_getWidth`, `u_isHeadless`, `u_setFlashColor`,
+    `l_forceSetPulse`, `l_removeTracked`) and was introduced **after** the
+    capture: `u_getWidth` 2022-06-09, `u_isHeadless` 2023-02-22,
+    `u_setFlashColor` 2021-11-14, `l_forceSetPulse` 2022-10-05
+    (`git log -S` on the name).
+- **Consequence for issue 14:** do NOT pin `print_docs` output against
+  `_RELEASE/luadocs.md`. The correct oracle is the **current source**: the 11
+  `prefixHeaders` strings (verbatim templates) + the `.arg`/`.doc` chains at the
+  `addLuaFn`/`makeLuaAccessor`/`sdColorGetter` call sites. `print_docs`'s expected
+  entry count is the number of documented functions in the *current* source, which
+  is NOT 252 and must be re-derived (a good check: the category headers must be
+  11, not 9).
+- **Rule (D-014/D-018 family):** an artifact that looks like an oracle must be
+  dated against the source before it is used as one. `_RELEASE/luadocs.md` is a
+  historical build output, not a contract.
