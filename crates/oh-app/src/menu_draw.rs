@@ -153,6 +153,14 @@ pub struct MenuDraw {
     /// the (c) EpilepsyWarning arm uses it too).
     txt_prof: Text,
     txt_menu_big: Text,
+    /// C++ `txtMenuSmall` (`openSquare` — the options/online submenu
+    /// labels; aspect-dependent char size, set on refresh: 16
+    /// four-by-three / 24 otherwise, MenuGame.cpp:3209/:3224).
+    txt_menu_small: Text,
+    /// C++ `txtMenuTiny` (`openSquare` — the "[OFFICIAL MODE ENABLED]"
+    /// badge; 9 four-by-three / 14 otherwise, MenuGame.cpp:
+    /// 3208/:3223).
+    txt_menu_tiny: Text,
     /// C++ `txtLoadSmall` (`openSquareBold`, `loadSmall` char size, the
     /// loading-screen labels / error lines).
     txt_load_small: Text,
@@ -227,6 +235,12 @@ pub struct MenuDraw {
     /// The `txtMenuBig` glyph height at the current char size (C++
     /// `txtMenuBig.height` — the main-menu quad math).
     h_menu_big: f32,
+    /// The `txtMenuSmall` glyph height at the current char size (C++
+    /// `txtMenuSmall.height` — the options/online submenu quad math).
+    h_menu_small: f32,
+    #[allow(dead_code)]
+    // C++ parity probe (`updateHeight` :3238); no ported draw reads `txtMenuTiny.height`
+    h_menu_tiny: f32,
     /// The (b) fonts' heights (the same probe — each font's `fontHeight`
     /// at its current char size, C++ `updateHeight` loop :3236-3244).
     h_load_small: f32,
@@ -334,6 +348,11 @@ impl MenuDraw {
             txt_version: Text::new(font.clone(), String::new(), 40),
             txt_prof: Text::new(font.clone(), String::new(), 18),
             txt_menu_big: Text::new(font.clone(), String::new(), char_sizes.menu_big as u32),
+            // `txtMenuSmall` / `txtMenuTiny` keep the SFML default 30 in the
+            // C++ constructor (:212-213) — `refreshCamera` (the first draw's
+            // refresh) replaces it with the aspect size, as for `txtMenuBig`.
+            txt_menu_small: Text::new(font.clone(), String::new(), char_sizes.menu_small as u32),
+            txt_menu_tiny: Text::new(font.clone(), String::new(), char_sizes.menu_tiny as u32),
             txt_load_small: Text::new(
                 font_bold.clone(),
                 String::new(),
@@ -368,6 +387,8 @@ impl MenuDraw {
             epilepsy_warning: Sprite::new(placeholder),
             rs_online_status: rs,
             h_menu_big: 0.0, // probed on the first refresh
+            h_menu_small: 0.0,
+            h_menu_tiny: 0.0,
             h_load_small: 0.0,
             h_load_big: 0.0,
             h_random_tip: 0.0,
@@ -462,6 +483,14 @@ impl MenuDraw {
         // loading-screen / level-selection fonts.
         self.txt_menu_big.set_character_size(sizes.menu_big as u32);
         self.h_menu_big = font_height(&self.font, sizes.menu_big as u32);
+        // C++ :3208-3209 / :3223-3224 — the aspect-dependent submenu sizes;
+        // the `updateHeight` loop (:3238) probes both.
+        self.txt_menu_small
+            .set_character_size(sizes.menu_small as u32);
+        self.h_menu_small = font_height(&self.font, sizes.menu_small as u32);
+        self.txt_menu_tiny
+            .set_character_size(sizes.menu_tiny as u32);
+        self.h_menu_tiny = font_height(&self.font, sizes.menu_tiny as u32);
         self.txt_load_small
             .set_character_size(sizes.load_small as u32);
         self.h_load_small = font_height(&self.font_bold, sizes.load_small as u32);
@@ -745,7 +774,9 @@ fn create_quad_trapezoid(
 /// See the module docs for the fidelity notes (mouse, `mustRefresh`,
 /// `levelStatus`, screenshots). The state arms land per milestone: (a)
 /// `SMain` + the always-on passes; (b) `LevelSelection`; (c) the boot /
-/// profile / options / online / load states.
+/// profile / load states; (d) the `windowed.rs` wiring; last, the
+/// 13b-deferred `MOpts` / `MOnline` options/online submenu draws
+/// (`drawSubmenusSmall` :3606, `drawOptionsSubmenus` :3784).
 pub fn draw(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn DrawTarget) {
     // C++ :5753-5756 — the mouse state (module docs: always the no-hover
     // path in the port).
@@ -785,7 +816,6 @@ pub fn draw(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn DrawTarget) {
     let four_by_three = s.four_by_three;
     let menu_text_color = s.menu_text_color;
     let menu_quad_color = s.menu_quad_color;
-    let menu_selection_color = s.menu_selection_color;
     let dialog_box_text_color = s.dialog_box_text_color;
     let entering_text_offset = s.entering_text_offset;
     let level_details_offset = s.level_details_offset;
@@ -989,37 +1019,92 @@ pub fn draw(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn DrawTarget) {
             draw_online_status(menu, app, target);
         }
         States::MOpts => {
-            // TODO(issue-13b-options): C++ :5882-5894 — fold the main menu
-            // (offset-gated), `drawMainMenu(optionsMenu.
-            // getCategoryByName("options"), w - indentBig, false)`,
-            // `drawSubmenusSmall(optionsMenu.getCategories(), indentSmall)`,
-            // `drawGraphics()`, `drawOnlineStatus()`.
-            let _ = (
-                w,
-                h,
+            // C++ :5881-5886 — fold the main menu (offset-gated).
+            if menu.main_menu.get_category().get_offset() != 0.0 {
+                draw_main_menu(
+                    menu,
+                    app,
+                    &menu.main_menu.get_category_by_name("main"),
+                    w - indent_big,
+                    true,
+                    menu_quad_color,
+                    menu_text_color,
+                    fps_mult,
+                    target,
+                );
+            }
+            // C++ :5888-5890 — the options menu (right).
+            draw_main_menu(
+                menu,
+                app,
+                &menu.options_menu.get_category_by_name("options"),
+                w - indent_big,
+                false,
                 menu_quad_color,
                 menu_text_color,
-                menu_selection_color,
-                indent_big,
-                indent_small,
-                profile_indent,
                 fps_mult,
+                target,
             );
+            // C++ :5892-5893 — the options submenus (left).
+            draw_submenus_small(
+                menu,
+                app,
+                &menu.options_menu,
+                indent_small,
+                menu_quad_color,
+                menu_text_color,
+                fps_mult,
+                target,
+            );
+            // C++ :5894-5895 — `drawGraphics()` + `drawOnlineStatus()`.
+            draw_graphics(app, target);
+            draw_online_status(menu, app, target);
         }
         States::MOnline => {
-            // TODO(issue-13b-online): C++ :5897-5909 — the `onlineMenu`
-            // analogue of the MOpts arm.
-            let _ = (
-                w,
-                h,
+            // C++ :5899-5904 — fold the main menu (offset-gated).
+            if menu.main_menu.get_category().get_offset() != 0.0 {
+                draw_main_menu(
+                    menu,
+                    app,
+                    &menu.main_menu.get_category_by_name("main"),
+                    w - indent_big,
+                    true,
+                    menu_quad_color,
+                    menu_text_color,
+                    fps_mult,
+                    target,
+                );
+            }
+            // C++ :5906-5908 — the online menu (right; its only category
+            // is named `"options"`, C++ :1596).
+            draw_main_menu(
+                menu,
+                app,
+                &menu.online_menu.get_category_by_name("options"),
+                w - indent_big,
+                false,
                 menu_quad_color,
                 menu_text_color,
-                menu_selection_color,
-                indent_big,
-                indent_small,
-                profile_indent,
                 fps_mult,
+                target,
             );
+            // C++ :5910-5911 — the online submenus (left; the `"options"`
+            // category is skipped by `drawSubmenusSmall`, so the left
+            // column is empty — the C++'s behaviour for the single-category
+            // online menu).
+            draw_submenus_small(
+                menu,
+                app,
+                &menu.online_menu,
+                indent_small,
+                menu_quad_color,
+                menu_text_color,
+                fps_mult,
+                target,
+            );
+            // C++ :5912-5913 — `drawGraphics()` + `drawOnlineStatus()`.
+            draw_graphics(app, target);
+            draw_online_status(menu, app, target);
         }
         States::ETLPNew => {
             // C++ :5912-5916 — `drawMainMenu(mainMenu.
@@ -1182,7 +1267,6 @@ struct SharedSnapshot {
     four_by_three: bool,
     menu_text_color: Color,
     menu_quad_color: Color,
-    menu_selection_color: Color,
     dialog_box_text_color: Color,
     entering_text_offset: f32,
     level_details_offset: f32,
@@ -1208,7 +1292,6 @@ impl SharedSnapshot {
             four_by_three: s.four_by_three,
             menu_text_color: s.menu_text_color,
             menu_quad_color: s.menu_quad_color,
-            menu_selection_color: s.menu_selection_color,
             dialog_box_text_color: s.dialog_box_text_color,
             entering_text_offset: s.entering_text_offset,
             level_details_offset: s.level_details_offset,
@@ -1511,6 +1594,170 @@ fn draw_main_menu(
             Vec2::new(indent, txt_height),
             c,
         );
+        txt_height += interline;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The options/online submenu draws (C++ `drawSubmenusSmall` :3606,
+// `drawOptionsSubmenus` :3784)
+// ---------------------------------------------------------------------------
+
+/// C++ `MenuGame::drawSubmenusSmall(subMenus, indent)`
+/// (MenuGame.cpp:3606-3630) — the left-hand options/online submenu column.
+/// Walks `subMenus`' categories: the `"options"` category is skipped
+/// ("Already drawn before this loop" — the right column drew it via
+/// `drawMainMenu`), and each remaining category draws when it is the
+/// current one (C++ `optionsMenu.getCategory()` — read through the
+/// `options_menu` member exactly as the C++ reads its `optionsMenu`
+/// member) or is mid-fold (`getOffset() != 0`).
+#[allow(clippy::too_many_arguments)] // the C++ members threaded through the bridge
+fn draw_submenus_small(
+    menu: &MenuGame,
+    app: &mut MenuDraw,
+    sub_menu: &Menu,
+    indent: f32,
+    menu_quad_color: Color,
+    menu_text_color: Color,
+    fps_mult: f32,
+    target: &mut dyn DrawTarget,
+) {
+    // C++ `optionsMenu.getCategory().getName()` (the port reads the same
+    // member — `menu.options_menu` — even in the MOnline arm, where
+    // `sub_menu` is the online menu).
+    let current_name = menu.options_menu.get_category().get_name().to_string();
+    // C++ `menuHalfHeight` — set by the `drawMainMenu` call the MOpts /
+    // MOnline arms run right before this helper (the port stores it in
+    // `Shared`, as `draw_main_menu` does).
+    let menu_half_height = menu.shared().borrow().menu_half_height;
+    for c in sub_menu.get_categories() {
+        // C++ :3613-3617 — "Already drawn before this loop".
+        if c.get_name() == "options" {
+            continue;
+        }
+        let currently_selected = current_name == c.get_name();
+        let has_offset = c.get_offset() != 0.0;
+        // C++ :3622-3626 — "this submenu has been fully folded".
+        if !currently_selected && !has_offset {
+            continue;
+        }
+        draw_options_submenus(
+            app,
+            &c,
+            indent,
+            !currently_selected && has_offset,
+            menu_half_height,
+            menu_quad_color,
+            menu_text_color,
+            fps_mult,
+            target,
+        );
+    }
+}
+
+/// C++ `MenuGame::drawOptionsSubmenus(mSubMenu, baseIndent, revertOffset)`
+/// (MenuGame.cpp:3784-3844) — one left submenu panel: the two backing
+/// quads (text-coloured frame + quad-coloured body) and the uppercased
+/// item names (the selected one `"> "`-prefixed, disabled ones greyed and
+/// badged with "[OFFICIAL MODE ENABLED]").
+#[allow(clippy::too_many_arguments)] // the C++ members threaded through the bridge
+fn draw_options_submenus(
+    app: &mut MenuDraw,
+    m_sub_menu: &Category,
+    base_indent: f32,
+    revert_offset: bool,
+    menu_half_height: f32,
+    menu_quad_color: Color,
+    menu_text_color: Color,
+    fps_mult: f32,
+    target: &mut dyn DrawTarget,
+) {
+    let items = m_sub_menu.get_items();
+    let size = items.len();
+
+    // C++ "Calculate quads coordinates" (:3790-3797).
+    let h_menu_small = app.h_menu_small;
+    let mut quad_border = h_menu_small * layout::FRAME_SIZE_MULTI;
+    let double_border = quad_border * 2.0;
+    let interline = 2.1 * h_menu_small;
+    let total_height = interline * (size as f32 - 1.0) + 2.0 * double_border + h_menu_small;
+    // C++ `std::max(menuHalfHeight - totalHeight / 2.f, ssvs::getGlobalBottom
+    // (creditsBar2) + 10.f)` (the placeholder texture shifts the value by
+    // the real-texture-size delta — the module docs note).
+    let credits_bottom = app.credits_bar2.get_global_bounds().get_bottom();
+    let quad_height = (menu_half_height - total_height / 2.0).max(credits_bottom + 10.0);
+
+    // C++ "Offset" (:3799-3802) — the 4-arg `calcMenuOffset` with
+    // `speedUp = true` (the header default is `false`, :307-308).
+    let mut offset = m_sub_menu.get_offset();
+    let panel_offset =
+        layout::calc_menu_offset(&mut offset, base_indent, revert_offset, true, fps_mult);
+    *m_sub_menu.get_offset_mut() = offset;
+    let indent = base_indent - quad_border - panel_offset;
+
+    // C++ "Draw the quads that surround the text" (:3804-3812).
+    app.menu_quads.clear();
+    app.menu_quads.reserve_quad(2);
+    create_quad(
+        &mut app.menu_quads,
+        menu_text_color,
+        0.0,
+        indent + double_border,
+        quad_height,
+        quad_height + total_height,
+    );
+    create_quad(
+        &mut app.menu_quads,
+        menu_quad_color,
+        0.0,
+        indent + quad_border,
+        quad_height + quad_border,
+        quad_height + total_height - quad_border,
+    );
+    target.draw_vertices(app.menu_quads.as_slice(), RenderStates::default());
+
+    // C++ "Draw the text on top of the quads" (:3814-3843).
+    quad_border = quad_border * 1.5 - panel_offset;
+    let mut txt_height = quad_height - h_menu_small * layout::FONT_HEIGHT_OFFSET + double_border;
+    for (i, item) in items.iter().enumerate() {
+        let item_name = {
+            let b = item.borrow();
+            let mut name = b.get_name();
+            // C++ `Utils::uppercasify(itemName)` (:3824).
+            uppercasify(&mut name);
+            if i as i32 == m_sub_menu.get_idx() {
+                name = format!("> {name}");
+            }
+            name
+        };
+        let enabled = item.borrow().is_enabled();
+        let c = if enabled {
+            menu_text_color
+        } else {
+            Color::new(150, 150, 150, 255)
+        };
+        render_text_color(
+            target,
+            &mut app.txt_menu_small,
+            &item_name,
+            Vec2::new(quad_border, txt_height),
+            c,
+        );
+
+        // C++ :3834-3840 — the disabled-item badge, positioned from the
+        // just-rendered item text's global bounds (`getGlobalRight/
+        // getGlobalTop(txtMenuSmall.font) + 6.f / - 2.f`).
+        if !enabled {
+            let bounds = app.txt_menu_small.get_global_bounds();
+            render_text_color(
+                target,
+                &mut app.txt_menu_tiny,
+                "[OFFICIAL MODE ENABLED]",
+                Vec2::new(bounds.get_right() + 6.0, bounds.get_top() - 2.0),
+                Color::new(150, 150, 150, 255),
+            );
+        }
+
         txt_height += interline;
     }
 }
@@ -3731,7 +3978,7 @@ fn pack_signature(d: &LevelDrawer) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oh_menu::seams::{FakeAssets, FakeConfig, LoadResults, NoopNetwork};
+    use oh_menu::seams::{FakeAssets, FakeConfig, LoadResults, MenuConfig, NoopNetwork};
     use oh_render::draw::{RenderStates, Vertex};
     use std::rc::Rc;
 
@@ -3891,10 +4138,12 @@ mod tests {
         }
     }
 
-    /// Builds a `MenuGame` over `assets` (the (b) tests register packs /
-    /// levels on the `FakeAssets` before handing it in).
-    fn menu_with(assets: Rc<FakeAssets>) -> (Rc<MenuGame>, MenuDraw) {
-        let config = FakeConfig::new();
+    /// Builds a `MenuGame` over `assets` + `config` (the (b) tests register
+    /// packs / levels on the `FakeAssets` before handing it in).
+    fn menu_with_config(
+        assets: Rc<FakeAssets>,
+        config: Rc<FakeConfig>,
+    ) -> (Rc<MenuGame>, MenuDraw) {
         let network = Rc::new(NoopNetwork);
         let audio = oh_menu::RecordingAudio::new();
         let menu = Rc::new(MenuGame::new(
@@ -3911,6 +4160,11 @@ mod tests {
         let f = font();
         let app = MenuDraw::new(&f, &f);
         (menu, app)
+    }
+
+    /// The default-`FakeConfig` variant of [`menu_with_config`].
+    fn menu_with(assets: Rc<FakeAssets>) -> (Rc<MenuGame>, MenuDraw) {
+        menu_with_config(assets, FakeConfig::new())
     }
 
     #[test]
@@ -4348,6 +4602,120 @@ mod tests {
             "drawGraphics"
         );
         assert_eq!(calls.len(), base + 10);
+    }
+
+    #[test]
+    fn mopts_draws_fold_options_column_and_submenus_in_cpp_order() {
+        // C++ :5880-5896 — the MOpts arm: fold the main menu (offset-gated),
+        // the `options` right column, the left submenu column, graphics,
+        // the online status. `official = true` disables the three
+        // official-gated gameplay toggles (the `[OFFICIAL MODE ENABLED]`
+        // badges, C++ :3834-3840).
+        let assets = FakeAssets::new();
+        let config = FakeConfig::new();
+        config.set_official(true);
+        let (menu, mut app) = menu_with_config(assets, config);
+        {
+            let mut s = menu.shared().borrow_mut();
+            s.state = States::MOpts;
+        }
+        // The first draw runs the C++ `mustRefresh` block (the port's
+        // `refresh_if_stale`), which zeroes the category offsets — as the
+        // C++'s navigation does, set them afterwards.
+        draw(&menu, &mut app, &mut Recording::default());
+        *menu.main_menu.get_category().get_offset_mut() = 400.0; // folding
+        let gameplay = menu.options_menu.get_category_by_name("gameplay");
+        menu.options_menu.set_category(&gameplay); // navigate into the submenu
+        menu.update(0.0); // the per-frame `when` predicates (official gate)
+        *gameplay.get_offset_mut() = 540.0; // fully open (`indentSmall`)
+
+        let mut rec = Recording::default();
+        draw(&menu, &mut app, &mut rec);
+        let calls: Vec<String> = rec.calls.clone();
+        assert_eq!(calls[0], "clear");
+        assert!(calls[1].starts_with("view("));
+        assert_eq!(calls[2], "verts(0)", "background (no style)");
+        assert!(calls[3].starts_with("view("));
+        assert_eq!(calls[4], "text", "the CURRENT PROFILE line");
+        // C++ :5882-5886 — the main-menu fold (5 items).
+        assert_eq!(calls[5], "verts(30)");
+        assert_eq!(&calls[6..11], &["text"; 5], "the 5 main items");
+        // C++ :5888-5890 — the options right column (7 items).
+        assert_eq!(calls[11], "verts(42)");
+        assert_eq!(&calls[12..19], &["text"; 7], "the 7 options items");
+        // C++ :5892-5893 — the left submenu: only the current `gameplay`
+        // category draws (the `"options"` category is skipped; the rest
+        // are folded): 2 quads, 9 item names, 3 disabled-item badges.
+        assert_eq!(calls[19], "verts(12)", "the 2 submenu quads");
+        assert_eq!(
+            &calls[20..32],
+            &["text"; 12],
+            "9 items + 3 [OFFICIAL MODE ENABLED] badges"
+        );
+        // C++ :5894-5895 — `drawGraphics` + `drawOnlineStatus`.
+        assert_eq!(&calls[32..36], &["sprite", "sprite", "sprite", "text"]);
+        assert!(calls[36].starts_with("view("));
+        assert_eq!(&calls[37..40], &["sprite", "rect", "text"]);
+        assert_eq!(calls.len(), 40);
+    }
+
+    #[test]
+    fn monline_draws_fold_and_online_column_with_empty_left_panel() {
+        // C++ :5898-5914 — the MOnline arm: the online menu's ONLY category
+        // is named `"options"` (C++ :1596), so `drawSubmenusSmall` skips it
+        // ("Already drawn before this loop") and the left panel stays
+        // empty — the C++'s behaviour for the single-category online menu.
+        let (menu, mut app) = menu_and_app();
+        {
+            let mut s = menu.shared().borrow_mut();
+            s.state = States::MOnline;
+        }
+        draw(&menu, &mut app, &mut Recording::default());
+        *menu.main_menu.get_category().get_offset_mut() = 400.0; // folding
+        menu.update(0.0); // the `when` predicates (offline: CONNECT only)
+
+        let mut rec = Recording::default();
+        draw(&menu, &mut app, &mut rec);
+        let calls: Vec<String> = rec.calls.clone();
+        assert_eq!(calls[0], "clear");
+        assert!(calls[1].starts_with("view("));
+        assert_eq!(calls[2], "verts(0)", "background (no style)");
+        assert!(calls[3].starts_with("view("));
+        assert_eq!(calls[4], "text", "the CURRENT PROFILE line");
+        // C++ :5899-5904 — the main-menu fold (5 items).
+        assert_eq!(calls[5], "verts(30)");
+        assert_eq!(&calls[6..11], &["text"; 5], "the 5 main items");
+        // C++ :5906-5908 — the online right column (6 items).
+        assert_eq!(calls[11], "verts(36)");
+        assert_eq!(&calls[12..18], &["text"; 6], "the 6 online items");
+        // C++ :5910-5911 — no left-panel calls follow (`drawSubmenusSmall`
+        // skipped the only category).
+        assert_eq!(&calls[18..22], &["sprite", "sprite", "sprite", "text"]);
+        assert!(calls[22].starts_with("view("));
+        assert_eq!(&calls[23..26], &["sprite", "rect", "text"]);
+        assert_eq!(calls.len(), 26);
+    }
+
+    #[test]
+    fn mopts_draw_is_deterministic_for_the_same_state() {
+        // The deferred arms' full-recording determinism check (the
+        // established pattern): two draws of the same MOpts state match
+        // call-for-call, including the offset-eased panels.
+        let assets = FakeAssets::new();
+        let (menu, mut app) = menu_with(assets);
+        {
+            let mut s = menu.shared().borrow_mut();
+            s.state = States::MOpts;
+        }
+        draw(&menu, &mut app, &mut Recording::default());
+        *menu.main_menu.get_category().get_offset_mut() = 400.0;
+        menu.update(0.0);
+
+        let mut a = Recording::default();
+        draw(&menu, &mut app, &mut a);
+        let mut b = Recording::default();
+        draw(&menu, &mut app, &mut b);
+        assert_eq!(a.calls, b.calls, "two draws of the same state match");
     }
 
     #[test]
