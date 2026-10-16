@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 use std::net::{IpAddr, ToSocketAddrs};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 
@@ -204,6 +204,55 @@ pub fn main_server(base_dir: &Path) -> i32 {
     0
 }
 
+/// C++ `main`'s chdir (main.cpp:653, "Set working directory to current
+/// executable location"): the game-data root (`Assets/`, `Packs/`,
+/// `config.json`, `Profiles/`, `Replays/`, `steam_appid.txt`) the port
+/// resolves before dispatching. Pure (only existence checks) so it is
+/// unit-testable without spawning anything.
+///
+/// Precedence (the existence check is "`<dir>/Assets` is a directory"):
+///
+/// 1. `exe_dir` — if it contains `Assets/` (the C++ main.cpp:653
+///    behavior: the packaged layout, `<game_root>/open-hexagon.exe`
+///    beside `Assets/`, run from any CWD);
+/// 2. `cwd` — if it contains `Assets/` (keeps the port's CWD-based test
+///    harnesses / explicit roots working);
+/// 3. the nearest ancestor `A` of `exe_dir` (including `exe_dir` itself)
+///    for which `A/_RELEASE/Assets` exists — returns `A/_RELEASE` (the
+///    dev layout: `cargo run` from the repo root —
+///    `target/<profile>/open-hexagon` → `<repo>/_RELEASE`);
+/// 4. the nearest ancestor `A` of `cwd` (including `cwd` itself) for
+///    which `A/_RELEASE/Assets` exists — returns `A/_RELEASE`;
+/// 5. otherwise `cwd` unchanged (so the existing
+///    `[FATAL ERROR] Asset loading failed` still fires).
+///
+/// Documented deviation from the C++: the C++ chdirs UNCONDITIONALLY to
+/// the executable's directory (main.cpp:653). The port only deviates in
+/// the fallback branches (2)-(5), which are reached only in layouts where
+/// the C++ would fail outright (no `Assets/` beside the exe); the
+/// packaged layout (branch 1) is byte-identical to the C++.
+fn resolve_game_root(cwd: &Path, exe_dir: &Path) -> PathBuf {
+    if exe_dir.join("Assets").is_dir() {
+        return exe_dir.to_path_buf();
+    }
+    if cwd.join("Assets").is_dir() {
+        return cwd.to_path_buf();
+    }
+    for ancestor in exe_dir.ancestors() {
+        let release = ancestor.join("_RELEASE");
+        if release.join("Assets").is_dir() {
+            return release;
+        }
+    }
+    for ancestor in cwd.ancestors() {
+        let release = ancestor.join("_RELEASE");
+        if release.join("Assets").is_dir() {
+            return release;
+        }
+    }
+    cwd.to_path_buf()
+}
+
 /// C++ `main(argc, argv)` (main.cpp:604-686) — the ported pieces, in the
 /// C++ order:
 ///
@@ -216,8 +265,13 @@ pub fn main_server(base_dir: &Path) -> i32 {
 ///    server installs its own, `HexagonServer.cpp:1386-1398`);
 /// 4. (the `log.txt` save scope guard `:643-650` — the port's logging is
 ///    stdout-`[channel]` lines, there is no log file to save; documented);
-/// 5. (the chdir to `argv[0]`'s parent `:656-658` — see `main_client`'s
-///    `base_dir` docs: NOT ported, the base dir is the process CWD);
+/// 5. the chdir to `argv[0]`'s parent (`:653`, "Set working directory to
+///    current executable location") — the port's [`resolve_game_root`] +
+///    `set_current_dir`, called here BEFORE `parseArgs` (the C++'s
+///    position); documented deviation: the C++ chdirs UNCONDITIONALLY to
+///    the exe dir, the port's fallback branches (2)-(5) are reached only
+///    in layouts where the C++ would fail outright (`resolve_game_root`'s
+///    docs);
 /// 6. `parseArgs` (`:660-661`);
 /// 7. the dispatch order (`:666-686`): `printLuaDocs` → `server` →
 ///    `mainClient` (the C++ `SSVOH_ASSERT(!printLuaDocs)` /
@@ -234,9 +288,29 @@ pub fn run(argv: &[String]) -> i32 {
         return -1;
     }
 
-    let parsed = parse_args(argv);
+    // C++ main.cpp:653 — "Set working directory to current executable
+    // location" (BEFORE `parseArgs`, the C++'s chdir position). Branch 1
+    // of `resolve_game_root` is the C++ behavior; branches 2-5 are its
+    // documented deviation (the resolver's docs).
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        .or_else(|| Path::new(&argv[0]).parent().map(Path::to_path_buf))
+        .unwrap_or_default();
+    let base_dir = resolve_game_root(&cwd, &exe_dir);
+    if let Err(e) = std::env::set_current_dir(&base_dir) {
+        // The C++'s `std::filesystem::current_path` would throw on
+        // failure; the port logs and proceeds with `base_dir` (every
+        // CWD-relative path below is anchored on it, not the process
+        // CWD).
+        eprintln!(
+            "[::main] could not set the working directory to {}: {e}",
+            base_dir.display()
+        );
+    }
 
-    let base_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let parsed = parse_args(argv);
 
     // Print Lua docs mode (C++ main.cpp:666-669).
     if parsed.print_lua_docs {
@@ -268,6 +342,71 @@ mod tests {
     #[test]
     fn empty_argv_is_the_c_fatal_error() {
         assert_eq!(run(&[]), -1);
+    }
+
+    /// The game-root resolver (the ported main.cpp:653 chdir) — one test
+    /// per precedence branch.
+    #[test]
+    fn resolve_game_root_prefers_the_exe_dir_when_it_has_assets() {
+        let exe = tempfile::tempdir().expect("exe dir");
+        std::fs::create_dir_all(exe.path().join("Assets")).expect("exe Assets");
+        let cwd = tempfile::tempdir().expect("cwd");
+        assert_eq!(
+            resolve_game_root(cwd.path(), exe.path()),
+            exe.path().to_path_buf(),
+            "branch 1: the exe dir wins even when the cwd has no Assets/"
+        );
+    }
+
+    #[test]
+    fn resolve_game_root_falls_back_to_the_cwd_when_the_exe_dir_lacks_assets() {
+        let exe = tempfile::tempdir().expect("exe dir");
+        let cwd = tempfile::tempdir().expect("cwd");
+        std::fs::create_dir_all(cwd.path().join("Assets")).expect("cwd Assets");
+        assert_eq!(
+            resolve_game_root(cwd.path(), exe.path()),
+            cwd.path().to_path_buf(),
+            "branch 2: the CWD sandbox (the port's test harnesses)"
+        );
+    }
+
+    #[test]
+    fn resolve_game_root_walks_up_from_the_exe_dir_for_release() {
+        let root = tempfile::tempdir().expect("root");
+        let exe = root.path().join("target").join("debug");
+        std::fs::create_dir_all(&exe).expect("exe dir");
+        std::fs::create_dir_all(root.path().join("_RELEASE").join("Assets")).expect("_RELEASE/Assets");
+        let cwd = tempfile::tempdir().expect("cwd");
+        assert_eq!(
+            resolve_game_root(cwd.path(), &exe),
+            root.path().join("_RELEASE"),
+            "branch 3: the dev layout (target/<profile>/open-hexagon -> <repo>/_RELEASE)"
+        );
+    }
+
+    #[test]
+    fn resolve_game_root_walks_up_from_the_cwd_for_release() {
+        let root = tempfile::tempdir().expect("root");
+        let cwd = root.path().join("run").join("here");
+        std::fs::create_dir_all(&cwd).expect("cwd");
+        std::fs::create_dir_all(root.path().join("_RELEASE").join("Assets")).expect("_RELEASE/Assets");
+        let exe = tempfile::tempdir().expect("exe dir");
+        assert_eq!(
+            resolve_game_root(&cwd, exe.path()),
+            root.path().join("_RELEASE"),
+            "branch 4: the cwd's _RELEASE ancestor"
+        );
+    }
+
+    #[test]
+    fn resolve_game_root_falls_back_to_the_cwd_when_nothing_exists() {
+        let exe = tempfile::tempdir().expect("exe dir");
+        let cwd = tempfile::tempdir().expect("cwd");
+        assert_eq!(
+            resolve_game_root(cwd.path(), exe.path()),
+            cwd.path().to_path_buf(),
+            "branch 5: the existing [FATAL ERROR] Asset loading failed still fires"
+        );
     }
 
     /// The ported `main_server` (the C++ `mainServer`, main.cpp:197-242)

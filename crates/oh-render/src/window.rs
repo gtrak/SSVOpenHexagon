@@ -15,9 +15,11 @@
 //! + `apply_event`), and invokes the per-frame handler once. `Window::headless`
 //!   (no display) still runs exactly one frame so the headless game path works.
 
+use std::time::{Duration, Instant};
+
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
-use winit::event_loop::ActiveEventLoop;
+use winit::event_loop::{ActiveEventLoop, ControlFlow};
 #[cfg(target_os = "android")]
 use winit::event_loop::EventLoop;
 use winit::keyboard::{Key as WKey, KeyCode, KeyLocation, NamedKey, PhysicalKey};
@@ -763,6 +765,19 @@ impl Window {
         self.gl().is_some_and(|g| g.save_screenshot(path))
     }
 
+    /// C++ `renderWindow.display()` (GameWindow.hpp:143) — the per-frame
+    /// back-buffer swap, delegated to [`GlParts::present`] when a real GL
+    /// context is attached. Headless (`gl() == None`) is a no-op (the C++'s
+    /// `window == nullptr` equivalent). (Naming: the windows-testing branch
+    /// called this `swap_buffers`; master's on-device fix landed it as
+    /// `present` — one implementation, this is the `Window`-level
+    /// convenience delegate.)
+    pub fn swap_buffers(&self) {
+        if let Some(gl) = self.gl() {
+            gl.present();
+        }
+    }
+
     // ---- per-frame phase durations (issue 014b) ---------------------------
     /// C++ `GameWindow::msUpdate` (GameWindow.hpp:36) — the update phase
     /// duration in ms for the last frame.
@@ -961,6 +976,20 @@ impl<F: FnMut(&mut Window)> ApplicationHandler<()> for RunHandler<'_, F> {
         }
         if !self.window.open {
             el.exit();
+            return;
+        }
+        // Pace the next frame: the C++ SFML `setFramerateLimit` sleep (the
+        // shipped `_RELEASE/config.json` has `limit_fps=true`, `max_fps=200`,
+        // `vsync=false`). `WaitUntil` when a framerate limit is in force,
+        // `Poll` (continuous, unthrottled) otherwise — mirroring the C++
+        // continuous `GameWindow::run` loop.
+        let limit = self.window.effective_framerate_limit();
+        if limit > 0.0 {
+            el.set_control_flow(ControlFlow::WaitUntil(
+                Instant::now() + Duration::from_secs_f64(1.0 / f64::from(limit)),
+            ));
+        } else {
+            el.set_control_flow(ControlFlow::Poll);
         }
     }
 }

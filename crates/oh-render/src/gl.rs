@@ -82,8 +82,7 @@ use glutin::context::PossiblyCurrentContext;
 use glutin::context::Version;
 use glutin::context::{ContextAttributes, ContextAttributesBuilder, NotCurrentGlContext};
 use glutin::display::{Display, DisplayApiPreference, GlDisplay};
-use glutin::surface::GlSurface;
-use glutin::surface::{Surface, SurfaceAttributesBuilder, WindowSurface};
+use glutin::surface::{GlSurface, Surface, SurfaceAttributesBuilder, WindowSurface};
 #[cfg(target_os = "android")]
 use winit::event_loop::ActiveEventLoop;
 use winit::event_loop::EventLoop;
@@ -131,7 +130,7 @@ impl GlBackend {
             .with_inner_size(winit::dpi::PhysicalSize::new(width.get(), height.get()));
 
         #[cfg(windows)]
-        let (display, window) = {
+        let (display, window, window_handle) = {
             // WGL needs the window's handle at display-creation time.
             let window = event_loop.create_window(attrs).ok()?;
             let window_handle = window.window_handle().ok()?.as_raw();
@@ -139,11 +138,11 @@ impl GlBackend {
             let display =
                 unsafe { Display::new(event_loop.display_handle().ok()?.as_raw(), preference) }
                     .ok()?;
-            (display, window)
+            (display, window, window_handle)
         };
 
         #[cfg(not(windows))]
-        let (display, window) = {
+        let (display, window, window_handle) = {
             let preference = {
                 #[cfg(target_os = "macos")]
                 {
@@ -158,15 +157,22 @@ impl GlBackend {
                 unsafe { Display::new(event_loop.display_handle().ok()?.as_raw(), preference) }
                     .ok()?;
             let window = event_loop.create_window(attrs).ok()?;
-            (display, window)
+            // The context attributes need the window handle too (the
+            // windows-testing fix; EGL/CGl use it for the context-surface
+            // pairing the same way WGL does).
+            let window_handle = window.window_handle().ok()?.as_raw();
+            (display, window, window_handle)
         };
 
         // The desktop context: no explicit API request (`ContextAttributes`
         // `api == None` — the EGL/CGl config's API decides: desktop GL on
         // desktop EGL, the Cgl context on macOS, WGL on Windows). The
         // shared tail is `finish_gl` (the android path, below, passes the
-        // GLES 3.0 request through the same tail).
-        let ctx_attrs = ContextAttributesBuilder::new().build(None);
+        // GLES 3.0 request through the same tail). The context attributes
+        // carry Some(window_handle) (windows-testing fix 1: build(None) made
+        // WGL fall back to the screen DC and wglCreateContextAttribsARB fail
+        // silently — the window never appeared).
+        let ctx_attrs = ContextAttributesBuilder::new().build(Some(window_handle));
         let parts = finish_gl(display, window, width.get(), height.get(), &ctx_attrs)?;
 
         Some(Self { event_loop, parts })

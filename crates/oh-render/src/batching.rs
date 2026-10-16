@@ -25,6 +25,7 @@
 //! the glyph-atlas / sprite-quad pipeline lands.
 
 use glow::{Context, HasContext};
+use oh_math::ssvs::vector2::Vec2;
 use oh_math::ssvu::math::to_rad;
 
 use crate::draw::{PrimitiveType, Vertex, VertexBatch};
@@ -65,7 +66,7 @@ pub struct GlBatchUploader {
     u_rotation: glow::UniformLocation,
 }
 
-/// `sf::Vertex` stride: `position` (vec2) + `color` (vec4) = 6 f32.
+/// `sf::Vertex` stride: `position` (2 f32) + `color` (4 u8) = 12 bytes.
 const VERTEX_STRIDE: usize = std::mem::size_of::<Vertex>();
 
 fn glow_error() -> RenderError {
@@ -132,15 +133,15 @@ impl GlBatchUploader {
             gl.bind_vertex_array(Some(vao));
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
             gl.enable_vertex_attrib_array(0);
-            gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, (VERTEX_STRIDE * 2) as i32, 0);
+            gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, VERTEX_STRIDE as i32, 0);
             gl.enable_vertex_attrib_array(1);
             gl.vertex_attrib_pointer_f32(
                 1,
                 4,
-                glow::FLOAT,
-                false,
-                (VERTEX_STRIDE * 4) as i32,
-                (VERTEX_STRIDE * 2) as i32,
+                glow::UNSIGNED_BYTE,
+                true,
+                VERTEX_STRIDE as i32,
+                std::mem::size_of::<Vec2>() as i32,
             );
             gl.bind_vertex_array(None);
             gl.bind_buffer(glow::ARRAY_BUFFER, None);

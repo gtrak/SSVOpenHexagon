@@ -20,7 +20,7 @@
 //!     runEvents()                         // poll → inputState + per-event handleEvent
 //!     gameEngine->runUpdate()             // refreshInput → timer->runUpdate (N×update) → onPostUpdate
 //!     gameEngine->runDraw()               // timer->runDraw → the current state's draw
-//!     renderWindow.display()              // the swap (winit at event-loop end)
+//!     renderWindow.display()              // the explicit per-frame back-buffer swap (`window.swap_buffers`; winit does NOT swap a glutin `Surface` at event-loop end)
 //!     gameEngine->runFPS()                // runFrameTime + runFPS (GameEngine.hpp:96-101)
 //! }
 //! ```
@@ -2237,12 +2237,14 @@ impl WindowedClient {
         window.set_ms_update(ms_update_start.elapsed().as_secs_f64() as f32 * 1000.0);
         // C++ `gameEngine->runDraw();` + `renderWindow.display();`
         // (GameWindow.hpp:141-143) — the current state's `draw`, then the
-        // swap (winit displays at event-loop end). The target is a
+        // explicit per-frame back-buffer swap (`window.swap_buffers()`,
+        // GameWindow.hpp:143 — winit does NOT swap a glutin `Surface` at
+        // event-loop end). The target is a
         // per-frame scratch (the concrete type — no `'static` erasure):
         // the `GlParts` lives in the client's window for the whole loop.
         // The C++ `msDraw` span (GameWindow.hpp:143-146 — the C++ timer
-        // wraps `runDraw()` + `display()`; the port's swap is winit's,
-        // unmeasured from here: documented).
+        // wraps `runDraw()` + `display()`; the port's swap is the
+        // explicit `window.swap_buffers()` above, measured in this span).
         let ms_draw_start = std::time::Instant::now();
         if let Some(gl) = window.gl() {
             let mut target = GlDrawTarget::new(gl);
@@ -2257,7 +2259,9 @@ impl WindowedClient {
             // msDraw span (GameWindow.hpp:141-143: runDraw + display).
             // Issue 25, on-device finding: the swap was never wired in this
             // loop body — every GL platform presented nothing (the desktop
-            // live check was MANUAL and never run; the emulator caught it).
+            // live check was MANUAL and never run; the emulator caught it;
+            // windows-testing found the same defect independently and called
+            // it window.swap_buffers() — same call, inside this msDraw span).
             target.present();
         } else {
             let mut target = NullDrawTarget;
