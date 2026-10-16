@@ -775,3 +775,27 @@ Consequences:
   wasm — same seam when the wasm branch merges (D-029).
 - Any future platform input work must feed this seam rather than adding
   platform branches inside the menu.
+
+## D-033 — Deferred lane plan (operator-ordered queue)
+
+Recorded 2026-10-16 as the intake for work that is deliberately NOT
+started yet, so nothing lives only in conversation:
+
+1. **028a deviations inventory** — IN FLIGHT (worktree d75260e1).
+2. **025f the 9-zone grid + IME edge** — IN FLIGHT (worktree 5456744c).
+3. **028b deviations triage + `tools/check-deviations.sh`** — QUEUED.
+   Gate-wired check that no deviation marker lacks a register row.
+4. **28c… the FIX list** — QUEUED, one lane per cluster, load-bearing
+   first; every lane must add its register row in the same commit
+   (issue 28's standing rule).
+5. **Desktop + wasm mouse→finger parity for the zone grid** — QUEUED
+   (D-032). Desktop: mouse press/release → a synthetic single finger,
+   gated so it cannot double-fire with existing menu mouse handling.
+   wasm: same seam, after the wasm branch merges (D-029).
+6. **A full playable-run proof on the phone** — QUEUED (LEVEL SELECT →
+   level start → hexagon/timer/score; the touch-zone work unblocks level
+   navigation). This is the last known Android gap.
+7. **Mapping-doc rows for the SFML-fork Android reference** — QUEUED
+   (issue 27's guard): `mapping/sfml-android-fork.md` exists; the
+   `TextEntered`-derivation divergence and the touch/zone reference need
+   rows in `mapping/rendering-menu.md` too.
