@@ -649,3 +649,20 @@ console's `?fn` command and `!help`'s doc lookup are inert as shipped.
   `git merge --squash`).
 - Timeouts: the config default (30 min) killed five lanes with uncommitted
   work; all dispatches now pass explicit `timeoutMs: 5400000`.
+
+## D-026 — Android port decisions
+
+- **aarch64-only first**: LuaJIT on armv7 lacks GC64 (compatibility swamp);
+  x86_64-android is emulator-only. armv7 documented as a follow-up if wanted.
+- **native-activity** over game-activity (winit 0.30 + android-activity 0.6.1
+  requires one of the two features; native-activity is the smaller surface).
+- **API 28** target (GameActivity-free, covers modern devices; the NDK per-API
+  clang wrapper doubles as the linker — `.cargo/config.toml` +
+  `tools/android-env.sh` for the cc-rs CC/AR vars; cargo-ndk's `-- cargo`
+  delegation mis-runs in this environment, so the manual config is canonical).
+- **Storage**: `_RELEASE` ships inside the APK assets and extracts to the
+  app-internal dir on first run; the composition resolves the game root
+  there (Android has no CWD).
+- **Shader risk flagged**: pack `.frag` files have no `#version` (desktop
+  defaults, `gl_FragColor`) — GLES 3.0 needs a translation preamble; the
+  render lane must assess (SFML did this internally on Android).

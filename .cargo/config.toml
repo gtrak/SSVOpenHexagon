@@ -12,3 +12,10 @@
 # toolchain's own link line).
 [target.x86_64-pc-windows-gnu]
 rustflags = ["-C", "link-arg=-ladvapi32"]
+
+# Issue 25 — Android NDK (aarch64): the NDK's per-API clang wrapper is a
+# self-contained linker (sysroot + libc++_shared semantics); the cc-rs crates
+# (luajit-src, libsodium-sys) get CC/AR/CXX_<target> env vars from
+# tools/android-env.sh (the cargo-ndk equivalent, without the tool).
+[target.aarch64-linux-android]
+linker = "aarch64-linux-android28-clang"
