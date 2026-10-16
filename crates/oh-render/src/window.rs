@@ -32,23 +32,6 @@ use crate::Button;
 use crate::Key;
 use crate::Vec2;
 
-// 025i PROBE (temporary, revert before final commit): a single shared
-// counter of WindowEvent::RedrawRequested, incremented in window_event and
-// read/cleared in about_to_wait to measure how often the winit android
-// backend requests a redraw (the spin hypothesis). Module-level so both
-// probe sites see the same counter.
-#[cfg(target_os = "android")]
-use std::sync::atomic::AtomicU64;
-#[cfg(target_os = "android")]
-static PREDRAW_PROBE: AtomicU64 = AtomicU64::new(0);
-// 025i PROBE (temporary): shared resume counter (incremented in `resumed`,
-// read in `window_event`) — module-level so both probe sites share it.
-#[cfg(target_os = "android")]
-static PWIN_RES_PROBE: AtomicU64 = AtomicU64::new(0);
-// 025i PROBE (temporary): shared window_event (single_iteration liveness) count.
-#[cfg(target_os = "android")]
-static PWIN_EV: AtomicU64 = AtomicU64::new(0);
-
 /// `sf::Event` — the event set the game's `runEvents` switches on
 /// (mapping §3, SSVStart `GameWindow.hpp`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1078,62 +1061,9 @@ impl<F: FnMut(&mut Window)> ApplicationHandler<()> for RunHandler<'_, F> {
         // Desktop: the statement is android-gated (no-op).
         #[cfg(target_os = "android")]
         self.window.ensure_android_gl(el);
-        #[cfg(target_os = "android")]
-        {
-            use std::sync::atomic::Ordering;
-            let c = PWIN_RES_PROBE.fetch_add(1, Ordering::Relaxed) + 1;
-            eprintln!("[025i] resumed #{}", c);
-        }
     }
 
     fn window_event(&mut self, _el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        // 025i PROBE (temporary): count WindowEvent::RedrawRequested — if
-        // the winit android backend requests a redraw per frame, this fires
-        // every loop iteration and defeats WaitUntil (the spin hypothesis).
-        if matches!(event, WindowEvent::RedrawRequested) {
-            #[cfg(target_os = "android")]
-            {
-                use std::sync::atomic::Ordering;
-                let c = PREDRAW_PROBE.fetch_add(1, Ordering::Relaxed) + 1;
-                if c % 2000 == 1 {
-                    eprintln!("[025i] RedrawRequested #{}", c);
-                }
-            }
-        }
-        // 025i PROBE (temporary): log incoming KeyboardInput text to confirm
-        // the on-device character pipeline (does `adb input text` reach us?).
-        #[cfg(target_os = "android")]
-        if let WindowEvent::KeyboardInput { event: ke, .. } = &event {
-            if ke.state == winit::event::ElementState::Pressed {
-                eprintln!(
-                    "[025i] key phys={:?} text={:?}",
-                    ke.physical_key, ke.text.as_deref()
-                );
-            }
-        }
-        // 025i PROBE (temporary): log touch phase + location (the raw winit
-        // coordinate, the space the 9-zone grid's thirds run in).
-        #[cfg(target_os = "android")]
-        if let WindowEvent::Touch(touch) = &event {
-            eprintln!(
-                "[025i] touch id={} phase={:?} loc=({},{})",
-                touch.id, touch.phase, touch.location.x, touch.location.y
-            );
-        }
-        // 025i PROBE (temporary): count every window_event (single_iteration
-        // liveness) + resumed (re-resume / window recreation) to see whether
-        // single_iteration stops at the same point as about_to_wait.
-        #[cfg(target_os = "android")]
-        {
-            use std::sync::atomic::Ordering;
-            let c = PWIN_EV.fetch_add(1, Ordering::Relaxed) + 1;
-            if c % 5000 == 1 {
-                eprintln!(
-                    "[025i] win_evt#{} resumed#{} ev={:?}",
-                    c, PWIN_RES_PROBE.load(Ordering::Relaxed), event
-                );
-            }
-        }
         if let Some(e) = map_window_event(&event) {
             // Android (issue 25b SG5; the space clarified by issue 025g):
             // winit delivers the touch position in PHYSICAL pixels of the
