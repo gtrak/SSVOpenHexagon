@@ -44,6 +44,7 @@ pub mod draw;
 pub mod error;
 pub mod font;
 pub mod gl;
+pub mod gl_text;
 pub mod graphics;
 pub mod input;
 pub mod input_manager;

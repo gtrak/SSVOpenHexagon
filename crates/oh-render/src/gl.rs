@@ -68,6 +68,7 @@
 //!   stays off (the C++ Android build has no ImGui — `#ifndef
 //!   SSVOH_ANDROID` in Imgui.cpp).
 
+use std::cell::{Cell, RefCell};
 use std::num::NonZero;
 use std::panic::AssertUnwindSafe;
 
@@ -90,11 +91,22 @@ use winit::event_loop::EventLoop;
 use winit::platform::android::ActiveEventLoopExtAndroid;
 use winit::window::{Window as WinitWindow, WindowAttributes};
 
+use crate::font::Text;
+use crate::view::View;
+
 /// The keep-alive GL pieces (held by `Window::gl`).
 pub struct GlParts {
     pub gl: glow::Context,
     pub width: u32,
     pub height: u32,
+    /// The persistent text pipeline (lazily built on the first
+    /// [`Self::draw_text`] — the glyph textures / program are NOT rebuilt
+    /// per frame; interior-mutable because `GlParts` is shared by
+    /// reference for the window's lifetime).
+    text: RefCell<Option<crate::gl_text::TextRenderer>>,
+    /// The text pipeline's build failed (the `draw_text` failure report is
+    /// once, not per call).
+    text_failed: Cell<bool>,
     /// Keep-alives (drop order: glow context, glutin context, surface, window,
     /// display last — so the GL context drops before its surface/window).
     _context: PossiblyCurrentContext,
@@ -216,6 +228,10 @@ fn finish_gl(
         gl,
         width: width.get(),
         height: height.get(),
+        // The windows-testing text pipeline (lazy; built on the first
+        // draw_text — the fields' docs above).
+        text: RefCell::new(None),
+        text_failed: Cell::new(false),
         _context: context,
         _surface: surface,
         _window: window,
@@ -396,6 +412,32 @@ impl GlParts {
         self._surface
             .swap_buffers(&self._context)
             .expect("glutin Surface::swap_buffers failed");
+    }
+
+    /// C++ `window->draw(text)` — the text pass (the `fontdue` glyph quads
+    /// through [`crate::gl_text::TextRenderer`]; the pipeline is lazily
+    /// built on the first call and kept for the window's lifetime). The
+    /// `DrawTarget` caller's `RenderStates` shader is ignored, as the other
+    /// passes do.
+    pub fn draw_text(&self, text: &Text, view: View) {
+        if text.is_empty() || self.text_failed.get() {
+            return;
+        }
+        let gl = &self.gl;
+        let mut cell = self.text.borrow_mut();
+        match cell.as_mut() {
+            Some(renderer) => renderer.draw(gl, text, view),
+            None => match crate::gl_text::TextRenderer::new(gl) {
+                Ok(mut renderer) => {
+                    renderer.draw(gl, text, view);
+                    *cell = Some(renderer);
+                }
+                Err(e) => {
+                    eprintln!("[GlParts] GL text renderer unavailable: {e}");
+                    self.text_failed.set(true);
+                }
+            },
+        }
     }
 }
 

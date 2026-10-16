@@ -55,6 +55,14 @@ impl Font {
         &self.inner
     }
 
+    /// A stable per-instance identity (the `Rc` allocation address) — the
+    /// `gl_text` glyph cache's font key. The game loads its fonts once at
+    /// startup, so the identity is stable for the cache's life.
+    #[must_use]
+    pub fn id(&self) -> usize {
+        Rc::as_ptr(&self.inner) as usize
+    }
+
     /// `fontdue::horizontal_line_metrics(px)` — ascent / descent / line gap.
     #[must_use]
     pub fn line_metrics(&self, px: f32) -> Option<fontdue::LineMetrics> {
