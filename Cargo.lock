@@ -1598,6 +1598,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "oh-parity"
+version = "0.1.0"
+dependencies = [
+ "oh-assets",
+ "oh-config",
+ "oh-data",
+ "oh-game",
+ "oh-lua",
+ "oh-math",
+ "oh-replay",
+ "oh-rng",
+ "serde_json",
+]
+
+[[package]]
 name = "oh-render"
 version = "0.1.0"
 dependencies = [

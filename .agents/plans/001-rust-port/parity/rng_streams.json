@@ -1,0 +1,48 @@
+{
+  "evidence": "cpp-probe: tools/oracle/parity_probe.cpp (real src/SSVOpenHexagon/Core/RandomNumberGenerator.cpp, libstdc++ uniform distributions)",
+  "note": "each stream is a fresh hg::random_number_generator{seed} (the ctor's advance(1) wrapper shift); real values are bit-exact (hex of the f32/f64 bits); MCG state pinning: seed | 3 — seeds 0..3 collapse to the same state (the corpus uses 0 and 4 to expose that)",
+  "seeds": [
+    {
+      "seed": 0,
+      "get_int_int_0_5": [5, 1, 0, 3, 3, 0, 1, 4],
+      "get_real_float_0_1_bits": ["0x3f577291", "0x3e764814", "0x3dd3ce0e", "0x3f0f3d9b", "0x3f0efafc", "0x3dd385ab", "0x3eaa64ff", "0x3f331f3e", "0x3efe5fcd", "0x3edc577c", "0x3ebe4aa3", "0x3f3f95b3", "0x3cdc847c", "0x3dc343f4", "0x3f6edcb7", "0x3c5459b0"],
+      "get_real_double_0_1_bits": ["0x3fcec9027febb948", "0x3fe1e7b36d234f38", "0x3fba70b56a8efafc", "0x3fe663e7b3aaa650", "0x3fdb8aef821fcbfa", "0x3fe7f2b65b6be4aa", "0x3fb8687e7406e424", "0x3f8a8b35f776e5b5"]
+    },
+    {
+      "seed": 4,
+      "get_int_int_0_5": [0, 3, 0, 5, 0, 5, 5, 4],
+      "get_real_float_0_1_bits": ["0x3df6b258", "0x3f29d2f0", "0x3df71ba7", "0x3f71c9f4", "0x3d7e13c0", "0x3f76c428", "0x3f62ed2c", "0x3f3a87da", "0x3f4fc205", "0x3eacc571", "0x3f188aa5", "0x3e9b1420", "0x3ecadb9e", "0x3ee3cd21", "0x3eab6027", "0x3f593427"],
+      "get_real_double_0_1_bits": ["0x3fe53a5e08e3dac9", "0x3fee393e8ae3dc6f", "0x3feed884f8a1fc27", "0x3fe750fb47dc5da5", "0x3fd598ae2a73f081", "0x3fd36283fde622a9", "0x3fdc79a41fd95b74", "0x3feb2684e30ab602"]
+    },
+    {
+      "seed": 12345,
+      "get_int_int_0_5": [0, 4, 4, 5, 1, 0, 1, 0],
+      "get_real_float_0_1_bits": ["0x3dabc62e", "0x3f553472", "0x3f4a9aa8", "0x3f6b9e40", "0x3e8032d2", "0x3d005129", "0x3e85a93a", "0x3e265f5f", "0x3eb8cd54", "0x3f1a0714", "0x3e64f06c", "0x3f2c047f", "0x3ea2b360", "0x3e287cf2", "0x3f36af7e", "0x3f1bd6c3"],
+      "get_real_double_0_1_bits": ["0x3feaa68e4bc2af19", "0x3fed73c7f1995355", "0x3fa00a251e8032d2", "0x3fc4cbebdfa16a4e", "0x3fe340e28c0b8cd5", "0x3fe5808fe8a72783", "0x3fc50f9e5028acd8", "0x3fe37ad86716d5f0"]
+    },
+    {
+      "seed": 987654321,
+      "get_int_int_0_5": [3, 0, 1, 5, 1, 3, 1, 3],
+      "get_real_float_0_1_bits": ["0x3f09ac05", "0x3d58b938", "0x3e5e0f72", "0x3f6e73be", "0x3e4f1b4e", "0x3f09e30d", "0x3e5a4e22", "0x3f1fbf9b", "0x3f390dda", "0x3e8257d2", "0x3f5fac78", "0x3f50513a", "0x3f5ab20e", "0x3f7217ca", "0x3f57b281", "0x3efb2af2"],
+      "get_real_double_0_1_bits": ["0x3fab1726fd13580a", "0x3fedce77cde6f07c", "0x3fe13c619ec678da", "0x3fe3f7f36646d271", "0x3fd04afa4d6e4377", "0x3fea0a27401bf58f", "0x3fee42f9343b5642", "0x3fdf655e4ff5eca0"]
+    },
+    {
+      "seed": 4294967295,
+      "get_int_int_0_5": [3, 1, 1, 4, 2, 3, 4, 3],
+      "get_real_float_0_1_bits": ["0x3f221c49", "0x3e980b91", "0x3e64179c", "0x3f49605c", "0x3ecedad9", "0x3f24ee97", "0x3f52d834", "0x3f28d833", "0x3f202e2b", "0x3f7a4e2f", "0x3f17ba28", "0x3f6dc3a9", "0x3ef93d68", "0x3f758985", "0x3eb64124", "0x3f5fe49c"],
+      "get_real_double_0_1_bits": ["0x3fd3017223e88712", "0x3fe92c0b8fc720bd", "0x3fe49dd2e9ccedae", "0x3fe51b065a5a5b06", "0x3fef49c5e9f405c5", "0x3fedb8751032f745", "0x3feeb13094ef93d6", "0x3febfc938b8b6412"]
+    },
+    {
+      "seed": 4294967296,
+      "get_int_int_0_5": [3, 2, 4, 0, 3, 0, 3, 0],
+      "get_real_float_0_1_bits": ["0x3f0b5ae3", "0x3eb9dc97", "0x3f499454", "0x3db4d956", "0x3f2895f2", "0x3dc1a041", "0x3f07ce81", "0x3dd66ad6", "0x3ec7faed", "0x3dc68cc1", "0x3d833417", "0x3f2c7c65", "0x3f5b2797", "0x3f73be65", "0x3d982f26", "0x3f6a8e27"],
+      "get_real_double_0_1_bits": ["0x3fd73b92dea2d6b9", "0x3fb69b2ab7c99454", "0x3fb8340829a895f2", "0x3fbacd5ac387ce81", "0x3fb8d1982863fd76", "0x3fe58f8c90620cd0", "0x3fee77cc937b64f3", "0x3fed51c4d24260bd"]
+    },
+    {
+      "seed": 18446744073709551615,
+      "get_int_int_0_5": [5, 5, 3, 4, 3, 4, 3, 2],
+      "get_real_float_0_1_bits": ["0x3f75c12a", "0x3f681941", "0x3f27dcab", "0x3f4b143b", "0x3f24b520", "0x3f4bf5c9", "0x3f1c7709", "0x3ec44913", "0x3f140280", "0x3d3e27ef", "0x3dcd674b", "0x3e8abc1e", "0x3f542e1b", "0x3ef7dd25", "0x3ed85e96", "0x3ea1d3ea"],
+      "get_real_double_0_1_bits": ["0x3fed03281bfeb825", "0x3fe962875354fb95", "0x3fe97eb912b496a4", "0x3fd8892253e71dc2", "0x3fa7c4fde12804ff", "0x3fd15783ba466b3a", "0x3fdefba492350b87", "0x3fd43a7d3e1b0bd3"]
+    }
+  ]
+}

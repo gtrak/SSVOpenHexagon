@@ -1,0 +1,90 @@
+{
+  "evidence": "rust-self-consistent (analytically-derived): the full C++ game build is not available on this machine (no SFML/LuaJIT/ImGui dev environment — .agents/plans/001-rust-port/PARITY.md, Gaps). The pinned outcomes are the SEEDED REPLAY runs: fully deterministic in (level, seed, input stream) — the engine re-seeds its RNG from the replay's seed (C++ HexagonGame.cpp:777-783), the input stream is the fixed alwaysSpinRight 0x02 stream (C++ HGUpdate.cpp:660-666 + CW-only resolve branch, bit order pinned by tools/oracle/replay_probe.cpp fixture 2), and no unseeded state remains. Verified stable across independent processes (the parity tests pin the exact values). The LIVE alwaysSpinRight run is NOT outcome-pinned: its engine RNG is seeded from entropy (C++ initializeRng(), HexagonGame.cpp:59-66 / RandomNumberGenerator seed — the C++ test's live run carries the same property) and the levels' onIncrement side changes draw from it (C++ HGUpdate.cpp:300-303 rng.get_int(sidesMin, sidesMax); e.g. apeirogon sets sidesMin=5/sidesMax=7 below the 1.5x mult gate) — so the live run's death frame varies with its seed, by C++ design. The parity tests pin the LIVE run's PROPERTIES instead (the recorded input bytes are all 0x02, and the recorded replay reproduces the live score to the exact bit — the C++ test's TEST_ASSERT_EQ(score, replayPlayedTimeSeconds), D-018). The C++-derived anchors: the envelope bytes for exactly these replay files (replay_serialization.json, C++-probe-derived) and the timekeeping identity below (C++ source).",
+  "time_step": 0.25,
+  "time_step_source": "C++ include/SSVOpenHexagon/Global/Config.hpp:26 TIME_STEP = 60.f / TICKS_PER_SECOND (240.f)",
+  "score_identity": "expected_score == ((expected_frames - 25) * 0.25) / 60.0 (exact in f64: the seeded replay run defers its start by one frame (the replay branch of the C++ update loop sets mustStart on frame 0, HGUpdate.cpp:187), then HexagonGameStatus::resetTime's currentPause = 0.1 * 60 (6.0 frametime units) consumes the next 24 frames (accumulateFrametime); the integer count * 0.25 is exact and the division is a single correctly-rounded f64 op, same as the engine)",
+  "frames_note": "expected_frames = input_count = the death frame of the seeded replay run (one input consumed per started frame through the death frame; a 200k-input discovery stream proves the death precedes stream end). The live run's own input count varies with its entropy seed (see `evidence`) and is therefore NOT pinned",
+  "live_run_properties": [
+    "the recorded replay input bytes are all 0x02 (C++-derived semantics)",
+    "the recorded replay, replayed through set_last_replay + newGame(executeLastReplay=true), terminates at the live run's exact score (the C++ test's self-consistency assertion, D-018)"
+  ],
+  "determinism_harness_pairs": {
+    "note": "the six _RELEASE pack/level entries the determinism harness (crates/oh-game/tests/determinism.rs) exercises — the 2-pair 25-iteration ReplayExecution loop plus the 4-pair 100-iteration ReplayExecutionBenchmark loop — mapped onto the 4 unique level pairs below (cube/apeirogon and experimental/autotest0 each appear in both loops)",
+    "two_pair_25_iteration_loop": ["cube_1_apeirogon", "experimental_1_autotest0"],
+    "four_pair_100_iteration_benchmark": ["cube_1_apeirogon", "experimental_1_autotest0", "orthoplex_1_arcadia", "orthoplex_1_bipolarity"]
+  },
+  "runs": [
+    {
+      "pair": "cube_1_apeirogon",
+      "pack": "ohvrvanilla_vittorio_romeo_cube_1",
+      "level": "ohvrvanilla_vittorio_romeo_cube_1_apeirogon",
+      "seed": 987654321,
+      "difficulty_mult": 1.0,
+      "first_play": true,
+      "player_name": "testProfile",
+      "input_policy": "alwaysSpinRight",
+      "input_count": 439,
+      "expected_frames": 439,
+      "expected_score": 1.725,
+      "rng": {
+        "advances_per_frame": 5,
+        "advances_source": "C++ HGUpdate.cpp:353-357 (the five fixup advances, 'used to affect the RNG state for replay validation')",
+        "get_calls": "event-driven (the onIncrement side-change draw, HGUpdate.cpp:300-303 — count varies with the level's side ranges and the increments reached; the seeded replay's draw sequence is exactly reproducible because the seed is pinned)"
+      }
+    },
+    {
+      "pair": "experimental_1_autotest0",
+      "pack": "ohvrvanilla_vittorio_romeo_experimental_1",
+      "level": "ohvrvanilla_vittorio_romeo_experimental_1_autotest0",
+      "seed": 987654321,
+      "difficulty_mult": 1.0,
+      "first_play": true,
+      "player_name": "testProfile",
+      "input_policy": "alwaysSpinRight",
+      "input_count": 1180,
+      "expected_frames": 1180,
+      "expected_score": 4.8125,
+      "rng": {
+        "advances_per_frame": 5,
+        "advances_source": "C++ HGUpdate.cpp:353-357",
+        "get_calls": "event-driven (as above)"
+      }
+    },
+    {
+      "pair": "orthoplex_1_arcadia",
+      "pack": "ohvrvanilla_vittorio_romeo_orthoplex_1",
+      "level": "ohvrvanilla_vittorio_romeo_orthoplex_1_arcadia",
+      "seed": 987654321,
+      "difficulty_mult": 1.0,
+      "first_play": true,
+      "player_name": "testProfile",
+      "input_policy": "alwaysSpinRight",
+      "input_count": 456,
+      "expected_frames": 456,
+      "expected_score": 1.7958333333333334,
+      "rng": {
+        "advances_per_frame": 5,
+        "advances_source": "C++ HGUpdate.cpp:353-357",
+        "get_calls": "event-driven (as above)"
+      }
+    },
+    {
+      "pair": "orthoplex_1_bipolarity",
+      "pack": "ohvrvanilla_vittorio_romeo_orthoplex_1",
+      "level": "ohvrvanilla_vittorio_romeo_orthoplex_1_bipolarity",
+      "seed": 987654321,
+      "difficulty_mult": 1.0,
+      "first_play": true,
+      "player_name": "testProfile",
+      "input_policy": "alwaysSpinRight",
+      "input_count": 358,
+      "expected_frames": 358,
+      "expected_score": 1.3875,
+      "rng": {
+        "advances_per_frame": 5,
+        "advances_source": "C++ HGUpdate.cpp:353-357",
+        "get_calls": "event-driven (as above)"
+      }
+    }
+  ]
+}

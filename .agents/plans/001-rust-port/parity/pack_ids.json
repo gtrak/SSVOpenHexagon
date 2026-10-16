@@ -1,0 +1,93 @@
+{
+  "evidence": "cpp-probe: tools/oracle/parity_probe.cpp (real src/SSVOpenHexagon/Utils/BuildPackId.cpp + Utils/LevelValidator.cpp)",
+  "packs": [
+    {
+      "folder": "artwork",
+      "disambiguator": "thing",
+      "author": "Synth Morxemplum",
+      "name": "Artwork",
+      "version": 1,
+      "pack_id": "thing_Synth_Morxemplum_Artwork_1",
+      "validator_level_id": "thing_Synth_Morxemplum_Artwork_1_pointless",
+      "validator_diff_mult": 1.6,
+      "validator": "thing_Synth_Morxemplum_Artwork_1_pointless_m_1.6"
+    },
+    {
+      "folder": "base",
+      "disambiguator": "ohvrvanilla",
+      "author": "vittorio romeo",
+      "name": "base",
+      "version": 1,
+      "pack_id": "ohvrvanilla_vittorio_romeo_base_1",
+      "validator_level_id": "ohvrvanilla_vittorio_romeo_base_1_nolevels",
+      "validator_diff_mult": 1.6,
+      "validator": "ohvrvanilla_vittorio_romeo_base_1_nolevels_m_1.6"
+    },
+    {
+      "folder": "cube",
+      "disambiguator": "ohvrvanilla",
+      "author": "vittorio romeo",
+      "name": "cube",
+      "version": 1,
+      "pack_id": "ohvrvanilla_vittorio_romeo_cube_1",
+      "validator_level_id": "ohvrvanilla_vittorio_romeo_cube_1_apeirogon",
+      "validator_diff_mult": 1.6,
+      "validator": "ohvrvanilla_vittorio_romeo_cube_1_apeirogon_m_1.6"
+    },
+    {
+      "folder": "experimental",
+      "disambiguator": "ohvrvanilla",
+      "author": "vittorio romeo",
+      "name": "experimental",
+      "version": 1,
+      "pack_id": "ohvrvanilla_vittorio_romeo_experimental_1",
+      "validator_level_id": "ohvrvanilla_vittorio_romeo_experimental_1_3D_required",
+      "validator_diff_mult": 1.6,
+      "validator": "ohvrvanilla_vittorio_romeo_experimental_1_3D_required_m_1.6"
+    },
+    {
+      "folder": "hypercube",
+      "disambiguator": "ohvrvanilla",
+      "author": "vittorio romeo",
+      "name": "hypercube",
+      "version": 1,
+      "pack_id": "ohvrvanilla_vittorio_romeo_hypercube_1",
+      "validator_level_id": "ohvrvanilla_vittorio_romeo_hypercube_1_acceleradiant",
+      "validator_diff_mult": 1.6,
+      "validator": "ohvrvanilla_vittorio_romeo_hypercube_1_acceleradiant_m_1.6"
+    },
+    {
+      "folder": "orthoplex",
+      "disambiguator": "ohvrvanilla",
+      "author": "vittorio romeo",
+      "name": "orthoplex",
+      "version": 1,
+      "pack_id": "ohvrvanilla_vittorio_romeo_orthoplex_1",
+      "validator_level_id": "ohvrvanilla_vittorio_romeo_orthoplex_1_arcadia",
+      "validator_diff_mult": 1.6,
+      "validator": "ohvrvanilla_vittorio_romeo_orthoplex_1_arcadia_m_1.6"
+    },
+    {
+      "folder": "tutorial",
+      "disambiguator": "ohvrvanilla",
+      "author": "vittorio romeo",
+      "name": "tutorial",
+      "version": 1,
+      "pack_id": "ohvrvanilla_vittorio_romeo_tutorial_1",
+      "validator_level_id": "ohvrvanilla_vittorio_romeo_tutorial_1_babysteps",
+      "validator_diff_mult": 1.6,
+      "validator": "ohvrvanilla_vittorio_romeo_tutorial_1_babysteps_m_1.6"
+    },
+    {
+      "folder": "workshopexample",
+      "disambiguator": "ohvrworkshopexample",
+      "author": "vittorio romeo",
+      "name": "example",
+      "version": 1,
+      "pack_id": "ohvrworkshopexample_vittorio_romeo_example_1",
+      "validator_level_id": "ohvrworkshopexample_vittorio_romeo_example_1_examplelevel",
+      "validator_diff_mult": 1.6,
+      "validator": "ohvrworkshopexample_vittorio_romeo_example_1_examplelevel_m_1.6"
+    }
+  ]
+}

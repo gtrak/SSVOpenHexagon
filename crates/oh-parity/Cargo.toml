@@ -1,0 +1,24 @@
+[package]
+name = "oh-parity"
+description = "Issue 23: the SSVOpenHexagon Rust-port parity harness — runs the pinned level/seed/input corpus through the Rust build and compares outcomes against C++-derived expectations (tools/oracle/parity_probe.cpp)"
+version.workspace = true
+edition.workspace = true
+# The parity crate is a TESTS crate: an empty lib (the crate's docs +
+# `cargo test -p oh-parity` discovery) and the corpus-driven tests under
+# `tests/`. No shipped API.
+
+[dependencies]
+
+# Parity level-run composition — the same dev-only dependency shape oh-game
+# uses for its own determinism harness (oh-lua depends on oh-game, so it is
+# never a normal dependency; D-013).
+[dev-dependencies]
+oh-math = { path = "../oh-math" }
+oh-rng = { path = "../oh-rng" }
+oh-replay = { path = "../oh-replay" }
+oh-data = { path = "../oh-data" }
+oh-config = { path = "../oh-config" }
+oh-assets = { path = "../oh-assets" }
+oh-lua = { path = "../oh-lua" }
+oh-game = { path = "../oh-game" }
+serde_json = { workspace = true }
