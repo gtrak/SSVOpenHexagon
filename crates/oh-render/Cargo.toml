@@ -14,7 +14,13 @@ oh-math = { path = "../oh-math" }
 
 # --- real-GL platform stack (D-004 SFML entry) -----------------------------
 # Window / event loop / input platform backend.
-winit = "0.30"
+# `android-native-activity` (DECISIONS.md D-026: native-activity, not
+# game-activity): winit 0.30's android backend compiles `android-activity`
+# only behind this feature (it hard-errors without it, E0583 + compile_error).
+# Harmless on desktop: winit gates the `android-activity`/`ndk` deps on
+# `cfg(target_os = "android")`, so the feature enables nothing on
+# non-android targets and the lockfile graph is unchanged.
+winit = { version = "0.30", features = ["android-native-activity"] }
 # GL context + GL function loader. The context is created with glutin's
 # `Display::new(event_loop.as_raw(), <api preference>)` + a winit window (raw
 # handles from `raw-window-handle`); `glow` loads the GL entry points.
