@@ -46,11 +46,13 @@
 //! see `.agents/skills/lib-discord.md` ("MANUAL on-Discord checks").
 
 mod core;
+#[cfg(not(target_os = "emscripten"))]
 mod ipc;
 mod manager;
 mod no_discord;
 
 pub use core::{Activity, DiscordCore, DISCORD_APP_ID, REGISTER_COMMAND, STEAM_APP_ID};
+#[cfg(not(target_os = "emscripten"))]
 pub use ipc::IpcDiscordCore;
 pub use manager::{Discord, DiscordManager};
 pub use no_discord::NoDiscordCore;
