@@ -65,7 +65,34 @@ tempfile = "3"
 # .agents/skills/lib-steamworks.md.
 steamworks = "0.13"
 
-# Profile tuning is finalized by issue 22 (builds/CI). opt-level is the
-# default; recorded here so later issues have a place to change it.
+# Profile tuning is finalized by issue 22 (builds/CI); issue 24 pins the
+# release profile to the C++ release build's settings.
+#
+# The C++ release build's flags (D-014, cited):
+#   * The build type is `RELEASE` everywhere the release intent is expressed:
+#     `.github/workflows/ci_linux.yml` (`cmake -GNinja -DCMAKE_BUILD_TYPE=RELEASE`)
+#     and `build.sh --mingw-release` (`build.sh:66-67` → `-DCMAKE_BUILD_TYPE=RELEASE`,
+#     `build.sh:118`). CMake's GNU-compiler module then sets the release flags
+#     to exactly `-O3 -DNDEBUG` (CMake Modules/Compiler/GNU.cmake:61 `-O3`,
+#     :65 `-DNDEBUG`) — no custom optimization flags: `CMakeLists.txt:347-348`
+#     leaves the common-compiler-flags call commented out ("TODO: decide how
+#     to handle flags") and the whole LTO block is commented out
+#     (`CMakeLists.txt:353-366`, "C++ had LTO commented out" — 24-packaging.md
+#     step 1).
+# The Rust mirror (and the deliberate non-mirrors):
+#   * `-O3`       -> `opt-level = 3` (the Rust release default, now spelled out)
+#   * `-DNDEBUG`  -> `debug-assertions = false` (the Rust release default,
+#                    spelled out: `debug_assert!` off, mirroring disabled
+#                    C++ `assert()`)
+#   * LTO OFF     -> NO `lto` here. LTO changes the codegen pipeline the float
+#                    math is verified on: the oh-game determinism harness and
+#                    the whole release test suite are test-verified on the
+#                    default release profile (D-000: arithmetic-exact port —
+#                    float evaluation must stay identical to the verified
+#                    default). The C++ build does not enable LTO either
+#     (CMakeLists.txt:353-366), so keeping it OFF is also the faithful mirror.
+#   * NO `strip` / `codegen-units` / `panic` overrides: the C++ release build
+#     sets none of them, and they are not part of the test-verified baseline.
 [profile.release]
 opt-level = 3
+debug-assertions = false

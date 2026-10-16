@@ -4,6 +4,7 @@
 #   bash tools/build-windows.sh            # cargo check --workspace --target x86_64-pc-windows-gnu
 #   bash tools/build-windows.sh --all-targets   # also check the test/bench targets
 #   bash tools/build-windows.sh --build    # FULL cross-build (compiles + links the .exe's)
+#   bash tools/build-windows.sh --build --release  # the RELEASE profile (issue 24 packaging)
 #   bash tools/build-windows.sh --force-sodium  # re-run the libsodium prebuild even if cached
 #
 # Prereqs (both on the GitHub ubuntu-latest runner and any dev box with
@@ -45,12 +46,14 @@ TARGET="x86_64-pc-windows-gnu"
 MODE="check"
 EXTRA_TARGETS=()
 FORCE_SODIUM=0
+RELEASE=0
 
 for arg in "$@"; do
     case "$arg" in
     --check) MODE="check" ;;
     --build) MODE="build" ;;
     --all-targets) EXTRA_TARGETS=(--all-targets) ;;
+    --release) RELEASE=1 ;;
     --force-sodium) FORCE_SODIUM=1 ;;
     -h | --help)
         grep '^#' "$0" | sed 's/^# \{0,1\}//'
@@ -149,7 +152,12 @@ check)
     exec cargo check --workspace "${EXTRA_TARGETS[@]+"${EXTRA_TARGETS[@]}"}" --target "$TARGET"
     ;;
 build)
-    echo "== cargo build --workspace --target $TARGET (full cross-compile + link)"
-    exec cargo build --workspace --target "$TARGET"
+    if [ "$RELEASE" -eq 1 ]; then
+        echo "== cargo build --workspace --release --target $TARGET (full cross-compile + link, release profile)"
+        exec cargo build --workspace --release --target "$TARGET"
+    else
+        echo "== cargo build --workspace --target $TARGET (full cross-compile + link)"
+        exec cargo build --workspace --target "$TARGET"
+    fi
     ;;
 esac
