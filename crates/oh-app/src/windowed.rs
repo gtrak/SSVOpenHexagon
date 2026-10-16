@@ -136,7 +136,9 @@ use oh_game::hexagon_game::HexagonGame;
 use oh_game::seams::{Audio, NullProfiles};
 use oh_lua::api::state::GameApiState;
 use oh_menu::layout::LinearFontHeight;
-use oh_menu::seams::{MenuTouch, NewGameCallback, RichPresenceCallback, TriggerRefreshCallback};
+use oh_menu::seams::{
+    MenuTouch, MenuWindow, NewGameCallback, RichPresenceCallback, TriggerRefreshCallback,
+};
 use oh_menu::states::States;
 use oh_menu::{AudioSink, MenuConfig, MenuGame, NoopNetwork, RealMenuAssets};
 use oh_render::batching::GlBatchUploader;
@@ -218,14 +220,24 @@ impl oh_game::renderer::Renderer for WindowTouchRenderer {
 
 /// issue 025f — the menu's `MenuTouch` seam over the SAME shared touch
 /// sink (the C++ `window.getFingerDownCount()` / `getFingerDownPositions()`
-/// data the 25b SG5 window fold maintains — LOGICAL coordinates; the
-/// engine's `WindowTouchRenderer` above reads the identical sink):
-/// the platform feed of the 9-zone touch grid (oh-menu `MenuGame::
-/// update`, MenuGame.cpp:2802-2835). Desktop: no `WindowEvent::Touch`
-/// arrives — the sink stays empty, the grid never fires (behavior-
-/// identical to the C++ desktop; the mouse-zone parity is the operator's
-/// later step — the `MouseButtonReleased` exec path must not
-/// double-fire, the oh-menu `MenuTouch` seam note).
+/// data the 25b SG5 window fold maintains — the C++'s `mapPixelToCoords`
+/// window coordinates; the engine's `WindowTouchRenderer` above reads
+/// the identical sink): the platform feed of the 9-zone touch grid
+/// (oh-menu `MenuGame:: update`, MenuGame.cpp:2802-2835). The fold maps
+/// the physical touch pixels to the window's CURRENT size (`width_px` /
+/// `height_px` ÷ the GL surface size — the C++'s `mapPixelToCoords`), so
+/// in every live steady state the positions are in the ACTUAL window
+/// space the grid's thirds run in (issue 025g: on Android the `Resized`
+/// fold sets `width_px`/`height_px` to the native window size — the
+/// `Window`'s creation size is config-driven, so before the first
+/// `Resized` the scale is config/native; winit delivers the `Resized`
+/// before the first frame — `oh-render`'s android note + winit 0.30's
+/// android `MainEvent::WindowResized` → `WindowEvent::Resized(native
+/// size)`). Desktop: no `WindowEvent::Touch` arrives — the sink stays
+/// empty, the grid never fires (behavior-identical to the C++ desktop;
+/// the mouse-zone parity is the operator's later step — the
+/// `MouseButtonReleased` exec path must not double-fire, the oh-menu
+/// `MenuTouch` seam note).
 struct MenuTouchSink {
     positions: std::sync::Arc<
         std::sync::RwLock<[Option<oh_math::ssvs::Vec2>; oh_render::input::FINGER_COUNT]>,
@@ -248,6 +260,59 @@ impl MenuTouch for MenuTouchSink {
             .iter()
             .filter_map(|slot| *slot)
             .collect()
+    }
+}
+
+/// issue 025g — the shared ACTUAL-window-size slot (the C++
+/// `window.getRenderWindow().getSize()` live value — the actual current
+/// render-target size: the desktop's requested physical size, the
+/// Android native window's screen size; `MenuGame::getWindowWidth()` /
+/// `getWindowHeight()`, MenuGame.cpp:3350-3357). `tick_fields` refreshes
+/// it every frame from the `Window`'s current size bookkeeping (`width_px`
+/// / `height_px` — the `WindowEvent::Resized` fold's `set_size`; the
+/// window's creation size before the first resize — the liveness the C++
+/// gets from reading the window object at every call site; the
+/// config-vs-actual divergence the seam fixes, the oh-menu `MenuWindow`
+/// seam docs); the menu's `MenuWindow` seam reads it.
+pub struct RenderWindowSize {
+    size: std::sync::RwLock<(f32, f32)>,
+}
+
+impl RenderWindowSize {
+    #[must_use]
+    pub fn new(width: u32, height: u32) -> Self {
+        Self {
+            size: std::sync::RwLock::new((width as f32, height as f32)),
+        }
+    }
+    /// The per-frame refresh (a no-op when unchanged).
+    pub fn update(&self, width: u32, height: u32) {
+        let mut s = self.size.write().expect("render-window-size poisoned");
+        if s.0 != width as f32 || s.1 != height as f32 {
+            *s = (width as f32, height as f32);
+        }
+    }
+    #[must_use]
+    pub fn get(&self) -> (f32, f32) {
+        *self.size.read().expect("render-window-size poisoned")
+    }
+}
+
+/// issue 025g — the menu's `MenuWindow` seam over the [`RenderWindowSize`]
+/// slot (the C++ ctor's `window` reference's size half —
+/// `MenuGame::getWindowWidth()` / `getWindowHeight()` read
+/// `window.getRenderWindow().getSize()`, the ACTUAL current render-target
+/// size, NOT the config's resolution — the oh-menu `MenuWindow` docs).
+struct MenuWindowSource {
+    size: std::sync::Arc<RenderWindowSize>,
+}
+
+impl MenuWindow for MenuWindowSource {
+    fn width(&self) -> f32 {
+        self.size.get().0
+    }
+    fn height(&self) -> f32 {
+        self.size.get().1
     }
 }
 
@@ -1854,6 +1919,11 @@ pub struct WindowedClient {
     pub timer: TimerStatic,
     /// C++ `mg` (main.cpp:427-434).
     pub menu: Rc<MenuGame>,
+    /// issue 025g — the ACTUAL-window-size slot (`RenderWindowSize`'s
+    /// docs — the C++ `window.getRenderWindow().getSize()` live value the
+    /// menu's `MenuWindow` seam reads; `tick_fields` refreshes it every
+    /// frame from the window's current size).
+    render_size: std::sync::Arc<RenderWindowSize>,
     /// C++ `hg` (main.cpp:414-421) — the composition's engine handle.
     pub game: Rc<HexagonGame<GameApiState>>,
     /// The shared process config (the C++'s `hg::Config` singleton —
@@ -2127,6 +2197,15 @@ impl WindowedClient {
         // managers exist (the slot breaks the menu↔adapter cycle).
         let refresh_binds_slot: RefreshBindsSlot = Rc::new(RefCell::new(None));
 
+        // issue 025g: the ACTUAL-window-size slot (the C++
+        // `window.getRenderWindow().getSize()` live value — the menu's
+        // `MenuWindow` seam source; `tick_fields` refreshes it every frame
+        // from the window's current size — the `RenderWindowSize` docs).
+        let render_size = std::sync::Arc::new(RenderWindowSize::new(
+            window.get_width(),
+            window.get_height(),
+        ));
+
         let menu = Rc::new(MenuGame::new(
             Rc::new(RealMenuAssets::from_arc(assets)),
             Rc::new(ConfigMenuAdapter::new(
@@ -2139,6 +2218,9 @@ impl WindowedClient {
                 config: config.clone(),
             }),
             menu_touch,
+            Rc::new(MenuWindowSource {
+                size: render_size.clone(),
+            }),
             new_game_cb,
             trigger_refresh_cb,
             rich_presence_cb,
@@ -2229,6 +2311,7 @@ impl WindowedClient {
             engine: engine.clone(),
             timer,
             menu,
+            render_size,
             game,
             config,
             steam,
@@ -2410,6 +2493,7 @@ impl WindowedClient {
             interrupt,
             _app_draw,
             ilc,
+            render_size,
         } = self;
         let _ = &composed; // keep it alive until the end of the scope
         let mut timer = timer;
@@ -2433,7 +2517,15 @@ impl WindowedClient {
             })),
             |window| {
                 Self::tick_fields(
-                    window, &mut timer, &engine, &menu, &interrupt, &game, &config, &ilc,
+                    window,
+                    &mut timer,
+                    &engine,
+                    &menu,
+                    &interrupt,
+                    &game,
+                    &config,
+                    &ilc,
+                    &render_size,
                 )
             },
         );
@@ -2454,6 +2546,7 @@ impl WindowedClient {
             &self.game,
             &self.config,
             &self.ilc,
+            &self.render_size,
         )
     }
 
@@ -2471,6 +2564,7 @@ impl WindowedClient {
             &self.game,
             &self.config,
             &self.ilc,
+            &self.render_size,
         )
     }
 
@@ -2490,6 +2584,7 @@ impl WindowedClient {
         game: &Rc<HexagonGame<GameApiState>>,
         config: &Arc<RwLock<Config>>,
         ilc: &Rc<RefCell<Option<crate::lua_console_ui::IlcConsole>>>,
+        render_size: &std::sync::Arc<RenderWindowSize>,
     ) {
         // C++ `while(gameEngine->isRunning())` loop head (GameWindow.hpp:
         // 121) — the SIGINT flag (the safe port of the C++ handler, main
@@ -2510,6 +2605,17 @@ impl WindowedClient {
             );
             return;
         }
+        // issue 025g — the ACTUAL-window-size slot's per-frame refresh
+        // (the C++ `window.onRecreation`'s value liveness — the C++ reads
+        // `window.getRenderWindow().getSize()` live at every call site;
+        // the port's `Window` size bookkeeping is current here: the
+        // event fold's `Resized → set_size` half ran during the event
+        // dispatch that drove this frame, the winit android
+        // `MainEvent::WindowResized` → `Resized(native size)` before the
+        // first frame included): the menu's `MenuWindow` seam (the
+        // 9-zone grid's thirds + `refresh_camera`'s view math + the
+        // `drawOnlineStatus` identity view) reads it.
+        render_size.update(window.get_width(), window.get_height());
         // C++ `if(mustRecreate) recreateWindow();` (GameWindow.hpp:123) —
         // the port creates the window once (no runtime recreation; module
         // docs).
@@ -2737,6 +2843,7 @@ mod tests {
             Rc::new(NoopNetwork),
             oh_menu::RecordingAudio::new(),
             Rc::new(NoopTouch),
+            oh_menu::FakeWindow::new(),
             None,
             None,
             None,
@@ -2829,6 +2936,7 @@ mod tests {
             Rc::new(NoopNetwork),
             oh_menu::RecordingAudio::new(),
             Rc::new(NoopTouch),
+            oh_menu::FakeWindow::new(),
             None,
             None,
             None,
@@ -2919,6 +3027,7 @@ mod tests {
             Rc::new(NoopNetwork),
             oh_menu::RecordingAudio::new(),
             Rc::new(NoopTouch),
+            oh_menu::FakeWindow::new(),
             None,
             None,
             None,
@@ -3025,6 +3134,7 @@ mod tests {
             Rc::new(NoopNetwork),
             oh_menu::RecordingAudio::new(),
             Rc::new(NoopTouch),
+            oh_menu::FakeWindow::new(),
             None,
             None,
             None,

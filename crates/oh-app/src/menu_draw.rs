@@ -34,15 +34,18 @@
 //!
 //! **`mustRefresh` is size-driven, not event-driven.** The C++ sets
 //! `mustRefresh` on window-resize events; the port detects the same
-//! condition in `refresh_if_stale` (the shared layout values — `w` / `h`
-//! / aspect / char sizes — changed since the last draw) and then runs the
-//! C++ `:5758-5765` block: `refresh_camera()`, `adjust_levels_offset()`,
-//! `adjust_menu_offset(true)`, `resetNamesScrolls()` (plus the
-//! `updateLevelSelectionDrawingParameters` resets, MenuGame.cpp:
-//! 4296-4300). The first draw always refreshes (the C++ constructor ran
-//! `refreshCamera()` already; the port's `MenuGame::new` ran
-//! `refresh_camera()` too — the stale-detection just re-applies the same
-//! idempotent setup once the cameras/texts exist).
+//! condition in `refresh_if_stale` (issue 025g: the layout INPUTS — the
+//! ACTUAL window size, the C++ `getWindowWidth()` / `getWindowHeight()`,
+//! plus the config size / zoom the `backgroundCamera` view runs on —
+//! changed since the last draw) and then runs the C++ `:5758-5765`
+//! block: `refresh_camera()` (on the actual window size — the
+//! config-vs-actual divergence the C++'s `window.onRecreation` half
+//! reacts to), `adjust_levels_offset()`, `adjust_menu_offset(true)`,
+//! `resetNamesScrolls()` (plus the `updateLevelSelectionDrawingParameters`
+//! resets, MenuGame.cpp: 4296-4300). The first draw always refreshes (the
+//! C++ constructor ran `refreshCamera()` already; the port's
+//! `MenuGame::new` ran `refresh_camera()` too — the stale-detection just
+//! re-applies the same idempotent setup once the cameras/texts exist).
 //!
 //! **`levelStatus.sides` is the default `6` and
 //! `darkenUnevenBackgroundChunk` is `false`** in the background pass
@@ -51,13 +54,18 @@
 //! (`onLoad`/`onUpdate` level-status hooks) is unwired (menu Lua is the
 //! documented 13a gap).
 //!
-//! **`Config::getWidth()/getHeight()`** (the overlay-camera size, the
-//! dialog `center`/`centerUpperHalf` borders, and the online-status
-//! window height) map to the `MenuConfig` seam's `size_x()`/`size_y()` —
-//! in the C++ these report the current resolution, which is the same
-//! steady-state value the window size (`getSizeX/getSizeY`) reports; the
-//! port's `Config` keeps them in lockstep (`create_window` maps the
-//! resolution to the logical window size 1:1, `windowed.rs`).
+//! **`Config::getSizeX()/getSizeY()`** (the `backgroundCamera` view's
+//! size in `refresh_if_stale`) map to the `MenuConfig` seam's
+//! `size_x()`/`size_y()` (the C++'s `Config::getSizeX()` / `getSizeY()`,
+//! MenuGame.cpp:3138-3140 — the derived square `max(width, height) * 1.3`).
+//! The C++'s
+//! window-size consumers are DIFFERENT (`getWindowWidth()` /
+//! `getWindowHeight()` — `window.getRenderWindow().getSize()`, the
+//! ACTUAL current window: the overlay-camera size, the online-status
+//! identity view, the 9-zone grid's thirds — issue 025g: the port used
+//! to read the config size for all of them, the config-vs-actual
+//! divergence the device probe caught; they now run on the `MenuWindow`
+//! seam's `menu.window_size()`.)
 //!
 //! **`window.getFPS()`** is threaded through as `MenuDraw::fps` (the
 //! windowed loop refreshes it every frame, C++ `main.cpp`'s
@@ -104,7 +112,7 @@ use oh_math::hg::string::uppercasify;
 use oh_math::hg::timestamp::{format_timepoint, to_timepoint};
 use oh_math::ssvs::vector2::{get_orbit_rad, Vec2};
 use oh_menu::dialog_box::{DBoxDraw, DialogQuad, HexagonDialogBox};
-use oh_menu::layout::{self, CharSizes, DIFFICULTY_BUMP_EFFECT_MAX};
+use oh_menu::layout::{self, DIFFICULTY_BUMP_EFFECT_MAX};
 use oh_menu::menu_game::{LevelDrawer, MenuGame};
 use oh_menu::seams::{
     ConnectionState, LevelInfo, LoadResults, MenuAssets, NetworkClient, ScoreEntry,
@@ -298,7 +306,7 @@ pub struct MenuDraw {
 
     // ---- stale-refresh tracking (C++ `mustRefresh`, :5758) --------------
     /// `(w, h, four_by_three, char_sizes)` at the last refresh.
-    last_refresh: Option<(f32, f32, bool, CharSizes)>,
+    last_refresh: Option<(f32, f32, f32, f32, f32)>,
 
     // ---- names-scroll reset triggers (see the module docs) --------------
     last_state: States,
@@ -423,24 +431,46 @@ impl MenuDraw {
     /// The C++ `mustRefresh` block (MenuGame.cpp:5758-5765) — re-apply the
     /// camera / char-size / offset setup when the layout inputs changed
     /// since the last draw (or on the very first draw).
+    ///
+    /// issue 025g — the staleness inputs are the `refresh_camera` inputs:
+    /// the ACTUAL window size (`menu.window_size()` — the C++
+    /// `getWindowWidth()` / `getWindowHeight()`, MenuGame.cpp:3131-3136 —
+    /// the window resize / recreation is what the C++'s `onRecreation`
+    /// half of `mustRefresh` reacts to) AND the config size / zoom (the
+    /// `backgroundCamera` view's input, MenuGame.cpp:3138-3140 — the port
+    /// does not recreate the window on a config resolution change, so a
+    /// config-only change must fire the refresh too; the C++ fires it via
+    /// the window recreation).
     fn refresh_if_stale(&mut self, menu: &MenuGame) {
         let shared = menu.shared();
-        let (w, h, fbt, sizes) = {
+        let (win_w, win_h) = menu.window_size();
+        let (size_x, size_y, zoom) = {
             let s = shared.borrow();
-            (s.w, s.h, s.four_by_three, s.char_sizes)
+            let c = s.config();
+            (c.size_x(), c.size_y(), c.zoom_factor())
         };
         let stale = match self.last_refresh {
-            Some((lw, lh, lfbt, lsizes)) => lw != w || lh != h || lfbt != fbt || lsizes != sizes,
+            Some((lw, lh, lsx, lsy, lzoom)) => {
+                lw != win_w || lh != win_h || lsx != size_x || lsy != size_y || lzoom != zoom
+            }
             None => true,
         };
         if !stale {
             return;
         }
-        self.last_refresh = Some((w, h, fbt, sizes));
+        self.last_refresh = Some((win_w, win_h, size_x, size_y, zoom));
 
         // C++ :5761 `refreshCamera()` (the port's `refresh_camera` also
-        // resets the five menus' category offsets, MenuGame.cpp:3189-3204).
+        // resets the five menus' category offsets, MenuGame.cpp:3189-3204)
+        // — issue 025g: it runs on the ACTUAL window size (the C++'s
+        // `getWindowWidth()` / `getWindowHeight()`), so the derived values
+        // are re-read AFTER the call (pre-call they are stale when the
+        // window size changed).
         menu.refresh_camera();
+        let (w, h, fbt, sizes) = {
+            let s = shared.borrow();
+            (s.w, s.h, s.four_by_three, s.char_sizes)
+        };
 
         // C++ :5762-5764 — `adjustLevelsOffset()` + `adjustMenuOffset(true)`
         // + `resetNamesScrolls()`; the C++ `refreshCamera` additionally ran
@@ -466,11 +496,6 @@ impl MenuDraw {
         // a top-left-origin mapping of the menu's `[0, w] × [0, h]` layout.
         // (The constructor's config-based view is replaced by the time the
         // constructor finishes, since it ends with `refreshCamera()`.)
-        let (size_x, size_y, zoom) = {
-            let s = shared.borrow();
-            let c = s.config();
-            (c.size_x(), c.size_y(), c.zoom_factor())
-        };
         let cam_size = Vec2::new(size_x * zoom, size_y * zoom);
         self.background_camera
             .set_view(View::new(Vec2::new(0.0, 0.0), cam_size));
@@ -3715,12 +3740,12 @@ fn draw_online_status(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn Draw
 
     // C++ `window.getRenderWindow().setView({{0, 0},
     // {getWindowWidth(), getWindowHeight()}})` — the identity (window)
-    // view; in the port the window size is the config size (module docs).
-    let (win_w, win_h) = {
-        let s = menu.shared().borrow();
-        let c = s.config();
-        (c.size_x(), c.size_y())
-    };
+    // view. issue 025g: `getWindowWidth()` / `getWindowHeight()` are the
+    // ACTUAL window size (the C++'s `window.getRenderWindow().getSize()`,
+    // MenuGame.cpp:3350-3357 — the `MenuWindow` seam), NOT the config
+    // size the port used to read (the config-vs-actual divergence, the
+    // 025g device finding).
+    let (win_w, win_h) = menu.window_size();
     target.set_view(View::new(Vec2::new(0.0, 0.0), Vec2::new(win_w, win_h)));
 
     // C++ `onlineStatusScaling = 1.5f; scaling = 1.5f /
@@ -4040,6 +4065,7 @@ mod tests {
             network,
             audio,
             Rc::new(oh_menu::NoopTouch),
+            oh_menu::FakeWindow::new(),
             None,
             None,
             None,
@@ -4155,6 +4181,7 @@ mod tests {
             network,
             audio,
             Rc::new(oh_menu::NoopTouch),
+            oh_menu::FakeWindow::new(),
             None,
             None,
             None,

@@ -24,7 +24,9 @@ use std::rc::Rc;
 use oh_math::ssvs::Vec2;
 use oh_menu::layout::LinearFontHeight;
 use oh_menu::seams::MenuTouch;
-use oh_menu::{FakeAssets, FakeConfig, FakeWindow, MenuAssets, MenuGame, NoopNetwork, RecordingAudio, States};
+use oh_menu::{
+    FakeAssets, FakeConfig, FakeWindow, MenuAssets, MenuGame, NoopNetwork, RecordingAudio, States,
+};
 
 // ---------------------------------------------------------------------------
 // The test touch seam: explicit down-finger positions (LOGICAL coords).
