@@ -67,28 +67,61 @@
 //!   context `IlcConsole::new` (oh-app) fails gracefully and the overlay
 //!   stays off (the C++ Android build has no ImGui — `#ifndef
 //!   SSVOH_ANDROID` in Imgui.cpp).
+//!
+//! # Emscripten (issue 26c SG1 — the web backend)
+//!
+//! The web path drops winit/glutin (neither has an emscripten backend —
+//! D-029): the GL context is the page's `<canvas id="c">` WebGL2 context,
+//! created through the emscripten C API (`emscripten_webgl_init_context_
+//! attributes` with `major_version = 2` → `emscripten_webgl_create_context`
+//! — takes the CSS SELECTOR `"#c"`, 26c.1 gotcha — →
+//! `emscripten_webgl_make_context_current`), and `glow` loads over
+//! `emscripten_webgl_get_proc_address` via
+//! `Context::from_loader_function_cstr` (the 26c.1 verified route — glow
+//! compiles its NATIVE module on emscripten, so
+//! `from_webgl2_context` is unavailable). The WebGL2 context must be
+//! created + made current BEFORE the loader resolves (the proc table
+//! dispatches off emscripten's current `GLctx`). The `GlParts` keep-alives
+//! are the canvas element + the context handle; `present` is a no-op (the
+//! canvas presents implicitly — the browser composites the WebGL back
+//! buffer after the `request_animation_frame` callback returns). The
+//! GLES 3.0 context engages the `translate_for_gles` shader translation
+//! automatically (`is_gles_context` reads the "WebGL 2.0 …" version
+//! string) — the same translation the android lane proved.
 
 use std::cell::{RefCell, RefMut};
+#[cfg(not(target_os = "emscripten"))]
 use std::num::NonZero;
+#[cfg(not(target_os = "emscripten"))]
 use std::panic::AssertUnwindSafe;
 
+#[cfg(not(target_os = "emscripten"))]
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 use glow::HasContext;
+#[cfg(not(target_os = "emscripten"))]
 use glutin::config::ConfigTemplateBuilder;
 #[cfg(target_os = "android")]
 use glutin::context::ContextApi;
+#[cfg(not(target_os = "emscripten"))]
 use glutin::context::PossiblyCurrentContext;
 #[cfg(target_os = "android")]
 use glutin::context::Version;
+#[cfg(not(target_os = "emscripten"))]
 use glutin::context::{ContextAttributes, ContextAttributesBuilder, NotCurrentGlContext};
+#[cfg(not(target_os = "emscripten"))]
 use glutin::display::{Display, DisplayApiPreference, GlDisplay};
+#[cfg(not(target_os = "emscripten"))]
 use glutin::surface::{GlSurface, Surface, SurfaceAttributesBuilder, WindowSurface};
+#[cfg(target_os = "emscripten")]
+use wasm_bindgen::JsCast;
 #[cfg(target_os = "android")]
 use winit::event_loop::ActiveEventLoop;
+#[cfg(not(target_os = "emscripten"))]
 use winit::event_loop::EventLoop;
 #[cfg(target_os = "android")]
 use winit::platform::android::ActiveEventLoopExtAndroid;
+#[cfg(not(target_os = "emscripten"))]
 use winit::window::{Window as WinitWindow, WindowAttributes};
 
 use crate::font::Text;
@@ -113,10 +146,21 @@ pub struct GlParts {
 
     /// Keep-alives (drop order: glow context, glutin context, surface, window,
     /// display last — so the GL context drops before its surface/window).
+    /// Emscripten (26c SG1): the canvas element (keeps the page's
+    /// `<canvas id="c">` alive for the window's life) + the emscripten
+    /// context handle instead.
+    #[cfg(not(target_os = "emscripten"))]
     _context: PossiblyCurrentContext,
+    #[cfg(not(target_os = "emscripten"))]
     _surface: Surface<WindowSurface>,
+    #[cfg(not(target_os = "emscripten"))]
     _window: WinitWindow,
+    #[cfg(not(target_os = "emscripten"))]
     _display: Display,
+    #[cfg(target_os = "emscripten")]
+    _canvas: web_sys::HtmlCanvasElement,
+    #[cfg(target_os = "emscripten")]
+    _context_handle: i32,
 }
 
 /// The `GlParts`-owned `GlBatchUploader` slot: lazily created on the first
@@ -129,11 +173,13 @@ pub struct BatchSlot {
 }
 
 /// `GlBackend` = a winit `EventLoop` + the `GlParts` that keep its context live.
+#[cfg(not(target_os = "emscripten"))]
 pub struct GlBackend {
     pub event_loop: EventLoop<()>,
     pub parts: GlParts,
 }
 
+#[cfg(not(target_os = "emscripten"))]
 impl GlBackend {
     /// Bootstrap a real GL context of `width`×`height`. Returns `None`
     /// headless (no display / GPU).
@@ -216,6 +262,7 @@ impl GlBackend {
 /// `width`/`height` are the SURFACE (framebuffer) size: the desktop's
 /// requested physical window size (clamped to 1, the `create`'s `NonZero`
 /// semantics), the android native window's screen size.
+#[cfg(not(target_os = "emscripten"))]
 fn finish_gl(
     display: Display,
     window: WinitWindow,
@@ -292,12 +339,153 @@ pub fn create_android_parts(el: &ActiveEventLoop) -> Option<GlParts> {
     finish_gl(display, window, width, height, &ctx_attrs)
 }
 
+// ---------------------------------------------------------------------------
+// Emscripten (issue 26c SG1) — the WebGL2 canvas backend (module docs)
+// ---------------------------------------------------------------------------
+
+/// The emscripten C API (emscripten.h) behind the web GL bootstrap: the
+/// WebGL2 context is created + made current through it BEFORE the `glow`
+/// loader resolves (26c.1 — `emscripten_webgl_get_proc_address` dispatches
+/// off emscripten's current `GLctx`).
+#[cfg(target_os = "emscripten")]
+mod emscripten_gl {
+    /// `EMSCRIPTEN_WEBGL_CONTEXT_ATTRIBUTES` (emscripten.h) — the 15-field
+    /// WebGL context-attribute struct; `init_context_attributes` fills it
+    /// with the defaults, the bootstrap then sets `major_version = 2`.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct ContextAttributes {
+        pub major_version: i32,
+        pub minor_version: i32,
+        pub alpha: i32,
+        pub depth: i32,
+        pub stencil: i32,
+        pub antialias: i32,
+        pub premultiplied_alpha: i32,
+        pub preserve_drawing_buffer: i32,
+        pub power_preference: i32,
+        pub fail_if_major_performance_caveat: i32,
+        pub render_to_texture: i32,
+        pub depth_and_stencil: i32,
+        pub stencil_back: i32,
+        pub depth_back: i32,
+        pub restore: i32,
+    }
+
+    extern "C" {
+        pub fn emscripten_webgl_init_context_attributes(attrs: *mut ContextAttributes);
+        /// `canvas` is a CSS SELECTOR (26c.1 gotcha: `"#c"`, not a bare id —
+        /// it does `querySelector`).
+        pub fn emscripten_webgl_create_context(
+            canvas: *const std::ffi::c_char,
+            attrs: *const ContextAttributes,
+        ) -> i32;
+        pub fn emscripten_webgl_make_context_current(ctx: i32) -> i32;
+        /// Returns `void *` in the C header — `*const c_void` (on this
+        /// target `c_void` is NOT `()` — cast at the `*const ()` seams).
+        pub fn emscripten_webgl_get_proc_address(
+            name: *const std::ffi::c_char,
+        ) -> *const std::ffi::c_void;
+    }
+}
+
+/// `GlBackend` (web) = the `GlParts` that keep the canvas's WebGL2 context
+/// live — no winit `EventLoop` on the web path (D-029: the loop is a plain
+/// `request_animation_frame`, `window.rs`).
+#[cfg(target_os = "emscripten")]
+pub struct GlBackend {
+    pub parts: GlParts,
+}
+
+#[cfg(target_os = "emscripten")]
+impl GlBackend {
+    /// Bootstrap the WebGL2 context on the page's `<canvas id="c">` (the
+    /// 26c.1 selector — the web page MUST provide it; the `title` is the
+    /// page's `<title>`, a no-op here). Returns `None` when the canvas is
+    /// missing or WebGL2 is unavailable (the `Window::create` headless
+    /// degradation — the desktop no-display arm).
+    #[must_use]
+    pub fn try_create(width: u32, height: u32, _title: &str) -> Option<Self> {
+        let canvas: web_sys::HtmlCanvasElement = web_sys::window()?
+            .document()?
+            .get_element_by_id("c")?
+            .unchecked_into();
+        let width = width.max(1);
+        let height = height.max(1);
+        canvas.set_width(width);
+        canvas.set_height(height);
+        let mut attrs = emscripten_gl::ContextAttributes {
+            major_version: 0,
+            minor_version: 0,
+            alpha: 0,
+            depth: 0,
+            stencil: 0,
+            antialias: 0,
+            premultiplied_alpha: 0,
+            preserve_drawing_buffer: 0,
+            power_preference: 0,
+            fail_if_major_performance_caveat: 0,
+            render_to_texture: 0,
+            depth_and_stencil: 0,
+            stencil_back: 0,
+            depth_back: 0,
+            restore: 0,
+        };
+        unsafe { emscripten_gl::emscripten_webgl_init_context_attributes(&mut attrs) };
+        // WebGL2 (the 26c.1 recipe: `-sMAX_WEBGL_VERSION=2` link flag + the
+        // `major_version = 2` request — without it emscripten logs "WebGL 2
+        // requested but only WebGL 1 is supported" and the create returns 0).
+        attrs.major_version = 2;
+        let selector = b"#c\0";
+        let ctx = unsafe {
+            emscripten_gl::emscripten_webgl_create_context(
+                selector.as_ptr() as *const std::ffi::c_char,
+                &attrs,
+            )
+        };
+        if ctx == 0 {
+            eprintln!(
+                "[oh-render] emscripten_webgl_create_context(\"#c\") failed \
+                 (WebGL2 unavailable — a <canvas id=\"c\"> + the \
+                 -sMAX_WEBGL_VERSION=2 link flag are required)"
+            );
+            return None;
+        }
+        if unsafe { emscripten_gl::emscripten_webgl_make_context_current(ctx) } != 0 {
+            eprintln!("[oh-render] emscripten_webgl_make_context_current failed");
+            return None;
+        }
+        // The 26c.1 route: glow's NATIVE loader over the emscripten proc
+        // table (the context is current — `get_proc_address` dispatches off
+        // it). The GLES 3.0 context engages the `translate_for_gles` shader
+        // translation automatically (`is_gles_context`).
+        let gl = unsafe {
+            glow::Context::from_loader_function_cstr(|name| {
+                emscripten_gl::emscripten_webgl_get_proc_address(name.as_ptr())
+            })
+        };
+        Some(Self {
+            parts: GlParts {
+                gl,
+                width,
+                height,
+                passes: RefCell::new(crate::gl_passes::GlPasses::new()),
+                batch: RefCell::new(BatchSlot::default()),
+                _canvas: canvas,
+                _context_handle: ctx,
+            },
+        })
+    }
+}
+
 impl GlParts {
     /// The winit window this GL context lives on (issue 014b: the egui
     /// console's `egui-winit` state + `egui_glow` painter need the winit
     /// window — sizes / clipboard display handle / the event hook's
     /// argument — without taking the `glow 0.18` `Context` out of the
-    /// render layer).
+    /// render layer). Desktop/android only (the web path has no winit
+    /// window — D-029).
+    #[cfg(not(target_os = "emscripten"))]
     #[must_use]
     pub fn winit_window(&self) -> &WinitWindow {
         &self._window
@@ -311,7 +499,17 @@ impl GlParts {
     /// `glow 0.18` context was built at `create`).
     #[must_use]
     pub fn proc_address(&self, name: &std::ffi::CStr) -> *const () {
-        self._display.get_proc_address(name) as *const ()
+        #[cfg(not(target_os = "emscripten"))]
+        {
+            self._display.get_proc_address(name) as *const ()
+        }
+        #[cfg(target_os = "emscripten")]
+        {
+            // The web loader table (the same `emscripten_webgl_get_proc_address`
+            // the `glow` context was built with — the egui console seam has
+            // no web consumer yet, the API stays honest).
+            unsafe { emscripten_gl::emscripten_webgl_get_proc_address(name.as_ptr()) as *const () }
+        }
     }
 
     /// The issue-025c draw passes (module docs) — the per-frame
@@ -444,7 +642,10 @@ impl GlParts {
     /// C++ `renderWindow.setIcon(...)` (main.cpp:322-323) — the winit window
     /// icon (the C++'s `sf::RenderWindow::setIcon` uploads the RGBA8 pixels
     /// to the platform window; the port's winit analogue is
-    /// `Window::set_window_icon`).
+    /// `Window::set_window_icon`). Desktop/android only (the web path has no
+    /// winit window — the browser tab's favicon is the page's, not the
+    /// canvas's; `Window::set_icon` records the set there).
+    #[cfg(not(target_os = "emscripten"))]
     pub fn set_icon(&self, icon: winit::window::Icon) {
         self._window.set_window_icon(Some(icon));
     }
@@ -466,7 +667,12 @@ impl GlParts {
     /// `Surface::swap_buffers` (the context is current on this thread —
     /// single-threaded GL, the `GlParts` contract; issue 25, on-device
     /// finding: the swap was never wired and no GL platform presented).
+    /// Emscripten (26c SG1): a documented no-op — the canvas presents
+    /// implicitly (the browser composites the WebGL back buffer after the
+    /// `request_animation_frame` callback returns; there is no swap call on
+    /// the emscripten C API).
     pub fn present(&self) {
+        #[cfg(not(target_os = "emscripten"))]
         self._surface
             .swap_buffers(&self._context)
             .expect("glutin Surface::swap_buffers failed");

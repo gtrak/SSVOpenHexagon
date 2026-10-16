@@ -2029,11 +2029,14 @@ dependencies = [
  "fontdue",
  "glow 0.18.0",
  "glutin",
+ "js-sys",
  "oh-config",
  "oh-math",
  "png",
  "raw-window-handle",
  "rodio",
+ "wasm-bindgen",
+ "web-sys",
  "winit",
 ]
 

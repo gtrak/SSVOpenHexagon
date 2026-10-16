@@ -13,19 +13,12 @@ oh-config = { path = "../oh-config" }
 oh-math = { path = "../oh-math" }
 
 # --- real-GL platform stack (D-004 SFML entry) -----------------------------
-# Window / event loop / input platform backend.
-# `android-native-activity` (DECISIONS.md D-026: native-activity, not
-# game-activity): winit 0.30's android backend compiles `android-activity`
-# only behind this feature (it hard-errors without it, E0583 + compile_error).
-# Harmless on desktop: winit gates the `android-activity`/`ndk` deps on
-# `cfg(target_os = "android")`, so the feature enables nothing on
-# non-android targets and the lockfile graph is unchanged.
-winit = { version = "0.30", features = ["android-native-activity"] }
-# GL context + GL function loader. The context is created with glutin's
-# `Display::new(event_loop.as_raw(), <api preference>)` + a winit window (raw
-# handles from `raw-window-handle`); `glow` loads the GL entry points.
-glutin = "0.32"
+# Raw window/display handles (shared: the desktop + android bootstrap read
+# them; the web path keeps the dependency, it just has no winit window).
 raw-window-handle = "0.6"
+# GL function loader. On desktop/android the entry points come from the
+# glutin display's proc table; on emscripten from
+# `emscripten_webgl_get_proc_address` (the 26c.1 route, `gl.rs`).
 glow = "0.18"
 # TTF metrics + glyph rasterization (pure-Rust; glyph atlases become GL
 # textures in the Font/Text path).
@@ -44,5 +37,51 @@ rodio = "0.23"
 # and a hand-rolled PNG encoder/decoder is rejected on the same bar as the
 # D-004 SFML entry's hand-rolled rasterizer: smallest SOUND dependency.
 png = "0.18"
+
+# --- desktop / android window + GL backend (issue 26c SG1 target-gate) -----
+# `winit` + `glutin` have NO emscripten backend (26c: winit's web backend is
+# `target_os = "unknown"`-only — `build.rs` `compile_error!` on emscripten;
+# glutin `compile_error!("Please select at least one api backend")`), so the
+# web path uses the emscripten C API + `web-sys` instead (the
+# `cfg(target_os = "emscripten")` table below + the `gl.rs` / `window.rs`
+# web backends).
+# `android-native-activity` (DECISIONS.md D-026: native-activity, not
+# game-activity): winit 0.30's android backend compiles `android-activity`
+# only behind this feature (it hard-errors without it, E0583 + compile_error).
+# Harmless on desktop: winit gates the `android-activity`/`ndk` deps on
+# `cfg(target_os = "android")`, so the feature enables nothing on
+# non-android targets and the lockfile graph is unchanged.
+[target.'cfg(not(target_os = "emscripten"))'.dependencies]
+winit = { version = "0.30", features = ["android-native-activity"] }
+# GL context + GL function loader. The context is created with glutin's
+# `Display::new(event_loop.as_raw(), <api preference>)` + a winit window (raw
+# handles from `raw-window-handle`); `glow` loads the GL entry points.
+glutin = "0.32"
+
+# --- emscripten (web) window + GL backend (issue 26c SG1) ------------------
+# The canvas + WebGL2 context come from the emscripten C API
+# (`emscripten_webgl_*`, `gl.rs`); the DOM events + the
+# `request_animation_frame` loop come from `web-sys` (`window.rs`).
+[target.'cfg(target_os = "emscripten")'.dependencies]
+wasm-bindgen = "0.2.129"
+js-sys = "0.3.106"
+web-sys = { version = "0.3.106", features = [
+  "Window",
+  "Document",
+  "Element",
+  "HtmlCanvasElement",
+  "WebGl2RenderingContext",
+  "console",
+  "Performance",
+  "Event",
+  "EventTarget",
+  "KeyboardEvent",
+  "MouseEvent",
+  "WheelEvent",
+  "TouchEvent",
+  "TouchList",
+  "Touch",
+  "DomRect",
+] }
 
 [dev-dependencies]

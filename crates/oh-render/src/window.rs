@@ -1,11 +1,16 @@
 //! `sf::RenderWindow` / `sf::Event` — the window + event-loop surface.
 //!
 //! The platform backend is `winit` 0.30 (window, events, input) with the real
-//! GL context from `gl.rs` (glutin + glow). The SFML `Event` set, the winit→
-//! SFML key/button mapping, the window state (vsync, framerate, cursor, view,
-//! size), `mapPixelToCoords`, screenshots, and the joystick surface live here
-//! and are headless-testable; only the live-context bootstrap (`create`) and
-//! the real event loop (`run`) need a display.
+//! GL context from `gl.rs` (glutin + glow) — EXCEPT on emscripten (issue 26c
+//! SG1, D-029: neither winit nor glutin has an emscripten backend), where the
+//! backend is the page's `<canvas id="c">` + the emscripten WebGL2 context
+//! (`gl.rs`) + `web-sys` DOM events (this file's `web_key_to_sfml` /
+//! `web_mouse_button_to_sfml` — the SAME SFML integers as the winit tables) +
+//! a `request_animation_frame` loop ([`Window::run`]).
+//! The SFML `Event` set, the key/button mapping, the window state (vsync,
+//! framerate, cursor, view, size), `mapPixelToCoords`, screenshots, and the
+//! joystick surface live here and are headless-testable; only the live-context
+//! bootstrap (`create`) and the real event loop (`run`) need a display.
 //!
 //! **Event-loop model note.** winit 0.30 removed SFML-style non-blocking
 //! `pollEvent`; instead a single `EventLoop::run` delivers events and the game
@@ -14,15 +19,33 @@
 //! loop, folds `WindowEvent`s into the SFML `Event` set (via `map_window_event`
 //! + `apply_event`), and invokes the per-frame handler once. `Window::headless`
 //!   (no display) still runs exactly one frame so the headless game path works.
+//!
+//! **Emscripten event-loop model.** The DOM delivers events asynchronously
+//! (no winit loop): the listeners (`attach_web_listeners`) push the mapped
+//! SFML `Event`s into a shared queue; each `request_animation_frame` tick
+//! drains it (`apply_event` per event — the SFML `pollEvent` batch) before
+//! invoking the per-frame handler. `Window::run` therefore RETURNS after
+//! scheduling the first frame (the browser owns the loop — the winit-web
+//! `spawn_app` shape); the frames run until `Event::Closed`.
 
+#[cfg(not(target_os = "emscripten"))]
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "emscripten")]
+use wasm_bindgen::closure::Closure;
+#[cfg(target_os = "emscripten")]
+use wasm_bindgen::JsCast;
+#[cfg(not(target_os = "emscripten"))]
 use winit::application::ApplicationHandler;
+#[cfg(not(target_os = "emscripten"))]
 use winit::event::WindowEvent;
 #[cfg(target_os = "android")]
 use winit::event_loop::EventLoop;
+#[cfg(not(target_os = "emscripten"))]
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
+#[cfg(not(target_os = "emscripten"))]
 use winit::keyboard::{Key as WKey, KeyCode, KeyLocation, NamedKey, PhysicalKey};
+#[cfg(not(target_os = "emscripten"))]
 use winit::window::WindowId;
 
 use crate::gl::{GlBackend, GlParts};
@@ -89,6 +112,7 @@ pub enum JoystickAxis {
 // ---------------------------------------------------------------------------
 
 /// Map a winit mouse button to the exact SFML `Mouse::Button` integer.
+#[cfg(not(target_os = "emscripten"))]
 #[must_use]
 pub fn winit_button_to_sfml(button: &winit::event::MouseButton) -> Option<Button> {
     match button {
@@ -103,6 +127,7 @@ pub fn winit_button_to_sfml(button: &winit::event::MouseButton) -> Option<Button
 
 /// Map a winit logical + physical key to the exact SFML `Keyboard::Key`
 /// integer (oracle-vectors.md). `Unknown` when unmappable.
+#[cfg(not(target_os = "emscripten"))]
 #[must_use]
 pub fn winit_key_to_sfml(logical: &WKey, physical: &PhysicalKey, location: KeyLocation) -> Key {
     // Numpad is delivered logically as `Character`, so disambiguate via the
@@ -222,6 +247,7 @@ pub fn winit_key_to_sfml(logical: &WKey, physical: &PhysicalKey, location: KeyLo
 
 /// Map a winit `WindowEvent` to the SFML `Event` (or `None` when it has no SFML
 /// analogue / the key is unmappable). Pure + headless-testable.
+#[cfg(not(target_os = "emscripten"))]
 #[must_use]
 pub fn map_window_event(event: &WindowEvent) -> Option<Event> {
     match event {
@@ -280,11 +306,125 @@ pub fn map_window_event(event: &WindowEvent) -> Option<Event> {
     }
 }
 
+/// Emscripten (issue 26c SG1): map a DOM `KeyboardEvent` `code` / `key` to the
+/// exact SFML `Keyboard::Key` integer — the web twin of
+/// [`winit_key_to_sfml`]: the SAME SFML integers, with the DOM
+/// `KeyboardEvent.code` in place of the winit `KeyCode` / `NamedKey`
+/// (`"KeyA"` ↔ `KeyCode::KeyA`, `"Numpad0"` ↔ `KeyCode::Numpad0`,
+/// `"ShiftLeft"` ↔ `NamedKey::Shift`+`Left` location, …) and the DOM `key`
+/// in place of the winit `Character` logical key (the punctuation arm).
+/// `UNKNOWN` when unmappable.
+#[cfg(target_os = "emscripten")]
+#[must_use]
+pub fn web_key_to_sfml(code: &str, key: &str) -> Key {
+    // The `Key<A-Z>` / `Digit<D>` / `Numpad<D>` families (the winit
+    // `Character` + numpad arms).
+    if let Some(c) = code.strip_prefix("Key") {
+        if let Some(ch) = c.chars().next() {
+            if ('A'..='Z').contains(&ch) && c.len() == 1 {
+                return Key(Key::A.0 + (ch as i32 - 'A' as i32));
+            }
+        }
+    }
+    if let Some(d) = code.strip_prefix("Digit") {
+        if let Some(ch) = d.chars().next() {
+            if ('0'..='9').contains(&ch) && d.len() == 1 {
+                return Key(Key::NUM0.0 + (ch as i32 - '0' as i32));
+            }
+        }
+    }
+    if let Some(d) = code.strip_prefix("Numpad") {
+        if let Some(ch) = d.chars().next() {
+            if ('0'..='9').contains(&ch) && d.len() == 1 {
+                return Key(Key::NUMPAD0.0 + (ch as i32 - '0' as i32));
+            }
+        }
+    }
+    match code {
+        "NumpadAdd" => return Key::ADD,
+        "NumpadSubtract" => return Key::SUBTRACT,
+        "NumpadMultiply" => return Key::MULTIPLY,
+        "NumpadDivide" => return Key::DIVIDE,
+        "NumpadEnter" => return Key::ENTER,
+        "NumpadDecimal" => return Key::PERIOD,
+        "Space" => return Key::SPACE,
+        "Enter" => return Key::ENTER,
+        "Backspace" => return Key::BACKSPACE,
+        "Tab" => return Key::TAB,
+        "PageUp" => return Key::PAGE_UP,
+        "PageDown" => return Key::PAGE_DOWN,
+        "End" => return Key::END,
+        "Home" => return Key::HOME,
+        "Insert" => return Key::INSERT,
+        "Delete" => return Key::DELETE,
+        "ArrowLeft" => return Key::LEFT,
+        "ArrowRight" => return Key::RIGHT,
+        "ArrowUp" => return Key::UP,
+        "ArrowDown" => return Key::DOWN,
+        "Escape" => return Key::ESCAPE,
+        "Pause" => return Key::PAUSE,
+        "ContextMenu" => return Key::MENU,
+        "ShiftLeft" => return Key::L_SHIFT,
+        "ShiftRight" => return Key::R_SHIFT,
+        "ControlLeft" => return Key::L_CONTROL,
+        "ControlRight" => return Key::R_CONTROL,
+        "AltLeft" => return Key::L_ALT,
+        "AltRight" => return Key::R_ALT,
+        "MetaLeft" => return Key::L_SYSTEM,
+        "MetaRight" => return Key::R_SYSTEM,
+        _ => {}
+    }
+    // The `F<N>` keys (F1..F15 — the winit `NamedKey::F*` arm).
+    if let Some(n) = code.strip_prefix("F") {
+        if let Ok(n) = n.parse::<i32>() {
+            if (1..=15).contains(&n) {
+                return Key(Key::F1.0 + (n - 1));
+            }
+        }
+    }
+    // The punctuation (the DOM `key` — the winit `Character` arm).
+    match key {
+        "," => return Key::COMMA,
+        "." => return Key::PERIOD,
+        ";" => return Key::SEMICOLON,
+        "'" => return Key::APOSTROPHE,
+        "/" => return Key::SLASH,
+        "\\" => return Key::BACKSLASH,
+        "`" => return Key::GRAVE,
+        "=" => return Key::EQUAL,
+        "-" => return Key::HYPHEN,
+        "[" => return Key::L_BRACKET,
+        "]" => return Key::R_BRACKET,
+        _ => {}
+    }
+    Key::UNKNOWN
+}
+
+/// Emscripten (issue 26c SG1): map a DOM `MouseEvent` `button` index to the
+/// exact SFML `Mouse::Button` integer — the web twin of
+/// [`winit_button_to_sfml`] (the SAME SFML integers: the DOM `button` 0/1/2
+/// are left/middle/right, 3/4 the X buttons — the winit `Other(1)` /
+/// `Other(2)` arms).
+#[cfg(target_os = "emscripten")]
+#[must_use]
+pub fn web_mouse_button_to_sfml(button: i16) -> Option<Button> {
+    match button {
+        0 => Some(Button::LEFT),
+        1 => Some(Button::MIDDLE),
+        2 => Some(Button::RIGHT),
+        3 => Some(Button::X_BUTTON1),
+        4 => Some(Button::X_BUTTON2),
+        _ => None,
+    }
+}
+
 /// The per-window-event hook of [`Window::run_with_event_hook`] (issue
 /// 014b) — the egui console's `egui-winit` event feed, seeing every raw
 /// winit `WindowEvent` on a real window (the C++ `runEvents`'s per-event
 /// `gameEngine->handleEvent`, GameWindow.hpp:79, called AFTER the SFML
-/// input-state fold).
+/// input-state fold). Desktop/android only (the egui console + its
+/// `egui-winit` feed have no web path — D-026/D-029).
+#[cfg(not(target_os = "emscripten"))]
 type EventHook = dyn FnMut(&winit::window::Window, &winit::event::WindowEvent);
 
 // ---------------------------------------------------------------------------
@@ -370,8 +510,20 @@ pub struct Window {
     ms_update: f32,
     ms_draw: f32,
     // Real-GL backend (both `None` in headless mode):
+    #[cfg(not(target_os = "emscripten"))]
     event_loop: Option<winit::event_loop::EventLoop<()>>,
     gl: Option<GlParts>,
+    // Emscripten (issue 26c SG1): the DOM → SFML event queue the
+    // `request_animation_frame` loop drains per frame (the SFML
+    // `pollEvent` batch — `apply_event` per event, the winit path's same
+    // fold; `None` = headless / no canvas) + the attached listener
+    // closures (they MUST outlive the registration — a dropped
+    // `Closure` dangles the registered JS callback).
+    #[cfg(target_os = "emscripten")]
+    event_queue: Option<std::sync::Arc<std::cell::RefCell<Vec<Event>>>>,
+    #[cfg(target_os = "emscripten")]
+    #[allow(dead_code)] // never read — the closures must outlive the registration
+    dom_listeners: Vec<Closure<dyn FnMut(web_sys::Event)>>,
     // Android (issue 25b SG2): the `ensure_android_gl` once-only flag —
     // a GL creation failure (no GLES context) degrades to the headless
     // frames permanently (the C++'s no-GL `window == nullptr` equivalent),
@@ -411,6 +563,7 @@ impl Window {
 
     /// Create a real window + GL context. Degrades to a headless window
     /// (`gl() == None`) when no display / GPU is available.
+    #[cfg(not(target_os = "emscripten"))]
     #[must_use]
     pub fn create(width: u32, height: u32, title: &str) -> Self {
         match GlBackend::try_create(width, height, title) {
@@ -423,6 +576,44 @@ impl Window {
                 }
             }
             None => Self::new_inner(width, height, title),
+        }
+    }
+
+    /// Emscripten (issue 26c SG1): the window over the page's
+    /// `<canvas id="c">` (D-029: no winit — the canvas IS the window; the
+    /// `title` is the page's `<title>`, a no-op). Degrades to a headless
+    /// window (`gl() == None`) when the canvas is missing or WebGL2 is
+    /// unavailable (the desktop no-display / no-GPU arm). The DOM event
+    /// listeners are attached here (the queue the rAF loop drains —
+    /// `attach_web_listeners`); a GL failure still keeps the loop alive
+    /// (null frames, the android degradation's web twin).
+    #[cfg(target_os = "emscripten")]
+    #[must_use]
+    pub fn create(width: u32, height: u32, title: &str) -> Self {
+        let base = Self::new_inner(width, height, title);
+        // The canvas (the 26c.1 selector — the page MUST provide it).
+        let canvas: web_sys::HtmlCanvasElement = match web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.get_element_by_id("c"))
+            .map(|el| el.unchecked_into())
+        {
+            Some(canvas) => canvas,
+            None => return base,
+        };
+        // The DOM → SFML event queue + listeners (the winit event loop's web
+        // replacement).
+        let queue: std::sync::Arc<std::cell::RefCell<Vec<Event>>> =
+            std::sync::Arc::new(std::cell::RefCell::new(Vec::new()));
+        let dom_listeners = attach_web_listeners(&canvas, &queue);
+        // The WebGL2 context (`gl.rs` — the emscripten C API + the glow
+        // loader); a failure degrades to the headless frames (the loop
+        // still runs on the canvas).
+        let gl = GlBackend::try_create(width, height, title).map(|backend| backend.parts);
+        Self {
+            gl,
+            event_queue: Some(queue),
+            dom_listeners,
+            ..base
         }
     }
 
@@ -500,8 +691,13 @@ impl Window {
             icon_set: false,
             ms_update: 0.0,
             ms_draw: 0.0,
+            #[cfg(not(target_os = "emscripten"))]
             event_loop: None,
             gl: None,
+            #[cfg(target_os = "emscripten")]
+            event_queue: None,
+            #[cfg(target_os = "emscripten")]
+            dom_listeners: Vec::new(),
             #[cfg(target_os = "android")]
             ensure_android_gl_failed: false,
             finger_down_positions: std::collections::HashMap::new(),
@@ -710,6 +906,7 @@ impl Window {
     /// C++'s `sf::RenderWindow::setIcon` upload) via `GlParts::set_icon`.
     /// Headless (no GL): the set is recorded only (the `icon_is_set`
     /// surface stays honest in both modes).
+    #[cfg(not(target_os = "emscripten"))]
     pub fn set_icon(&mut self, image: &crate::Image) {
         self.icon_set = true;
         if let Some(gl) = self.gl.as_ref() {
@@ -721,6 +918,15 @@ impl Window {
             .expect("RGBA8 buffer matches the image size (Image invariant)");
             gl.set_icon(icon);
         }
+    }
+
+    /// Emscripten (issue 26c SG1): a browser canvas has no window icon (the
+    /// tab's favicon is the PAGE's, not the canvas's) — record the set only
+    /// (the `icon_is_set` surface stays honest; the documented web no-op).
+    #[cfg(target_os = "emscripten")]
+    pub fn set_icon(&mut self, image: &crate::Image) {
+        let _ = image;
+        self.icon_set = true;
     }
 
     #[must_use]
@@ -874,8 +1080,109 @@ impl Window {
     /// draw; }` model, via `run_app`). `on_frame` is invoked once per
     /// `about_to_wait` (i.e. once per idle frame). In headless mode it runs
     /// exactly one frame and stops.
+    #[cfg(not(target_os = "emscripten"))]
     pub fn run(self, mut on_frame: impl FnMut(&mut Window)) {
         self.run_with_event_hook(None, &mut on_frame);
+    }
+
+    /// Emscripten (issue 26c SG1): drive the `request_animation_frame` loop
+    /// (D-029 — the winit event loop's web replacement; the browser paces the
+    /// frames at the display refresh). Each rAF tick drains the DOM event
+    /// queue (`apply_event` per event — the SFML `runEvents` batch, the
+    /// winit path's same fold), invokes `on_frame`, and re-requests a frame
+    /// while `is_open`. In headless mode (no canvas) it runs exactly one
+    /// frame and stops.
+    ///
+    /// Unlike the desktop's blocking `EventLoop::run_app`, this RETURNS after
+    /// scheduling the first frame (the browser owns the loop — the winit-web
+    /// `spawn_app` shape); the frames then run until `Event::Closed` (the
+    /// `cancel_animation_frame` + self-drop in the final tick).
+    #[cfg(target_os = "emscripten")]
+    pub fn run(mut self, mut on_frame: impl FnMut(&mut Window) + 'static) {
+        let Some(queue) = self.event_queue.take() else {
+            on_frame(&mut self);
+            self.open = false;
+            return;
+        };
+        let web_window =
+            web_sys::window().expect("web window (the queue is only installed by create)");
+        struct Runner<F> {
+            window: Window,
+            on_frame: F,
+            queue: std::sync::Arc<std::cell::RefCell<Vec<Event>>>,
+            // The self-owning closure (it MUST outlive every scheduled frame —
+            // a dropped `Closure` dangles the registered rAF callback): the
+            // final tick (`Event::Closed`) takes it out, dropping the `Rc`
+            // with it (the winit `el.exit()` analogue).
+            closure: Option<Closure<dyn FnMut(f64)>>,
+            raf_id: i32,
+        }
+        let runner: std::rc::Rc<std::cell::RefCell<Runner<_>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(Runner {
+                window: self,
+                on_frame,
+                queue,
+                closure: None,
+                raf_id: 0,
+            }));
+        let closure = {
+            let runner = runner.clone();
+            // A clone for the callback (the original stays for the initial
+            // `request_animation_frame` below).
+            let ww = web_window.clone();
+            // `own_assert_unwind_safe` — the runner captures `RefCell`s (not
+            // `UnwindSafe`), and a frame callback must never unwind into JS
+            // anyway (the web build ships `panic = "abort"`).
+            Closure::own_assert_unwind_safe(move |_timestamp: f64| {
+                let mut r = runner.borrow_mut();
+                // A plain `&mut Runner` (not the `RefMut` smart pointer) so
+                // the disjoint field borrows below are place projections.
+                let r = &mut *r;
+                // Drain the DOM event batch into a local (the SFML
+                // `runEvents` batch — `apply_event` per event, the winit
+                // path's same fold).
+                let events: Vec<Event> = r.queue.borrow_mut().drain(..).collect();
+                for event in events {
+                    Window::apply_event(&mut r.window, event);
+                }
+                // The per-frame handler (disjoint field borrows).
+                {
+                    let on_frame = &mut r.on_frame;
+                    let window = &mut r.window;
+                    on_frame(window);
+                }
+                if r.window.open {
+                    let id = ww
+                        .request_animation_frame(
+                            r.closure
+                                .as_ref()
+                                .unwrap()
+                                .as_ref()
+                                .unchecked_ref::<js_sys::Function>(),
+                        )
+                        .expect("request_animation_frame");
+                    r.raf_id = id;
+                } else {
+                    // `Event::Closed`: stop the loop — cancel the pending
+                    // frame (if any) and drop the self-owning closure.
+                    let _ = ww.cancel_animation_frame(r.raf_id);
+                    r.closure.take();
+                }
+            })
+        };
+        runner.borrow_mut().closure = Some(closure);
+        let id = web_window
+            .request_animation_frame(
+                runner
+                    .borrow()
+                    .closure
+                    .as_ref()
+                    .unwrap()
+                    .as_ref()
+                    .unchecked_ref::<js_sys::Function>(),
+            )
+            .expect("request_animation_frame");
+        runner.borrow_mut().raf_id = id;
     }
 
     /// The [`Self::run`] variant with a per-window-event hook (issue 014b —
@@ -886,6 +1193,9 @@ impl Window {
     /// `WindowEvent` (real windows only — headless runs one frame without
     /// an event loop and never fires it) with the GL backend's winit window
     /// (the `egui-winit` state's window; `None` hook = plain [`Self::run`]).
+    /// Desktop/android only (the egui console's `egui-winit` feed has no web
+    /// path — D-026/D-029).
+    #[cfg(not(target_os = "emscripten"))]
     pub fn run_with_event_hook(
         mut self,
         on_event: Option<Box<EventHook>>,
@@ -974,13 +1284,16 @@ impl Window {
 /// point — `MainEventsCleared` was removed in winit 0.29). `on_event` is the
 /// issue-014b raw-event hook (C++ `runEvents`'s per-event
 /// `gameEngine->handleEvent`, GameWindow.hpp:79 — called AFTER the SFML
-/// input-state fold, the C++'s order).
+/// input-state fold, the C++'s order). Desktop/android only (D-029: the web
+/// path has no winit loop — the rAF `Runner` in [`Window::run`]).
+#[cfg(not(target_os = "emscripten"))]
 struct RunHandler<'a, F> {
     window: &'a mut Window,
     on_event: Option<Box<EventHook>>,
     on_frame: &'a mut F,
 }
 
+#[cfg(not(target_os = "emscripten"))]
 impl<F: FnMut(&mut Window)> ApplicationHandler<()> for RunHandler<'_, F> {
     fn resumed(&mut self, el: &ActiveEventLoop) {
         // The C++ loop model is an UNCAPPED spin: SFML's `poll()` is
@@ -1075,6 +1388,192 @@ impl<F: FnMut(&mut Window)> ApplicationHandler<()> for RunHandler<'_, F> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Emscripten (issue 26c SG1) — the DOM event listeners (the winit event
+// loop's web replacement, D-029)
+// ---------------------------------------------------------------------------
+
+/// Register one DOM listener; keep the `Closure` in `listeners` ONLY when the
+/// registration succeeded (a dropped `Closure` dangles the JS callback).
+/// `own_assert_unwind_safe` — the handlers capture the `RefCell` queue (not
+/// `UnwindSafe`), and a DOM event handler must never unwind into JS anyway
+/// (the web build ships `panic = "abort"`).
+#[cfg(target_os = "emscripten")]
+fn add_dom_listener(
+    target: &web_sys::EventTarget,
+    ty: &str,
+    listeners: &mut Vec<Closure<dyn FnMut(web_sys::Event)>>,
+    handler: impl FnMut(web_sys::Event) + 'static,
+) {
+    let cb = Closure::own_assert_unwind_safe(handler);
+    if target
+        .add_event_listener_with_callback(ty, cb.as_ref().unchecked_ref::<js_sys::Function>())
+        .is_ok()
+    {
+        listeners.push(cb);
+    }
+}
+
+/// The DOM client position in CANVAS coordinates (the SFML window-relative
+/// mouse/touch position — the C++ `mapPixelToCoords`'s pixel half; the
+/// canvas's bounding rect is the window origin). The web-sys stable API
+/// exposes the client coordinates as `i32` (the DOM doubles, truncated);
+/// the rect is `f64`.
+#[cfg(target_os = "emscripten")]
+fn canvas_position(canvas: &web_sys::HtmlCanvasElement, client_x: f64, client_y: f64) -> Vec2 {
+    let rect = canvas.get_bounding_client_rect();
+    Vec2::new(
+        (client_x - rect.left()) as f32,
+        (client_y - rect.top()) as f32,
+    )
+}
+
+/// Attach the DOM → SFML event listeners (the SFML `runEvents` event source):
+/// keyboard + focus/blur/resize on the `window` (the page focus, not the
+/// canvas focus), mouse + wheel + touch on the canvas (positions relative to
+/// the canvas's bounding rect). Each mapped event is pushed to the shared
+/// queue the rAF loop drains per frame. Returns the closures — the caller
+/// MUST keep them alive for the window's life.
+#[cfg(target_os = "emscripten")]
+fn attach_web_listeners(
+    canvas: &web_sys::HtmlCanvasElement,
+    queue: &std::sync::Arc<std::cell::RefCell<Vec<Event>>>,
+) -> Vec<Closure<dyn FnMut(web_sys::Event)>> {
+    let window = web_sys::window().expect("web window (attach is web-only)");
+    let mut listeners = Vec::new();
+
+    // Keyboard (the DOM `code`/`key` → SFML `Key`, `web_key_to_sfml`).
+    let q = queue.clone();
+    add_dom_listener(&window, "keydown", &mut listeners, move |e| {
+        let Some(ke) = e.dyn_ref::<web_sys::KeyboardEvent>() else {
+            return;
+        };
+        let code = web_key_to_sfml(ke.code().as_str(), ke.key().as_str());
+        if code == Key::UNKNOWN {
+            return;
+        }
+        q.borrow_mut().push(Event::KeyPressed {
+            code,
+            repeated: ke.repeat(),
+        });
+    });
+    let q = queue.clone();
+    add_dom_listener(&window, "keyup", &mut listeners, move |e| {
+        let Some(ke) = e.dyn_ref::<web_sys::KeyboardEvent>() else {
+            return;
+        };
+        let code = web_key_to_sfml(ke.code().as_str(), ke.key().as_str());
+        if code == Key::UNKNOWN {
+            return;
+        }
+        q.borrow_mut().push(Event::KeyReleased { code });
+    });
+
+    // Mouse (the DOM `button` → SFML `Button`, `web_mouse_button_to_sfml`).
+    let c = canvas.clone();
+    let q = queue.clone();
+    add_dom_listener(&window, "mousemove", &mut listeners, move |e| {
+        let Some(me) = e.dyn_ref::<web_sys::MouseEvent>() else {
+            return;
+        };
+        q.borrow_mut().push(Event::MouseMoved {
+            position: canvas_position(&c, me.client_x() as f64, me.client_y() as f64),
+        });
+    });
+    for (ty, pressed) in [("mousedown", true), ("mouseup", false)] {
+        let q = queue.clone();
+        add_dom_listener(&window, ty, &mut listeners, move |e| {
+            let Some(me) = e.dyn_ref::<web_sys::MouseEvent>() else {
+                return;
+            };
+            let Some(button) = web_mouse_button_to_sfml(me.button()) else {
+                return;
+            };
+            q.borrow_mut().push(if pressed {
+                Event::MouseButtonPressed { button }
+            } else {
+                Event::MouseButtonReleased { button }
+            });
+        });
+    }
+
+    // Wheel (the DOM `deltaY` is positive for scroll DOWN — the winit
+    // `MouseScrollDelta` sign is inverted: positive = up, so negate; the
+    // winit mapping: line deltas pass through, pixel deltas /10 — the DOM
+    // `deltaMode` constants: 0 = pixels, 1 = lines, 2 = pages (web-sys
+    // exposes the raw `u32`; pages are treated as the pixel arm)).
+    let q = queue.clone();
+    add_dom_listener(&window, "wheel", &mut listeners, move |e| {
+        let Some(we) = e.dyn_ref::<web_sys::WheelEvent>() else {
+            return;
+        };
+        let delta = if we.delta_mode() == 1 {
+            -we.delta_y() as f32
+        } else {
+            -we.delta_y() as f32 / 10.0
+        };
+        q.borrow_mut().push(Event::MouseWheelScrolled { delta });
+    });
+
+    // Touch (the `changedTouches` — the SFML touch events; the canvas CSS
+    // size is the attribute size `create` set, so no physical→logical scale
+    // — the winit path's `GlParts`-sized scale is the no-op 1.0 here).
+    for (ty, kind) in [
+        ("touchstart", 0u8),
+        ("touchmove", 1),
+        ("touchend", 2),
+        ("touchcancel", 2),
+    ] {
+        let c = canvas.clone();
+        let target = c.clone();
+        let q = queue.clone();
+        add_dom_listener(&target, ty, &mut listeners, move |e| {
+            let Some(te) = e.dyn_ref::<web_sys::TouchEvent>() else {
+                return;
+            };
+            let touches = te.changed_touches();
+            for i in 0..touches.length() {
+                let Some(touch) = touches.get(i) else {
+                    continue;
+                };
+                let finger = touch.identifier().max(0) as u32;
+                let position =
+                    canvas_position(&c, touch.client_x() as f64, touch.client_y() as f64);
+                q.borrow_mut().push(match kind {
+                    0 => Event::TouchBegan { finger, position },
+                    1 => Event::TouchMoved { finger, position },
+                    _ => Event::TouchEnded { finger },
+                });
+            }
+        });
+    }
+
+    // Focus / blur (the SFML `GainedFocus` / `LostFocus`).
+    let q = queue.clone();
+    add_dom_listener(&window, "focus", &mut listeners, move |_e| {
+        q.borrow_mut().push(Event::GainedFocus);
+    });
+    let q = queue.clone();
+    add_dom_listener(&window, "blur", &mut listeners, move |_e| {
+        q.borrow_mut().push(Event::LostFocus);
+    });
+
+    // Resize (the SFML `Resized` with the displayable CSS size — the
+    // framebuffer stays at the creation size: the page owns the canvas;
+    // `client_width/height` are the CSS pixel counts as `i32` — clamp to
+    // the `u32` SFML size).
+    let c = canvas.clone();
+    let q = queue.clone();
+    add_dom_listener(&window, "resize", &mut listeners, move |_e| {
+        q.borrow_mut().push(Event::Resized {
+            width: c.client_width().max(0) as u32,
+            height: c.client_height().max(0) as u32,
+        });
+    });
+
+    listeners
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1099,6 +1598,8 @@ mod tests {
     /// real event loop the frame callback runs exactly once and the hook —
     /// the egui console's `Imgui::processEvent` analogue (the C++
     /// `runEvents` per-event dispatch, GameWindow.hpp:79) — is never fired.
+    /// Desktop/android only (`run_with_event_hook` is the winit path's).
+    #[cfg(not(target_os = "emscripten"))]
     #[test]
     fn run_with_event_hook_headless_runs_one_frame_and_never_fires_the_hook() {
         use std::sync::atomic::{AtomicU32, Ordering};
@@ -1184,6 +1685,8 @@ mod tests {
         assert!(sink.read().expect("poisoned")[2].is_none());
     }
 
+    /// Desktop/android only (`map_window_event` is the winit path's).
+    #[cfg(not(target_os = "emscripten"))]
     #[test]
     fn map_window_event_touch_phases_carry_the_position() {
         use winit::dpi::PhysicalPosition;
