@@ -1,22 +1,18 @@
-// Issue 29 — the module-by-module parity audit workflow.
+// Issue 29 — the module-by-module parity audit workflow (local model only).
 //
-// WHY: the marker-grep inventory (issue 28) finds only the deviations someone
+// WHY: the marker-grep inventory (issue 28) finds only deviations someone
 // already DOCUMENTED. The 9-zone touch grid proved the dangerous ones are the
-// UNDOCUMENTED ones: C++ behavior with no Rust code at all. This workflow reads
+// UNDOCUMENTED ones: C++ behavior with no Rust code at all. This audit reads
 // BOTH sides of each module pair and reports what the port is MISSING.
 //
-// Shape, per module pair (12 pairs):
-//   <key>-cpp   (scout)    read the C++, produce a mechanical behavior inventory
-//   <key>-rust  (scout)    read the Rust, produce the implemented-behavior list
-//   <key>-diff  (worker)   adversarially diff the two, WRITE the full report to
-//                          .agents/audits/<key>.md, return a short summary only
+// Shape: ONE child per module pair. The child reads the C++ module and its
+// Rust counterpart itself, diffs them adversarially, WRITES the full report to
+// .agents/audits/<key>.md, and returns a short summary. Bounded to 2
+// concurrent children (operator directive), and every child is pinned to
+// `worker` + `model: local/local` — builtin agents inherit the session model,
+// which is NOT what we want here.
 //
-// Bounded waves: 2 pairs per wave (4 concurrent scouts), so the local model
-// server is never asked for 24 simultaneous children. Every diff report is
-// written to disk by the child, so nothing is lost if a stage fails; the
-// workflow returns only compact summaries and the parent reads the files.
-//
-// All paths in PAIRS were verified to exist before this workflow was committed.
+// 12 pairs x 1 child = 12 children, 2 at a time = 6 waves.
 
 const PAIRS = [
   { key: "menu", cpp: "src/SSVOpenHexagon/Core/MenuGame.cpp",
@@ -57,74 +53,49 @@ const PAIRS = [
     note: "the dialog state machine, input gating (setIgnoreAllInputs), the draw" },
 ];
 
-function cppTask(p) {
+function auditTask(p) {
   return [
-    "You are auditing ONE C++ module of a game being ported to Rust (repo /home/gary/dev/SSVOpenHexagon).",
-    "Read this C++ module COMPLETELY: " + p.cpp,
+    "You are auditing ONE module pair of a C++ -> Rust 1:1 game port (repo /home/gary/dev/SSVOpenHexagon).",
+    "The operator wants a literal 1:1 Rust port as the base, so ANY C++ behavior with no Rust counterpart is a defect.",
+    "",
+    "C++ module (read COMPLETELY): " + p.cpp,
+    "Rust counterpart(s) (read COMPLETELY): " + p.rust,
     "Audit focus: " + p.note + ".",
     "",
-    "Produce a BEHAVIOR INVENTORY - mechanical, exhaustive, not a prose summary:",
-    "1. Every member function: name, what it DOES in one line, and its file:line.",
-    "2. Every event handler / subscription / risingEdge poll: the exact trigger and the effect.",
-    "3. Every global / file-static / static member it READS (the C++ global mutable state) and every one it WRITES.",
-    "4. Every side effect on shared state: files written, network calls, sounds played, screenshots taken, window operations.",
-    "5. Every state transition it performs (state-machine edges).",
+    "METHOD (do this in order, and be mechanical):",
+    "1. Read the C++ module fully. Build a BEHAVIOR INVENTORY: every member function (what it does, file:line);",
+    "   every event handler / subscription / risingEdge poll and its trigger; every global / file-static /",
+    "   static member it reads or writes; every side effect (files, network, sounds, screenshots, window ops);",
+    "   every state transition.",
+    "2. Read the Rust counterpart(s) fully. Build the IMPLEMENTED list: every fn (what it does, file:line),",
+    "   every input/global it reads, every explicit stub/no-op/TODO (quote the marker), and anything present",
+    "   in Rust that the C++ lacks.",
+    "3. DIFF them adversarially. For each C++ behavior, decide: PRESENT (maybe renamed), MISSING, or SEAM",
+    "   (a deliberate, documented platform gate).",
     "",
-    "Output a markdown checklist grouped by function. Do NOT discuss Rust: this list is the ground truth",
-    "the Rust side will be compared against. Exhaustiveness matters far more than brevity.",
-  ].join("\n");
-}
-
-function rustTask(p) {
-  return [
-    "You are auditing the RUST side of a C++ -> Rust port (repo /home/gary/dev/SSVOpenHexagon).",
-    "Read these Rust sources COMPLETELY: " + p.rust,
-    "They port: " + p.cpp + " (audit focus: " + p.note + ").",
+    "RULES:",
+    "- Report MISSING BEHAVIOR, not missing comments. Behavior is missing when the C++ performs it and no",
+    "  Rust code performs it — even if nobody documented the omission. That is the entire point.",
+    "- VERIFY each suspected absence with a grep yourself; record the exact command and its result as proof.",
+    "- Deliberate seams are NOT defects, but list them separately with the marker that declares them:",
+    "  feature-gated Steam/Discord/network, headless no-ops, the Android-excluded ImGui console, test doubles.",
+    "- Risk per missing item: uservisible-gameplay | uservisible-cosmetic | determinism | data-format | internal | none.",
+    "- Cite file:line on BOTH sides for every finding. If a citation you read in a comment is wrong, say so",
+    "  (drifting line numbers and uncited claims have already been found in this repo — flag them).",
     "",
-    "Produce an IMPLEMENTED BEHAVIOR LIST - mechanical and exhaustive:",
-    "1. Every fn (pub and private): name, one line on behavior, and its file:line.",
-    "2. Every place the port READS input / global state (the analogue of the C++ globals).",
-    "3. Everything explicitly stubbed / no-op / TODO: quote the marker text and give file:line.",
-    "4. Any behavior the Rust side has that the C++ side does not have.",
+    "OUTPUT: write the full report to .agents/audits/" + p.key + ".md (create the directory if needed) with:",
+    "## MISSING   a table, highest risk first: item | C++ evidence (file:line) | absence proof (command + result) | risk",
+    "## SEAMS     accepted deviations with their markers",
+    "## DIFFERENT present but renamed or behaviorally different",
+    "## VERDICT   one line: does this pair pass 1:1; if not, the single most important gap",
     "",
-    "Do NOT discuss the C++ side. This list is compared against the C++ inventory.",
-  ].join("\n");
-}
-
-function diffTask(p, cppInventory, rustInventory) {
-  return [
-    "You are the ADVERSARIAL DIFF for ONE module pair of a 1:1 C++ -> Rust port.",
-    "Pair: " + p.cpp + "  ->  " + p.rust,
-    "Audit focus: " + p.note + ".",
+    "Do NOT modify any file other than .agents/audits/" + p.key + ".md. Do NOT run git commands that change state,",
+    "do not commit, do not run cargo builds (this is a reading audit).",
     "",
-    "Below are two independent behavior inventories, each produced by reading one side.",
-    "Your job: find everything the C++ does that the Rust does NOT do.",
-    "",
-    "Rules:",
-    "- Report MISSING BEHAVIOR, not missing comments. Behavior is missing when the C++ performs it and",
-    "  no Rust code performs it - even if nobody documented the omission. That is the whole point.",
-    "- VERIFY absence yourself with a grep (you have read/grep/bash when in doubt) and include the exact",
-    "  command plus its result as the absence proof for each missing item.",
-    "- Do NOT count deliberate platform seams as missing (feature-gated Steam/Discord/network, headless",
-    "  no-ops, the Android-excluded ImGui console, test doubles). List those separately with their marker.",
-    "- Risk per item: uservisible-gameplay | uservisible-cosmetic | determinism | data-format | internal | none.",
-    "",
-    "WRITE THE FULL REPORT to .agents/audits/" + p.key + ".md (create the directory if needed) with these sections:",
-    "## MISSING   - a table, highest risk first: item | C++ evidence (file:line) | absence proof (command + result) | risk",
-    "## SEAMS     - accepted deviations with the marker that declares them",
-    "## DIFFERENT - present but renamed or behaviorally different",
-    "## VERDICT   - one line: does this pair pass 1:1; if not, the single most important gap",
-    "",
-    "Then RETURN (as your final message) a SHORT summary only: the verdict line, the count of missing",
-    "items by risk, and the top 5 gaps one line each. The full table lives in the file.",
+    "Then RETURN as your final message a SHORT summary only: the VERDICT line, the missing-item count by risk,",
+    "and the top 5 gaps (one line each). The full table stays in the file.",
     "",
     "Be exhaustive in the FILE: a short report that misses a load-bearing gap is a failure.",
-    "",
-    "=== C++ INVENTORY ===",
-    cppInventory,
-    "",
-    "=== RUST INVENTORY ===",
-    rustInventory,
   ].join("\n");
 }
 
@@ -132,20 +103,14 @@ const WAVE = 2;
 const summaries = [];
 for (let i = 0; i < PAIRS.length; i += WAVE) {
   const batch = PAIRS.slice(i, i + WAVE);
-  const specs = [];
-  for (const p of batch) {
-    specs.push({ key: p.key + "-cpp", agent: "scout", task: cppTask(p) });
-    specs.push({ key: p.key + "-rust", agent: "scout", task: rustTask(p) });
-  }
-  const inventories = await runs.all(specs);
-  const diffSpecs = batch.map((p, j) => ({
-    key: p.key + "-diff",
+  const results = await runs.all(batch.map((p) => ({
+    key: p.key,
     agent: "worker",
-    task: diffTask(p, inventories[2 * j].output, inventories[2 * j + 1].output),
-  }));
-  const diffs = await runs.all(diffSpecs);
+    model: "local/local",
+    task: auditTask(p),
+  })));
   for (let j = 0; j < batch.length; j++) {
-    summaries.push({ pair: batch[j].key, ok: diffs[j].ok, summary: diffs[j].output });
+    summaries.push({ pair: batch[j].key, ok: results[j].ok, summary: results[j].output });
   }
 }
 return summaries;
