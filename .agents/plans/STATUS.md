@@ -9,6 +9,20 @@ Mapping references: `.agents/plans/001-rust-port/mapping/`
 Task specs: `.agents/tasks/`
 Decisions log: `.agents/plans/001-rust-port/DECISIONS.md`
 
+## Branch state (2026-10-16)
+
+- `master` — the trunk; all 25x Android lanes + the audio lane land here.
+- `windows-testing` (upstream) — **done**; its two commits were
+  cherry-picked onto master with authorship preserved (`8e461c90`,
+  `3bf42b7d`) and reconciled per D-027 (its `gl_text.rs` retired in favor
+  of the on-device-verified `gl_passes`/`glyphs` pipeline; WGL handle fix,
+  FPS pacing, NDC-y orientation, menu centering, chdir all taken).
+  Nothing on it remains un-integrated (`git log master..origin/windows-testing`
+  is non-empty only because the cherry-picks carry new hashes — verify by
+  content, not by hash).
+- `wasm` (upstream) — the user's branch, to be merged LATER (D-029 keeps
+  26x lanes off master until then).
+
 ## Issues
 
 | # | Title | Depends | State | Commit | Notes |
