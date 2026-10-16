@@ -462,9 +462,15 @@ impl GlPasses {
                 created
             }
         };
-        // (Re-)upload on first use OR atlas growth (the buffer's top rows
-        // are unchanged — the full re-upload is the rare growth path).
-        if self.atlas_size != (w, h) {
+        // (Re-)upload on first use, atlas growth, OR any new-glyph
+        // insertion (the on-device finding: the size-only gate missed the
+        // no-growth insertions — the glyphs first used after the initial
+        // upload (V, T, R, N on the real menu) had cells + UVs but their
+        // pixels never reached the texture: invisible letters). The full
+        // re-upload is rare (1024×1024 RGBA8 ≈ 4 MB) and the glyph
+        // insertions during steady-state play are the level's glyph set
+        // warming up.
+        if self.atlas_size != (w, h) || self.store.atlas_mut().take_dirty() {
             unsafe {
                 gl.bind_texture(glow::TEXTURE_2D, Some(tex));
                 gl.tex_image_2d(

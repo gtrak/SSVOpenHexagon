@@ -111,6 +111,12 @@ pub struct GlyphAtlas {
     height: u32,
     /// RGBA8, top-down, `width * height * 4` bytes.
     pixels: Vec<u8>,
+    /// Pixels changed since the last GL upload (any reserve/paint/grow).
+    /// The uploader's gate — the size-only gate missed the no-growth
+    /// insertions (on-device finding: the glyphs first used AFTER the
+    /// initial upload — V, T, R, N on the real menu — had cells + UVs but
+    /// never-reached pixels: invisible letters).
+    dirty: bool,
     slots: Vec<Slot>,
     cursor_x: u32,
     cursor_y: u32,
@@ -127,6 +133,7 @@ impl GlyphAtlas {
             width: ATLAS_START_W,
             height: ATLAS_START_H,
             pixels: vec![0u8; (ATLAS_START_W * ATLAS_START_H * 4) as usize],
+            dirty: false,
             slots: Vec::new(),
             cursor_x: 0,
             cursor_y: 0,
@@ -145,6 +152,12 @@ impl GlyphAtlas {
     #[must_use]
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
+    }
+
+    /// Take the dirty flag (the uploader's re-upload gate; `true` also on
+    /// the very first upload — the empty atlas starts dirty).
+    pub fn take_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.dirty)
     }
 
     /// The reserved slot at `idx` (the `reserve` return's index).
@@ -184,6 +197,7 @@ impl GlyphAtlas {
             w,
             h,
         });
+        self.dirty = true;
         self.cursor_x += sw;
         self.row_height = self.row_height.max(h);
         (pos, idx)
@@ -196,6 +210,7 @@ impl GlyphAtlas {
     /// # Panics
     /// If `rgba.len() != w * h * 4` (the slot's content size).
     pub fn paint(&mut self, idx: usize, rgba: &[u8]) {
+        self.dirty = true;
         let slot = self.slots[idx];
         assert_eq!(
             rgba.len(),
@@ -212,6 +227,7 @@ impl GlyphAtlas {
 
     /// Grow the height (the content above is kept; the new rows are zero).
     fn grow_height(&mut self, min_h: u32) {
+        self.dirty = true;
         let new_h = (self.height * 2).max(min_h).min(ATLAS_MAX);
         assert!(
             min_h <= ATLAS_MAX,
@@ -229,6 +245,7 @@ impl GlyphAtlas {
     /// content-preserving, in the original order — the slot indices stay
     /// valid, the consumers' `paint`/coordinate reads see the new cells).
     fn grow_width(&mut self, min_w: u32) {
+        self.dirty = true;
         let mut new_w = ATLAS_START_W;
         while new_w < min_w {
             new_w *= 2;
@@ -445,6 +462,11 @@ impl GlyphStore {
     #[must_use]
     pub fn atlas(&self) -> &GlyphAtlas {
         &self.atlas
+    }
+
+    /// The shared atlas, mutably (the uploader's dirty-take).
+    pub fn atlas_mut(&mut self) -> &mut GlyphAtlas {
+        &mut self.atlas
     }
 
     /// The `(font, size)` line metrics (SFML's `Font::getLineMetrics` —
