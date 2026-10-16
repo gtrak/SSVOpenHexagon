@@ -114,6 +114,11 @@ pub fn main_server(base_dir: &Path) -> i32 {
         false, /* window */
         Arc::new(NullProfiles),
         config.clone(),
+        // C++ main.cpp:199 — `mainServer` also constructs a `steam_manager`
+        // (the NoSteam/feature-split backend; the server path never
+        // satisfies Steam requests without a client, exactly as the C++
+        // headless server degrades).
+        crate::steam::steam_manager(),
     );
     let executor = GameReplayExecutor {
         game: composed.game.clone(),
