@@ -756,3 +756,22 @@ Route chosen (in order):
    and it would also serve desktop-less builds. The operator explicitly
    accepts either outcome, so (1) is tried first and the fallback is
    escalated on evidence rather than assumed.
+
+## D-032 — Input zones are platform-neutral by design (wasm + desktop mouse parity)
+
+The 9-zone touch grid (the C++ `MenuGame::update()` block, MenuGame.cpp:2795-2835,
+which our 25b lane dropped as an "out of scope" deviation — see D-033) must be
+implemented in the MENU layer (`crates/oh-menu`), reading a finger-position/count
+seam, never in the android/winit layer. Reason (operator): the same zone behavior
+is wanted in the WASM build and on DESKTOP via mouse events, so the zone logic has
+to sit where all three platforms can feed it.
+
+Consequences:
+- `oh-menu` owns the grid math + dispatch (ok/left/right/up/down), 1:1 with the
+  C++, including the one-finger rule and the `touchDelay` debounce.
+- Platforms provide finger positions: android touch (window seam, done in 25b SG5),
+  desktop — a later step, mouse press/release mapped to a synthetic single finger,
+  gated so it cannot double-fire with the existing menu mouse handling,
+  wasm — same seam when the wasm branch merges (D-029).
+- Any future platform input work must feed this seam rather than adding
+  platform branches inside the menu.
