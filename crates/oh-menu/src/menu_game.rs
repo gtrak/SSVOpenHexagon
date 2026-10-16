@@ -1885,6 +1885,30 @@ impl MenuGame {
         // MenuGame.cpp:2198). Outside the `borrow_mut` block above: the
         // action methods re-borrow `shared`.
         let touch = self.shared.borrow().touch().clone();
+        // 025j PROBE (temporary): periodic menu state + every zone dispatch.
+        #[cfg(target_os = "android")]
+        {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static MP: AtomicU64 = AtomicU64::new(0);
+            let c = MP.fetch_add(1, Ordering::Relaxed) + 1;
+            let (st, ign) = {
+                let s = self.shared.borrow();
+                (s.state, s.ignore_inputs)
+            };
+            if c % 30 == 0 {
+                eprintln!(
+                    "[025j-menu] state={st:?} ignore={ign} fingers={} pos={:?}",
+                    touch.finger_down_count(),
+                    touch.finger_down_positions()
+                );
+            }
+            if touch.finger_down_count() > 0 && c % 30 != 0 {
+                eprintln!(
+                    "[025j-menu] TOUCH state={st:?} ignore={ign} pos={:?}",
+                    touch.finger_down_positions()
+                );
+            }
+        }
         if touch.finger_down_count() == 1 {
             let (w, h) = self.window_size();
             let w_third = w / 3.0;
