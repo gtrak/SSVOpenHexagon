@@ -648,10 +648,32 @@ impl MenuDraw {
 
 /// C++ `Utils::getFontHeight(font, charSize)` (FontHeight.cpp:11-20): the
 /// global-bounds height of the probe string at the given char size.
+///
+/// issue 025h — SFML's `Text::getGlobalBounds()` (the C++ `updateHeight`
+/// probe, MenuGame.cpp:3236-3244) is the INK union of the glyph outline
+/// bounds (each glyph's `bounds`, baseline-relative) — NOT the line
+/// metrics: for openSquare the probe's ink union is ≈0.64× the char size
+/// while `ascent − descent` is exactly 1.0×. The port's stale line-height
+/// probe (`Text::measure()`'s `h = ascent - descent`) ran the C++ layout
+/// math (e.g. `numbersHeight = bottomHeight − 2·txtLoadBig.height`,
+/// MenuGame.cpp:4212) on the 1.0× height and pulled the load-results
+/// values up onto their labels — the phone's "PACKS 8OADED" overlap
+/// 025g's wide-aspect char sizes (loadBig 70) exposed.
 fn font_height(font: &Font, char_size: u32) -> f32 {
-    let probe = Text::new(font.clone(), "ABCDEFGHILMNOPQRSTUVZ:", char_size);
-    let (_, h, _) = probe.measure();
-    h
+    // The C++ probe string (FontHeight.cpp:13).
+    const PROBE: &str = "ABCDEFGHILMNOPQRSTUVZ:";
+    let px = char_size as f32;
+    let mut top = f32::INFINITY;
+    let mut bottom = f32::NEG_INFINITY;
+    for ch in PROBE.chars() {
+        let m = font.glyph_metrics(ch, px);
+        // fontdue's `bounds.ymin` is the bottom-edge offset in typography
+        // coordinates (y up, baseline 0); the top edge sits at
+        // `ymin + height` (the glyphs.rs pin, :418-421).
+        top = top.min(m.bounds.ymin);
+        bottom = bottom.max(m.bounds.ymin + m.bounds.height);
+    }
+    bottom - top
 }
 
 // ---------------------------------------------------------------------------
@@ -4014,6 +4036,9 @@ mod tests {
     #[derive(Default)]
     struct Recording {
         calls: Vec<String>,
+        /// issue 025h — the drawn texts' (string, position) pairs, so the
+        /// load-results position pin can read the actual coordinates.
+        texts: Vec<(String, Vec2)>,
     }
 
     impl DrawTarget for Recording {
@@ -4033,8 +4058,9 @@ mod tests {
         fn draw_sprite(&mut self, _s: &Sprite) {
             self.calls.push("sprite".into());
         }
-        fn draw_text(&mut self, _t: &Text, _s: RenderStates) {
+        fn draw_text(&mut self, t: &Text, _s: RenderStates) {
             self.calls.push("text".into());
+            self.texts.push((t.get_string().into(), t.get_position()));
         }
         fn draw_rectangle(&mut self, _r: &RectangleShape, _s: RenderStates) {
             self.calls.push("rect".into());
@@ -4791,5 +4817,143 @@ mod tests {
         let mut b = Recording::default();
         draw(&menu, &mut app, &mut b);
         assert_eq!(a.calls, b.calls, "two draws of the same state match");
+    }
+
+    /// issue 025h — the load-results counter positions run the C++
+    /// `drawLoadResults` formula (MenuGame.cpp:4207-4242) on the INK font
+    /// heights (the C++ `updateHeight` probe: `getGlobalBounds().height`
+    /// of "ABCDEFGHILMNOPQRSTUVZ:"), so the value sits BELOW its label at
+    /// any window aspect:
+    ///
+    /// * the phone's actual 1530×678 (025g's wide space: w ≈ 1733.1,
+    ///   h = 768, the non-fourByThree loadBig 70 / loadSmall 24 sizes),
+    /// * the desktop's 1024×768 (the fourByThree 56/16 sizes), and
+    /// * the square-ish 768×768 (maps to the same 1024×768 space).
+    ///
+    /// Pre-025h the port's probe returned the line height (exactly the
+    /// char size for openSquare — `ascent − descent` = 1.0×) instead of
+    /// the ink union (≈0.64×): `numbersHeight = bottomHeight −
+    /// 2·hLoadBig` then landed the value ~18px ABOVE its label on the
+    /// phone — the "PACKS 8OADED" / "ER0RS" overlap the device screenshot
+    /// caught.
+    #[test]
+    fn load_results_counters_value_below_label_at_two_window_sizes() {
+        let f = font();
+        for (win_w, win_h) in [(1530.0, 678.0), (1024.0, 768.0), (768.0, 768.0)] {
+            let window = oh_menu::FakeWindow::new();
+            window.set_size(win_w, win_h);
+            let menu = Rc::new(MenuGame::new(
+                FakeAssets::new(),
+                FakeConfig::new(),
+                Rc::new(NoopNetwork),
+                oh_menu::RecordingAudio::new(),
+                Rc::new(oh_menu::NoopTouch),
+                window,
+                None,
+                None,
+                None,
+                None,
+                Rc::new(oh_menu::layout::LinearFontHeight),
+            ));
+            {
+                let mut s = menu.shared().borrow_mut();
+                s.state = States::LoadingScreen;
+            }
+            let mut app = MenuDraw::new(&f, &f);
+            let mut rec = Recording::default();
+            draw(&menu, &mut app, &mut rec);
+
+            // The C++ formula (MenuGame.cpp:4207-4242), on the
+            // `refresh_view` space + the ink probe heights (`font_height`
+            // = the C++ `updateHeight`'s `getFontHeight`).
+            let (w, h, fbt, _) = layout::refresh_view(win_w, win_h);
+            let sizes = layout::char_sizes(fbt);
+            let h_ls = font_height(&f, sizes.load_small as u32);
+            let h_lb = font_height(&f, sizes.load_big as u32);
+            let label_y = h / 2.0 - h / 15.0 + 5.0 - h_ls;
+            let value_y = h / 2.0 + h / 15.0 - h_lb * 2.0;
+
+            // The regression itself: the value BELOW its label (clearing
+            // the label's ink bottom), not overlapping it.
+            assert!(
+                value_y >= label_y + h_ls,
+                "{win_w}×{win_h}: value y {value_y:.2} must clear the label's ink bottom {label_y:.2}+{h_ls:.2}"
+            );
+
+            // `render_text_centered` stores center − width/2; the width at
+            // the same char size gives the center back.
+            let width_of = |s: &str, size: u32| -> f32 {
+                Text::new(f.clone(), s.to_string(), size).measure().0
+            };
+
+            // The three counter labels: the C++ `textOffset` centers
+            // ((w−3·xOffset)/2, (w−xOffset)/2, (w+xOffset)/2, xOffset =
+            // w/4) at the C++ `topHeight`.
+            let labels = [
+                ("PACKS LOADED", (w - 3.0 * (w / 4.0)) / 2.0),
+                ("LEVELS LOADED", (w - (w / 4.0)) / 2.0),
+                ("ASSETS LOADED", (w + (w / 4.0)) / 2.0),
+            ];
+            for (label, cx) in labels {
+                let (_, pos) = rec
+                    .texts
+                    .iter()
+                    .find(|(t, _)| t == label)
+                    .unwrap_or_else(|| panic!("label {label:?} not drawn at {win_w}×{win_h}"));
+                let cx_rec = pos.x + width_of(label, sizes.load_small as u32) / 2.0;
+                let ly = pos.y;
+                assert!(
+                    (cx_rec - cx).abs() < 0.5,
+                    "{label}: center x {cx_rec:.2} != C++ {cx:.2} at {win_w}×{win_h}"
+                );
+                assert!(
+                    (ly - label_y).abs() < 0.5,
+                    "{label}: y {ly:.2} != C++ topHeight {label_y:.2} at {win_w}×{win_h}"
+                );
+            }
+
+            // The four "0" counters (packs/levels/assets/errors, all zero
+            // on the default `LoadResults`): one per `textOffset` column
+            // at the C++ `numbersHeight`.
+            let zeroes: Vec<_> = rec
+                .texts
+                .iter()
+                .filter(|(t, _)| t == "0")
+                .collect();
+            assert_eq!(zeroes.len(), 4, "the four 0-counters at {win_w}×{win_h}");
+            let cols = [
+                (w - 3.0 * (w / 4.0)) / 2.0,
+                (w - (w / 4.0)) / 2.0,
+                (w + (w / 4.0)) / 2.0,
+                (w + 3.0 * (w / 4.0)) / 2.0,
+            ];
+            for (i, (_, pos)) in zeroes.iter().enumerate() {
+                let cx_rec = pos.x + width_of("0", sizes.load_big as u32) / 2.0;
+                let col_x = cols[i];
+                let cy = pos.y;
+                assert!(
+                    (cx_rec - col_x).abs() < 0.5,
+                    "counter {i}: center x {cx_rec:.2} != C++ {col_x:.2} at {win_w}×{win_h}"
+                );
+                assert!(
+                    (cy - value_y).abs() < 0.5,
+                    "counter {i}: y {cy:.2} != C++ numbersHeight {value_y:.2} at {win_w}×{win_h}"
+                );
+            }
+
+            // The "NO LOAD ERRORS" line: the C++ `bottomHeight +
+            // 1.75·txtLoadSmall.height`.
+            let (_, none_pos) = rec
+                .texts
+                .iter()
+                .find(|(t, _)| t == "NO LOAD ERRORS")
+                .unwrap_or_else(|| panic!("NO LOAD ERRORS not drawn at {win_w}×{win_h}"));
+            let none_y = h / 2.0 + h / 15.0 + h_ls * 1.75;
+            assert!(
+                (none_pos.y - none_y).abs() < 0.5,
+                "NO LOAD ERRORS: y {} vs C++ {} at {win_w}×{win_h}",
+                none_pos.y, none_y
+            );
+        }
     }
 }
