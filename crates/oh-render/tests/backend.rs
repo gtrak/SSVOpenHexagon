@@ -16,7 +16,7 @@ use oh_render::window::{winit_button_to_sfml, winit_key_to_sfml, Window};
 use oh_render::{Button, Key, Vec2};
 use std::path::Path;
 use winit::event::MouseButton;
-use winit::keyboard::{Key as WKey, KeyCode, KeyLocation, NamedKey, PhysicalKey};
+use winit::keyboard::{Key as WKey, KeyCode, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
 
 // ---------------------------------------------------------------------------
 // Verification item 3 — the exact SFML integer values (oracle-vectors.md:
@@ -223,6 +223,48 @@ fn winit_keys_map_to_sfml_integers() {
             KeyLocation::Left
         ),
         Key::L_BRACKET
+    );
+}
+
+/// Issue 025d (on-device finding): Android delivers the Enter key as a
+/// physical `Code(Enter)` + logical `Character("\n")` pair (the device
+/// character map emits '\n' for KEYCODE_ENTER — the winit android
+/// `to_logical` path). The mapper must return SFML's `Keyboard::Enter` for
+/// that shape: before the fix both halves fell to `Key::UNKNOWN`,
+/// `map_window_event` dropped the event, and the release edge never reached
+/// the sink — the boot screens were uncloseable with the hardware Enter on
+/// the phone (while the desktop `Named(Enter)` shape mapped fine, which is
+/// why the host tests stayed green).
+#[test]
+fn android_enter_character_form_maps_to_sfml_enter() {
+    // The exact shape the phone logged for `adb shell input keyevent 66`
+    // (physical Code(Enter), logical Character("\n"), location Standard).
+    assert_eq!(
+        winit_key_to_sfml(
+            &WKey::Character("\n".into()),
+            &PhysicalKey::Code(KeyCode::Enter),
+            KeyLocation::Standard
+        ),
+        Key::ENTER
+    );
+    // The logical-only shape (a non-`Code` physical half): the '\n'
+    // character arm still lands on ENTER.
+    assert_eq!(
+        winit_key_to_sfml(
+            &WKey::Character("\n".into()),
+            &PhysicalKey::Unidentified(NativeKeyCode::Unidentified),
+            KeyLocation::Standard
+        ),
+        Key::ENTER
+    );
+    // The desktop shape is unchanged (the `Named(Enter)` logical half).
+    assert_eq!(
+        winit_key_to_sfml(
+            &WKey::Named(NamedKey::Enter),
+            &PhysicalKey::Code(KeyCode::Enter),
+            KeyLocation::Standard
+        ),
+        Key::ENTER
     );
 }
 

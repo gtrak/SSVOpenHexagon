@@ -1170,6 +1170,10 @@ struct MenuSlotAdapter {
     /// ReleasedEdges` docs — the C++ `checkCloseBootScreens`'s
     /// event-driven seam; the `refresh_input` docs, below).
     released_edges: std::sync::Arc<std::sync::RwLock<oh_render::window::ReleasedEdges>>,
+    /// The window's entered-text sink (the C++ `runEvents`'s `TextEntered`
+    /// dispatch — the `MenuGame::handle_text_entered` docs; the
+    /// `refresh_input` docs, below).
+    entered_text: std::sync::Arc<std::sync::RwLock<Vec<char>>>,
 }
 
 impl GameState for MenuSlotAdapter {
@@ -1215,6 +1219,28 @@ impl GameState for MenuSlotAdapter {
         // advance_boot_screen` port existed but had no app-layer call
         // site — the boot screens were uncloseable on the windowed
         // path.)
+        // C++ `runEvents`'s `TextEntered` dispatch (GameWindow.hpp:42-83
+        // — the handler fires PER EVENT, before the frame's update;
+        // `refresh_input` is the once-per-frame hook the frame body runs
+        // before the update burst) over the window's ENTERED-TEXT SINK
+        // (the `oh_render::window` `entered_text_sink` docs): one char
+        // per `TextEntered` the fold applied (the winit `KeyboardInput`
+        // `text` field — the C++'s SFML `TextEntered` analogue). The
+        // `MenuGame::handle_text_entered` handler runs the C++'s
+        // `unicode < 128` filter (MenuGame.cpp:491-498); the
+        // `update()`'s `enteredChars` → `enteredStr` accumulation
+        // (`process_entered_chars`) then consumes them per frame.
+        {
+            let mut chars = self
+                .entered_text
+                .write()
+                .expect("entered-text sink poisoned");
+            if !chars.is_empty() {
+                for c in chars.drain(..) {
+                    self.menu.handle_text_entered(c);
+                }
+            }
+        }
         if let Some(edges) = self
             .released_edges
             .write()
@@ -1818,6 +1844,15 @@ impl WindowedClient {
         let released_sink: std::sync::Arc<std::sync::RwLock<oh_render::window::ReleasedEdges>> =
             std::sync::Arc::new(std::sync::RwLock::new(Default::default()));
         window.set_released_edges_sink(released_sink.clone());
+        // issue 025d: the entered-text sink (the C++ `runEvents`
+        // `TextEntered` dispatch's data path — the window's fold records
+        // one char per `TextEntered`; the menu state's `refresh_input`
+        // drain runs the C++ `MenuGame`'s `onEvent(TextEntered)` handler
+        // (MenuGame.cpp:491-498) over it). Desktop and Android: the fold
+        // records identically (the winit `KeyboardInput` `text` field).
+        let entered_text_sink: std::sync::Arc<std::sync::RwLock<Vec<char>>> =
+            std::sync::Arc::new(std::sync::RwLock::new(Vec::new()));
+        window.set_entered_text_sink(entered_text_sink.clone());
         let renderer: Option<std::sync::Arc<dyn oh_game::renderer::Renderer + 'static>> =
             Some(std::sync::Arc::new(WindowTouchRenderer {
                 positions: touch_sink,
@@ -2004,6 +2039,7 @@ impl WindowedClient {
             input_manager: menu_manager.clone(),
             menu_draw,
             released_edges: released_sink.clone(),
+            entered_text: entered_text_sink.clone(),
         });
         let game_adapter: Rc<dyn GameState> = Rc::new(GameSlotAdapter {
             game: game.clone(),
@@ -2561,6 +2597,7 @@ mod tests {
             input_manager: Rc::new(RefCell::new(Manager::new())),
             menu_draw: RefCell::new(crate::menu_draw::MenuDraw::new(&f, &f)),
             released_edges: released_edges.clone(),
+            entered_text: Arc::new(RwLock::new(Vec::new())),
         };
 
         // The C++ ctor body holds the boot gate (MenuGame.cpp:357).
@@ -2598,5 +2635,191 @@ mod tests {
         adapter.refresh_input(&InputState::new());
         assert_eq!(adapter.menu.state(), States::ETLPNewBoot);
         assert_eq!(adapter.menu.shared().borrow().ignore_inputs, 0);
+    }
+
+    /// Issue 025d (the on-device defect + fix).
+    ///
+    /// The LIVE CHAIN: the real `Window::apply_event` fold (the
+    /// `runEvents` per-event side effects) + the real
+    /// `MenuSlotAdapter::refresh_input` drain, driven TOGETHER over a
+    /// real `Window` (the sink-in-isolation test above never exercised
+    /// the fold).
+    ///
+    /// The keyboard release is the SFML `KeyReleased` the mapping
+    /// produces for the phone's Enter (the raw Android winit shape —
+    /// physical `Code(Enter)` + logical `Character("\n")` — is pinned to
+    /// that SFML event by `oh-render`'s `backend` test
+    /// `android_enter_character_form_maps_to_sfml_enter`; the pre-fix
+    /// defect was that that shape mapped to `Key::UNKNOWN`,
+    /// `map_window_event` returned `None`, and the release never reached
+    /// the sink — the phone stayed on the LoadingScreen while the host
+    /// tests stayed green).
+    ///
+    /// The touch release is the raw winit `WindowEvent::Touch`
+    /// (`TouchPhase::Ended`) the phone delivered — the full raw-event
+    /// chain: `map_window_event` → fold → sink → drain → advance.
+    #[test]
+    fn device_event_chain_advances_the_boot_screens() {
+        use oh_render::window::map_window_event;
+        use winit::dpi::PhysicalPosition;
+        use winit::event::{DeviceId, Touch, TouchPhase, WindowEvent};
+
+        let menu = Rc::new(MenuGame::new(
+            FakeAssets::new(),
+            FakeConfig::new(),
+            Rc::new(NoopNetwork),
+            oh_menu::RecordingAudio::new(),
+            None,
+            None,
+            None,
+            None,
+            Rc::new(oh_menu::layout::LinearFontHeight),
+        ));
+        let f = oh_render::font::Font::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../_RELEASE/Assets/OpenSquare-Regular.ttf"),
+        )
+        .expect("OpenSquare-Regular.ttf must load");
+        let released_edges = Arc::new(RwLock::new(ReleasedEdges::default()));
+        let adapter = MenuSlotAdapter {
+            menu: menu.clone(),
+            input_manager: Rc::new(RefCell::new(Manager::new())),
+            menu_draw: RefCell::new(crate::menu_draw::MenuDraw::new(&f, &f)),
+            released_edges: released_edges.clone(),
+            entered_text: Arc::new(RwLock::new(Vec::new())),
+        };
+        let mut window = Window::headless(800, 480);
+        window.set_released_edges_sink(released_edges.clone());
+
+        assert_eq!(adapter.menu.state(), States::LoadingScreen);
+        // The Enter release (the SFML `KeyReleased` the mapping produces
+        // for the phone's Enter — see the test docs) through the REAL
+        // fold: the sink gets the edge (the pre-fix hole — the event was
+        // dropped before the fold, so the sink stayed empty).
+        Window::apply_event(
+            &mut window,
+            oh_render::window::Event::KeyReleased { code: Key::ENTER },
+        );
+        assert!(!window.get_input_state().is_key_pressed(Key::ENTER));
+
+        // The once-per-frame drain (the C++ `runUpdate` head) —
+        // LoadingScreen → EpilepsyWarning; the gate re-arms.
+        adapter.refresh_input(&InputState::new());
+        assert_eq!(adapter.menu.state(), States::EpilepsyWarning);
+        assert_eq!(adapter.menu.shared().borrow().ignore_inputs, 1);
+
+        // The phone's touch release, verbatim from the 025d logcat
+        // (`adb shell input tap 720 540` — the `TouchPhase::Ended`;
+        // the SFML window layer's `MouseButtonReleased` seam): the FULL
+        // raw-event chain — `map_window_event` → fold → sink → drain →
+        // `play_locally()` → ETLPNewBoot (the fake assets have no
+        // profiles); the gate clears.
+        let touch_ended = WindowEvent::Touch(Touch {
+            device_id: DeviceId::dummy(),
+            phase: TouchPhase::Ended,
+            location: PhysicalPosition::new(650.0, 540.0),
+            force: None,
+            id: 0,
+        });
+        Window::apply_event(
+            &mut window,
+            map_window_event(&touch_ended).expect("TouchPhase::Ended must map"),
+        );
+        adapter.refresh_input(&InputState::new());
+        assert_eq!(adapter.menu.state(), States::ETLPNewBoot);
+        assert_eq!(adapter.menu.shared().borrow().ignore_inputs, 0);
+    }
+
+    /// Issue 025d (the acceptance flow beyond the boot gate — the 1:1 C++
+    /// path a fresh install takes to the main menu): the ENTERED-TEXT
+    /// chain — the window's `TextEntered` fold (the C++ `runEvents`
+    /// dispatch, GameWindow.hpp:42-83 — the character arrives in the
+    /// winit `KeyboardInput` `text` field on desktop AND Android, the
+    /// issue-025d logcat evidence: `text: Some("\n")` on the Enter
+    /// press) → the shared entered-text sink → the REAL
+    /// `MenuSlotAdapter::refresh_input` drain → the C++ `MenuGame`
+    /// `onEvent(TextEntered)` handler (MenuGame.cpp:491-498 — the
+    /// `unicode < 128` filter) → `enteredChars` → `update()`'s
+    /// `isEnteringText`-gated accumulation (`process_entered_chars`,
+    /// MenuGame.cpp:2862-2878) → `enteredStr`. This is what makes the
+    /// fresh-install profile creation (ETLPNewBoot → `ok_action` →
+    /// SMain) reachable from device input (the pre-fix hole: the
+    /// `TextEntered` fold arm was a no-op, so `enteredStr` could never
+    /// fill and `ok_action`'s `create_profile_from_entered` returned
+    /// false).
+    #[test]
+    fn entered_text_chain_accumulates_the_entered_str() {
+        use oh_render::window::Event;
+
+        let menu = Rc::new(MenuGame::new(
+            FakeAssets::new(),
+            FakeConfig::new(),
+            Rc::new(NoopNetwork),
+            oh_menu::RecordingAudio::new(),
+            None,
+            None,
+            None,
+            None,
+            Rc::new(oh_menu::layout::LinearFontHeight),
+        ));
+        let f = oh_render::font::Font::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../_RELEASE/Assets/OpenSquare-Regular.ttf"),
+        )
+        .expect("OpenSquare-Regular.ttf must load");
+        let entered_text = Arc::new(RwLock::new(Vec::new()));
+        let released_edges = Arc::new(RwLock::new(ReleasedEdges::default()));
+        let adapter = MenuSlotAdapter {
+            menu: menu.clone(),
+            input_manager: Rc::new(RefCell::new(Manager::new())),
+            menu_draw: RefCell::new(crate::menu_draw::MenuDraw::new(&f, &f)),
+            released_edges: released_edges.clone(),
+            entered_text: entered_text.clone(),
+        };
+        let mut window = Window::headless(800, 480);
+        window.set_released_edges_sink(released_edges.clone());
+        window.set_entered_text_sink(entered_text.clone());
+
+        // The fresh-install boot (the `device_event_chain_advances_the_
+        // boot_screens` chain): Enter release → EpilepsyWarning; finger
+        // release → `play_locally()` → ETLPNewBoot (the fake assets have
+        // no profiles — the C++ `getLocalProfilesSize() == 0` branch).
+        Window::apply_event(&mut window, Event::KeyReleased { code: Key::ENTER });
+        adapter.refresh_input(&InputState::new());
+        assert_eq!(adapter.menu.state(), States::EpilepsyWarning);
+        Window::apply_event(&mut window, Event::TouchEnded { finger: 0 });
+        adapter.refresh_input(&InputState::new());
+        assert_eq!(adapter.menu.state(), States::ETLPNewBoot);
+
+        // The phone's character keys (the winit `KeyboardInput` `text`
+        // field — `adb shell input keyevent 32/29/34` = "D" / "A" /
+        // "F"): the fold's `TextEntered` recording, then the
+        // once-per-frame drain (the C++ handler, MenuGame.cpp:491-498).
+        for c in ['D', 'A', 'F'] {
+            Window::apply_event(&mut window, Event::TextEntered { character: c });
+        }
+        adapter.refresh_input(&InputState::new());
+        assert_eq!(menu.shared().borrow().entered_chars, vec!['D', 'A', 'F']);
+        // The C++ `update()` accumulation (MenuGame.cpp:2862-2878) —
+        // alphanumeric → `enteredStr`, then `enteredChars` clears.
+        menu.update(0.01);
+        assert_eq!(menu.shared().borrow().entered_str, "DAF");
+        assert!(menu.shared().borrow().entered_chars.is_empty());
+
+        // The handler's `unicode < 128` filter (MenuGame.cpp:492): the
+        // non-ASCII char never reaches `enteredChars`.
+        Window::apply_event(&mut window, Event::TextEntered { character: 'é' });
+        adapter.refresh_input(&InputState::new());
+        assert!(menu.shared().borrow().entered_chars.is_empty());
+
+        // The C++ gate (MenuGame.cpp:2862): outside the entering-text
+        // states the accumulation is suppressed (the `enteredChars.
+        // clear()` at :2878 is UNCONDITIONAL).
+        menu.shared().borrow_mut().state = States::SMain;
+        Window::apply_event(&mut window, Event::TextEntered { character: 'x' });
+        adapter.refresh_input(&InputState::new());
+        menu.update(0.01);
+        assert_eq!(menu.shared().borrow().entered_str, "DAF");
+        assert!(menu.shared().borrow().entered_chars.is_empty());
     }
 }

@@ -125,6 +125,15 @@ pub fn winit_key_to_sfml(logical: &WKey, physical: &PhysicalKey, location: KeyLo
             KeyCode::NumpadDivide => return Key::DIVIDE,
             KeyCode::NumpadEnter => return Key::ENTER,
             KeyCode::NumpadDecimal | KeyCode::NumpadComma => return Key::PERIOD,
+            // The main Enter key (winit's `KeyCode::Enter` — "not on the
+            // Numpad", winit android `keycodes.rs`): on Android the logical
+            // half of the same event is the device-character-map's
+            // `Character("\n")` (the issue-025d on-device finding: `adb
+            // shell input keyevent 66` arrived as physical
+            // `Code(Enter)` + logical `Character("\n")`, and without this
+            // arm the mapping fell to `Key::UNKNOWN` — the event was
+            // dropped and the boot screens never saw the release).
+            KeyCode::Enter => return Key::ENTER,
             _ => {}
         }
     }
@@ -136,6 +145,13 @@ pub fn winit_key_to_sfml(logical: &WKey, physical: &PhysicalKey, location: KeyLo
                     'a'..='z' => return Key(Key::A.0 + (c as i32 - 'a' as i32)),
                     'A'..='Z' => return Key(Key::A.0 + (c as i32 - 'A' as i32)),
                     '0'..='9' => return Key(Key::NUM0.0 + (c as i32 - '0' as i32)),
+                    // The Enter key's character form (the Android device
+                    // character map emits '\n' for KEYCODE_ENTER — winit
+                    // android `to_logical`, the issue-025d on-device
+                    // finding): the physical `Code(Enter)` arm above is the
+                    // same key; this arm covers the character-form delivery
+                    // with a non-`Code` physical half.
+                    '\n' => return Key::ENTER,
                     ',' => return Key::COMMA,
                     '.' => return Key::PERIOD,
                     ';' => return Key::SEMICOLON,
@@ -399,6 +415,13 @@ pub struct Window {
     // `checkCloseBootScreens`'s event-driven seam; `None` = not
     // installed, the pre-install frames).
     released_edges_sink: Option<std::sync::Arc<std::sync::RwLock<ReleasedEdges>>>,
+    // issue 025d: the SHARED entered-text sink the menu state's
+    // `refresh_input` drains (the C++ `runEvents`'s per-event
+    // `TextEntered` dispatch — the `MenuGame`'s `onEvent(TextEntered)`
+    // handler, MenuGame.cpp:491-498, appends to `enteredChars`; the
+    // window's fold records one char per `TextEntered`, the menu's
+    // drain runs the handler's filter; `None` = not installed).
+    entered_text_sink: Option<std::sync::Arc<std::sync::RwLock<Vec<char>>>>,
 }
 
 impl Window {
@@ -507,6 +530,7 @@ impl Window {
             finger_down_positions: std::collections::HashMap::new(),
             touch_position_sink: None,
             released_edges_sink: None,
+            entered_text_sink: None,
         }
     }
 
@@ -546,6 +570,22 @@ impl Window {
         sink: std::sync::Arc<std::sync::RwLock<ReleasedEdges>>,
     ) {
         self.released_edges_sink = Some(sink);
+    }
+
+    /// issue 025d: install the shared entered-text sink (the windowed
+    /// client installs it once before the loop — the C++ `runEvents`
+    /// `TextEntered` dispatch's data path; the `Window` itself is not
+    /// shareable, as the sinks above).
+    pub fn set_entered_text_sink(&mut self, sink: std::sync::Arc<std::sync::RwLock<Vec<char>>>) {
+        self.entered_text_sink = Some(sink);
+    }
+
+    /// The entered-text sink's write half (the `TextEntered` appends —
+    /// `None` = no-op; the `apply_event` `TextEntered` arm calls it).
+    fn with_entered_text_sink(&self, f: impl FnOnce(&mut Vec<char>)) {
+        if let Some(sink) = &self.entered_text_sink {
+            f(&mut sink.write().expect("entered-text sink poisoned"));
+        }
     }
 
     /// C++ `getFingerDownPositions()` (SSVStart GameWindow.hpp:299-309):
@@ -908,7 +948,10 @@ impl Window {
     }
 
     /// The SFML `GameWindow::runEvents` side effects for one event.
-    fn apply_event(window: &mut Window, event: Event) {
+    /// `pub`: the windowed composition's tests drive the REAL fold (the
+    /// `map_window_event` → sink → `MenuSlotAdapter::refresh_input`
+    /// chain, issue 025d) with a real `Window`.
+    pub fn apply_event(window: &mut Window, event: Event) {
         match event {
             Event::Closed => window.close(),
             Event::GainedFocus => window.focus = true,
@@ -964,7 +1007,20 @@ impl Window {
                     edges.fingers.insert(finger);
                 });
             }
-            Event::MouseWheelScrolled { .. } | Event::TextEntered { .. } => {}
+            Event::MouseWheelScrolled { .. } => {}
+            // C++ `runEvents` (GameWindow.hpp:42-83): the `TextEntered`
+            // event has NO input-state fold half — it is dispatched
+            // straight to the state's `onEvent` handler (the C++
+            // `MenuGame` handler, MenuGame.cpp:491-498, appends to
+            // `enteredChars`). The port's fold records the char in the
+            // shared sink; the menu state's `refresh_input` drain runs
+            // the handler (its `unicode < 128` filter included — the
+            // handler's position, 1:1).
+            Event::TextEntered { character } => {
+                window.with_entered_text_sink(|chars| {
+                    chars.push(character);
+                });
+            }
         }
     }
 }
@@ -1039,6 +1095,24 @@ impl<F: FnMut(&mut Window)> ApplicationHandler<()> for RunHandler<'_, F> {
                 }
             }
             Window::apply_event(self.window, e);
+        }
+        // SFML dispatches a `TextEntered` event ALONGSIDE the
+        // `KeyPressed` for a character key (the C++ `runEvents` polls
+        // them as two events — the `MenuGame`'s `onEvent(TextEntered)`
+        // handler, MenuGame.cpp:491-498, appends to `enteredChars`).
+        // winit carries the character in the same `KeyboardInput`'s
+        // `text` field (the Android device keymap — the issue-025d
+        // on-device evidence: `adb input keyevent 66` arrived with
+        // `text: Some("\n")`), so the second SFML event is restored
+        // here (the `map_window_event` 1:1 single mapping stays). The
+        // `Pressed` gate: SFML's `TextEntered` fires on the press half
+        // only (the release's `text` is `None` on the device).
+        if let WindowEvent::KeyboardInput { event: ke, .. } = &event {
+            if ke.state == winit::event::ElementState::Pressed {
+                if let Some(c) = ke.text.as_deref().and_then(|s| s.chars().next()) {
+                    Window::apply_event(self.window, Event::TextEntered { character: c });
+                }
+            }
         }
         // C++ `runEvents` (GameWindow.hpp:42-83): the input state is
         // updated FIRST, then `gameEngine->handleEvent(event)` (the game's
@@ -1182,6 +1256,33 @@ mod tests {
         assert!(w.input.is_finger(1));
         assert_eq!(w.finger_down_positions(), vec![Vec2::new(700.0, 300.0)]);
         assert!(sink.read().expect("poisoned")[2].is_none());
+    }
+
+    /// issue 025d: the `TextEntered` fold arm (the C++ `runEvents`
+    /// `TextEntered` dispatch — GameWindow.hpp:42-83's no-input-state
+    /// half: the char goes straight to the state's `onEvent` handler,
+    /// which the port routes through the shared entered-text sink; the
+    /// handler's `unicode < 128` filter is the menu drain's, 1:1).
+    #[test]
+    fn text_entered_fold_appends_to_the_entered_text_sink() {
+        use std::sync::{Arc, RwLock};
+
+        let mut w = Window::headless(800, 480);
+        let sink: Arc<RwLock<Vec<char>>> = Arc::new(RwLock::new(Vec::new()));
+        w.set_entered_text_sink(sink.clone());
+
+        Window::apply_event(&mut w, Event::TextEntered { character: 'D' });
+        Window::apply_event(&mut w, Event::TextEntered { character: 'A' });
+        // The fold records the char as-is (the `unicode < 128` filter is
+        // the C++ handler's — MenuGame.cpp:492 — the menu drain's, not
+        // the fold's).
+        Window::apply_event(&mut w, Event::TextEntered { character: '中' });
+        assert_eq!(*sink.read().expect("poisoned"), vec!['D', 'A', '中']);
+
+        // No sink installed (headless / pre-install): the fold arm is a
+        // no-op (the `with_entered_text_sink` `None` arm) — no panic.
+        let mut bare = Window::headless(800, 480);
+        Window::apply_event(&mut bare, Event::TextEntered { character: 'x' });
     }
 
     #[test]

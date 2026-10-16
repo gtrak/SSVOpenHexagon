@@ -678,10 +678,16 @@ impl Shared {
     pub(crate) fn process_entered_chars(&mut self) {
         const LIMIT: usize = 18;
         let chars: Vec<char> = self.entered_chars.clone();
-        for c in &chars {
-            if self.entered_str.len() < LIMIT && (c.is_alphanumeric() || is_punctuation(c)) {
-                self.play_sound_override("beep.ogg");
-                self.entered_str.push(*c);
+        // C++ `update()` (MenuGame.cpp:2862-2878): the accumulation into
+        // `enteredStr` is gated on `isEnteringText()` (the
+        // ETLPNewBoot / ETLPNew states); the `enteredChars.clear()` is
+        // UNCONDITIONAL (:2878, outside the gate).
+        if self.is_entering_text() {
+            for c in &chars {
+                if self.entered_str.len() < LIMIT && (c.is_alphanumeric() || is_punctuation(c)) {
+                    self.play_sound_override("beep.ogg");
+                    self.entered_str.push(*c);
+                }
             }
         }
         self.entered_chars.clear();
@@ -1798,6 +1804,20 @@ impl MenuGame {
     /// sync with the focus trigger.
     pub fn set_focus_held(&self, held: bool) {
         self.shared.borrow_mut().focus_held = held;
+    }
+
+    /// C++ `game.onEvent(sf::Event::EventType::TextEntered)` handler
+    /// (MenuGame.cpp:491-498) — `if(mEvent.text.unicode < 128)
+    /// enteredChars.emplace_back(ssvu::toNum<char>(mEvent.text.unicode))`.
+    /// The app layer routes the window's `TextEntered` fold through the
+    /// shared entered-text sink; the menu state's `refresh_input` drain
+    /// calls this per recorded char (the once-per-frame equivalent of the
+    /// C++'s per-event `runEvents` dispatch — the released-edges drain's
+    /// docs, `oh_app::windowed`).
+    pub fn handle_text_entered(&self, c: char) {
+        if (c as u32) < 128 {
+            self.shared.borrow_mut().entered_chars.push(c);
+        }
     }
 
     /// C++ `checkCloseBootScreens` (any key/mouse/joypad release on a boot

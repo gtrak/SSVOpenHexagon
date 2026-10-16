@@ -130,3 +130,67 @@ fn return_to_level_selection_resets_drawer_and_ignores_one_input() {
     menu.return_to_level_selection();
     assert_eq!(menu.lvl_slct_x_offset(), 0.0);
 }
+
+/// Issue 025d: the entered-text path (the C++ `TextEntered` handler,
+/// MenuGame.cpp:491-498, + `update()`'s `isEnteringText`-gated
+/// accumulation, MenuGame.cpp:2862-2878) — the path a fresh install (no
+/// profiles → ETLPNewBoot) takes to the main menu: `handle_text_entered`
+/// (the handler — the `unicode < 128` filter) fills `enteredChars`,
+/// `update()` accumulates into `enteredStr` only in the entering-text
+/// states, and `ok_action` (the C++ `okAction`'s ETLPNewBoot branch,
+/// MenuGame.cpp:2208-2257) creates the profile and lands in SMain.
+#[test]
+fn entered_text_fills_the_entered_str_and_ok_action_creates_the_profile() {
+    // NO profiles (the fresh-install shape — the C++
+    // `getLocalProfilesSize() == 0` branch, MenuGame.cpp:1787).
+    let assets: Rc<dyn MenuAssets> = FakeAssets::new();
+    let config: Rc<dyn MenuConfig> = FakeConfig::new();
+    let audio = RecordingAudio::new();
+    let menu = MenuGame::new(
+        assets,
+        config,
+        Rc::new(NoopNetwork),
+        audio,
+        None,
+        None,
+        None,
+        None,
+        Rc::new(LinearFontHeight),
+    );
+
+    // The fresh-install boot: LoadingScreen → EpilepsyWarning →
+    // `play_locally()` → ETLPNewBoot.
+    assert_eq!(menu.state(), States::LoadingScreen);
+    menu.advance_boot_screen();
+    assert_eq!(menu.state(), States::EpilepsyWarning);
+    menu.advance_boot_screen();
+    assert_eq!(menu.state(), States::ETLPNewBoot);
+
+    // The C++ `TextEntered` handler (MenuGame.cpp:491-498): ASCII chars
+    // land in `enteredChars`; the `unicode < 128` filter drops the
+    // non-ASCII (U+00E9).
+    menu.handle_text_entered('D');
+    menu.handle_text_entered('A');
+    menu.handle_text_entered('F');
+    menu.handle_text_entered('\u{e9}');
+    // The C++ `update()` accumulation (MenuGame.cpp:2862-2878) —
+    // alphanumeric → `enteredStr`, then `enteredChars` clears.
+    menu.update(0.01);
+    assert_eq!(menu.shared().borrow().entered_str, "DAF");
+    assert!(menu.shared().borrow().entered_chars.is_empty());
+
+    // The C++ `okAction`'s ETLPNewBoot branch (MenuGame.cpp:2208-2257):
+    // the non-empty `enteredStr` creates the profile (sets it current)
+    // and lands in SMain (the main menu).
+    menu.ok_action();
+    assert_eq!(menu.state(), States::SMain);
+    assert!(menu.shared().borrow().entered_str.is_empty());
+
+    // The C++ gate (MenuGame.cpp:2862): outside the entering-text
+    // states the accumulation is suppressed (the `enteredChars.clear()`
+    // at :2878 is unconditional).
+    menu.handle_text_entered('x');
+    menu.update(0.01);
+    assert_eq!(menu.shared().borrow().entered_str, "");
+    assert!(menu.shared().borrow().entered_chars.is_empty());
+}
