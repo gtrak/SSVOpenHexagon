@@ -709,3 +709,23 @@ spec on master. Lanes must NOT create wasm branches or start the 26x
 sub-lanes without an explicit go — any web-side refactor that would touch
 shared crates (the proposed `oh-vfs` routing of oh-assets/oh-config) is
 the user's branch's call, and master-side changes there need coordination.
+
+## D-030 — issue 25 (Android) LANDED; real hardware replaced the emulator
+
+Sub-lanes 25a (workspace aarch64 check), 25b (android_main + EGL/GLES +
+assets + touch + APK), 25c (the GL draw passes: sprite/text/rectangle —
+the recovered lane plus the on-device fixes), 25d (the boot-screen input:
+the android Enter shape + the C++ TextEntered dispatch) are all landed and
+verified on a moto g power 2021 (Android 11, arm64, WiFi adb
+192.168.10.138:38721): fresh install -> boot screens (tap AND Enter) ->
+profile creation (text entry) -> main menu, with the full GL render path
+(menu text, bars, hexagon) confirmed by screenshot.
+
+Emulator policy stands (D-026/29 lineage): the emulator is torn down; its
+software-only bounded launcher (`tools/infra/emulator-start.sh`) remains
+a contingency (the 28.8 GB gfxstream OOM and the CUDA-collision incident).
+Real hardware is the sanctioned on-device verification target. The
+25c-failure postmortem's worker hygiene (commit every ~10-15 tool calls,
+histograms over image reads, stop-and-report on long sessions) is part of
+every 025x spec from 025d on and worked: 025d finished in 1/3 the context
+of the lane that died.
