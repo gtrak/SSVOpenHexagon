@@ -1,0 +1,5 @@
+=== ohdb.sqlite schema (C++ sqlite_orm, real Database.cpp) ===
+CREATE TABLE "scores" ( "id" INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL , "levelValidator" TEXT NOT NULL , "timestamp" INTEGER NOT NULL , "userSteamId" INTEGER NOT NULL , "value" REAL NOT NULL )
+CREATE TABLE sqlite_sequence(name,seq)
+CREATE TABLE "loginTokens" ( "id" INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL , "userId" INTEGER UNIQUE NOT NULL , "timestamp" INTEGER NOT NULL , "token" INTEGER NOT NULL )
+CREATE TABLE "users" ( "id" INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL , "steamId" INTEGER UNIQUE NOT NULL , "name" TEXT NOT NULL , "passwordHash" BLOB NOT NULL )

@@ -39,7 +39,30 @@ contradicting one must report it rather than silently diverge.
 - **Status:** candidates recorded in `PLAN.md`; each is finalised by the issue that
   first depends on it, and the decision is written here with evidence.
 - Pending: SFML analogue (issue 10), Lua runtime (06), JSON (03), zlib (02),
-  sodium (16), SQLite (17), ImGui (14), Steam (20), Discord (21).
+  sodium (16), ImGui (14), Steam (20), Discord (21).
+- Finalised: SQLite (17) — see D-004 (SQLite entry) below.
+
+## D-004 (SQLite entry) — `rusqlite` (bundled) for the server DB
+
+- **Question:** which Rust crate implements the C++ `Online/Database` storage
+  (sqlite_orm over the vendored SQLite C API, file `ohdb.sqlite`)?
+- **Decision:** `rusqlite` with the **`bundled`** feature (workspace dep,
+  pinned `0.31`). The schema DDL and every query are hand-transcribed from
+  `src/SSVOpenHexagon/Online/Database.cpp` (sqlite_orm's *generated* SQL is
+  the reference — see `crates/oh-net/src/database.rs` +
+  `.agents/skills/lib-sqlite.md`), so the Rust `Database` and the C++ server
+  read/write the same `ohdb.sqlite` file format.
+- **Why `bundled`:** it compiles the SQLite C engine from source via
+  `libsqlite3-sys`, mirroring the `libsodium-sys` build-from-source pattern
+  (the D-004 sodium entry) and removing a system-sqlite dev dependency from
+  the build (this box has no `libsqlite3` development package — only the
+  CLI). The bundled engine's version differs from the vendored 3.36.0, but
+  only the on-disk format matters (the schema DDL is what sqlite_orm writes
+  verbatim into `sqlite_master`, pinned byte-for-byte by
+  `tools/oracle/db_probe.cpp` + `crates/oh-net/tests/database.rs`).
+- **Evidence:** `crates/oh-net/tests/database.rs` (the `.schema` diff + the
+  per-function round-trips), `Cargo.toml` (workspace dep + the substitution
+  note).
 
 ## D-004 (SFML entry) — render backend: real-GPU stack, NOT `rsfml`
 

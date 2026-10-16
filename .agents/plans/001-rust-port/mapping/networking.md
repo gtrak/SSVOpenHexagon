@@ -299,3 +299,196 @@ surface"):
   21-test lib suite.
 - `cargo test -p oh-net`: 41 tests green (21 lib + 20 wire); clippy
   `-D warnings` clean.
+
+---
+
+# Issue 17 — client, LeaderboardCache, SQLite database (`17-net-client-db.md`)
+
+Continues the `oh-net` lane: the online **client** (`Core/HexagonClient`),
+the **leaderboard cache** (`Core/LeaderboardCache`), and the server-side
+**SQLite database** (`Online/Database`). All citations verified against
+the source at this commit (D-014); the database's ground truth is the
+probe output `tools/oracle/db_probe_schema.txt` (the skill
+`lib-sqlite.md` carries the full query map).
+
+## §8. Files & modules (issue 17)
+
+| C++ | Rust | notes |
+|---|---|---|
+| `Core/LeaderboardCache.{hpp,cpp}` (76 + 52 lines) | `crates/oh-net/src/leaderboard_cache.rs` | 6 methods + the 6-s staleness window |
+| `Core/HexagonClient.{hpp,cpp}` (992 + 207 lines) | `crates/oh-net/src/client.rs` | the pull-model client (§10) |
+| `Online/Database.{hpp,cpp}` (391 lines) | `crates/oh-net/src/database.rs` | rusqlite 0.31 `bundled` (D-004); `lib-sqlite.md` |
+| `Online/DatabaseRecords.hpp` (`User`, `LoginToken`, `Score`) | `crates/oh-net/src/db_records.rs` | `ProcessedScore` MOVED here from `shared.rs` (its C++ namespace) and re-exported from `shared.rs` — the wire path is unchanged (extend-only) |
+| — (SFML `sf::TcpSocket`, pinned fork `src/SFML/Network/TcpSocket.cpp`) | `crates/oh-net/src/client.rs`: `NetSocket` trait + `StdTcpSocket` + `FramedSocket` | the transport split, §10.1 |
+
+## §9. LeaderboardCache (`leaderboard_cache.rs`)
+
+| C++ (`Core/LeaderboardCache.cpp`) | Rust | notes |
+|---|---|---|
+| `receivedScores` `:18-24` | `received_scores` | replace the whole vector + refresh the cache time (the C++ `operator[]` creates the entry if absent) |
+| `receivedOwnScore` `:26-32` | `received_own_score` | store + refresh |
+| `requestedScores` `:34-38` | `requested_scores` | refresh only (creates the entry if absent) — the UI just (re)sent a request |
+| `shouldRequestScores` `:39-51` | `should_request_scores` | no entry → `true`; age `> 6 s` (STRICT `>`, `:48`) → `true` |
+| `getScores` `:53-57` | `get_scores` → `Option<&Vec<ProcessedScore>>` | C++ asserts `hasInformation` + `unordered_map::at` (faults when absent); the port returns `None` — the callers (`MenuGame.cpp:5608`) always check `has_information` first |
+| `getOwnScore` `:59-67` | `get_own_score` → `Option<Option<&ProcessedScore>>` | the double `Option` preserves BOTH C++ states: no entry (assert/`at` fault) vs entry-without-own-score (`nullptr`) |
+| `hasInformation` `:69-73` | `has_information` | |
+
+Documented equivalents: (1) the `HRClock::now()` calls (`Utils/Clock.hpp:14`,
+monotonic; `:20,29,36,48`) are funnelled through an injectable provider
+(default `Instant::now`) so the 6-s window is testable without sleeping;
+(2) the header's `getSupported` (`LeaderboardCache.hpp:50`) is omitted —
+it is **defined nowhere** in the C++ tree (grep-verified dead
+declaration, never called). Six in-module tests pin the window
+(incl. the exactly-6-s boundary under the strict `>`), the replace/
+refresh semantics, the optional-own-score states, and per-level
+independence.
+
+## §10. HexagonClient (`client.rs`)
+
+### §10.0 Contract correction (D-014)
+
+The issue-017 contract said the C++ client is "a background thread +
+queues" and to reproduce that model. **It is not.** `HexagonClient` owns
+a non-blocking `sf::TcpSocket` and does ALL I/O from the game loop:
+`update()` (per frame, `HexagonClient.cpp:777-794`) drives
+`sendHeartbeatIfNecessary()` (the 45-s window, `:508-530`) + one
+`receiveDataFromServer()` (`:532-775`); the only "queue" is the
+`std::deque<Event>` of APPLICATION events the caller drains with
+`pollEvent()` (`:975-984`). There is no thread in the class (the
+`<thread>` include at `:19` serves only the 50 ms ticket-poll sleep,
+`:64`). The port reproduces the pull model exactly: `update()` +
+`poll_event()`.
+
+### §10.1 The socket layer (the SFML `TcpSocket` split)
+
+The pinned fork (`src/SFML/Network/TcpSocket.cpp`, read directly) splits
+into the two layers the client uses:
+
+| C++ (fork `TcpSocket.cpp`) | Rust | notes |
+|---|---|---|
+| `send(const void*, size, sent&)` `:234-268` | `NetSocket::send` → `SendResult` | loops until all bytes are out or would-block; `Partial(n)` ONLY when some bytes went out (`:259-263`); `size == 0` → `Error` (`:239-243`) |
+| `receive(void*, size, received&)` `:272-305` | `NetSocket::recv` → `RecvResult` | a single non-blocking `recv`; `recv()==0` → `Disconnected` (`:297-300`) |
+| `connect(ip, port, timeout)` (called in blocking mode) + the client's `setBlocking` flips (`HexagonClient.cpp:104-114`) | `NetSocket::connect(addr, timeout)` | the C++ 0.5 s timeout; non-blocking after success. `StdTcpSocket`: `TcpStream::connect_timeout` + `set_nonblocking(true)` |
+| `disconnect()` `:213-219` | `FramedSocket::disconnect` | closes AND resets the pending-RECEIVE state (`m_pendingPacket`) — NOT the send side |
+| `send(Packet&)` `:309-365` | `FramedSocket::send_packet` | u32-`htonl` size prefix + payload; `m_blockToSendBuffer` is REBUILT from the current packet on every call (`:320-336`) and the send resumes from `Packet::m_sendPos` (`:356-363`) — the port mirrors the rebuild + offset-preservation (incl. the C++'s unsigned-underflow corner on a stale offset) |
+| `receive(Packet&)` `:368-424` | `FramedSocket::receive_packet` | `packet.clear()` FIRST (`:371` — the user packet never holds partial data); the 4 size bytes then the payload accumulate in `m_pendingPacket` across calls (`:376-410`, 1024-byte payload chunks); a 0-length payload still returns `Done` with an empty packet (`:415-417`) |
+
+**Rust-1.97 note:** `TcpStream::send`/`recv` no longer exist as inherent
+methods in this toolchain — `StdTcpSocket` uses `std::io::Write::write` /
+`Read::read` (same non-blocking contract).
+
+### §10.2 State machine + events
+
+`State` (the C++ numeric values, `HexagonClient.hpp:41-49`):
+`Disconnected=0, InitError=1, Connecting=2, ConnectionError=3,
+Connected=4, LoggedIn=5, LoggedInReady(=LoggedIn_Ready)=6`.
+
+`Event` — the 15-variant C++ `std::variant` (`HexagonClient.hpp:52-77`),
+`E`-prefix dropped (variant order preserved).
+
+| C++ transition | Rust |
+|---|---|
+| ctor `:437-470`: PS keys → ticket poll (`:55-89`: `run_callbacks` + 50 ms sleep, `tries > 15` → fail) → `InitError` on failure, else `connect()` | `with_socket` (same body; `new` = default socket + clock) |
+| `connect` `:395-434`: `Connecting` → socket init (fail → `EConnectionFailure` + `ConnectionError`) → heartbeat → public key (same failure path) → `EConnectionSuccess` + `Connected` | `connect` (the exact `"Failure connecting, error <reason>"` strings) |
+| `disconnect` `:482-505`: (LoggedIn\|Ready) → `sendLogout`; (Connected\|LoggedIn\|Ready) → `sendDisconnect`; close; `Disconnected` | `disconnect` (also from `Drop` — the C++ dtor `:475-479`) |
+| `STCPKick` `:558-565` | `EKicked` + `disconnect()`, returns `true` |
+| `STCPPublicKey` `:567-604` | store key → `calculate_client_session_sodium_rt_keys` (fail → `disconnect` + `false`) |
+| `STCPLoginSuccess` `:621-639` | token + name stored, `LoggedIn`, then **immediately** `sendRequestServerStatus` (the arm's return value) |
+| `STCPServerStatus` `:717-772` | game-version mismatch → `EGameVersionMismatch` ONLY (session proceeds); protocol mismatch → `EProtocolVersionMismatch` + `disconnect()` + `true`; else validators INSERTed (set union, `:740-743`), `LoggedInReady`, `ELoginSuccess`, `sendReady` |
+| `STCPTopScoresAndOwnScore` `:700-715` | the top-scores event ALWAYS; the own-score event only when `ownScore` is present |
+| every other STCP | its event, `true` |
+| `PInvalid`/`PEncryptedMsg` arms `:547-556` | `false` (no event) — an undecryptable/still-encrypted message is a receive failure |
+| `tryLogoutFromServer` `:850-863` | state → `Connected`, token + name CLEARED before the logout packet goes out |
+| `trySendCompressedReplay` `:887-906` | unsupported level → **`true` no-op** (not a failure) |
+| `tryRegister`/`tryLogin` `:813-848` | state `Connected` gate + `name.empty() \|\| name.size() > 32 \|\| password.empty()` → the `"...too long or empty"` failure event (byte count, as `str::len()`) |
+
+### §10.3 Documented deviations (client)
+
+- **Logging**: the `clog`/`SSVOH_CLOG*` calls (the `ssvu::lo` app logger)
+  and `_verbose` are dropped — diagnostic only, no protocol behaviour
+  depends on them, and `oh-net` has no log dependency. (`sendCompressedReplay`
+  keeps its `_level_validator` parameter unused for that reason — the C++
+  uses it only for the verbose log.)
+- **Time**: `HRClock::now()` + `std::this_thread::sleep_for` go through
+  the injectable `ClientClock` (default `Instant::now` + `thread::sleep`)
+  so the 45-s heartbeat window and the 16-try ticket poll are testable.
+  `_lastHeartbeatTime`'s C++ epoch-0 default → an `Instant` at
+  construction (unobservable: the first heartbeat is sent in the
+  ctor's `connect()`, and `update()` early-returns without a socket).
+- **Steam**: `Steam::steam_manager&` → the `SteamManager` trait (the four
+  polled methods, `Steam.hpp:41-66`); the client owns a `Box<dyn>`
+  (the C++ holds a reference for the object's lifetime).
+- **`sodiumHash` digest → `passwordHash` `String`**: the C++ stores the
+  32 RAW digest bytes in a `std::string` (not UTF-8 in general); the
+  issue-16 wire codec models the field as `String` and encodes
+  `len()` + `as_bytes()` — the port wraps the digest with
+  `from_utf8_unchecked` (byte-exact; the string is never re-interpreted
+  as text).
+- **Password salt**: `SecretPasswordSalt.hpp` is absent from the tree
+  (grep-verified), so the C++ build hashes `salt + password` — the port
+  pins that fallback as `PASSWORD_SALT` (`salt_and_hash_pwd`,
+  `HexagonClient.cpp:799-811`).
+- **`update()`**'s C++ `try/catch` has no analogue (the ported methods
+  return `bool`); the C++'s `receiveDataFromServer(_packetBuffer)` member
+  borrow is `mem::replace`'d in the port (same content semantics — the
+  buffer is `reset()` before every send and `clear()`-ed at the start of
+  every C++ `receive(Packet&)`).
+
+## §11. Database (`database.rs`, `db_records.rs`)
+
+Authoritative map (schema + all 19 query methods + traps + citations):
+`.agents/skills/lib-sqlite.md`. Summary of the non-obvious bits:
+
+- The DDL is the sqlite_orm-generated CREATE statements, byte-pinned by
+  `tools/oracle/db_probe.cpp` (compiles the REAL `Database.cpp`) —
+  double-quoted identifiers, trailing-space column definitions, reverse
+  `make_table` creation order (`scores`, `sqlite_sequence`,
+  `loginTokens`, `users`; `sqlite_orm.h:18005-18013`), committed as
+  `tools/oracle/db_probe_schema.txt`.
+- INSERTs EXCLUDE the autoincrement PK (the sqlite_orm plain-`insert`
+  serializer, `sqlite_orm.h:16137-16152` — the first `id=0`-insert test
+  exposed this); `loginTokens.userId` is UNIQUE; staleness is a SIGNED
+  `< 3600 s` in-memory filter (not a SQL `WHERE timestamp < ?`); the
+  top-scores/own-score queries are INNER-JOINed (deleted users are
+  silently excluded) and `getScore` scans the ordered rows in memory for
+  the position; `addScore` is an in-place update (lower-or-equal →
+  no-op); `execute` is the `sqlite3_exec` multi-statement walk with
+  tab-separated row printing.
+- `Database::open(path)` takes the path from the composition (the C++
+  hardcodes `"ohdb.sqlite"` at `Database.cpp:44` + a process singleton).
+
+## §12. Verification (issue 17)
+
+- `crates/oh-net/tests/database.rs` — 20 tests: the `.schema` diff
+  against the committed C++ probe dump, the no-op-on-reopen schema, and
+  the per-function round-trips (the UNIQUE(userId) behaviour, the signed
+  token validity with a pinned clock, the stale-token select/remove,
+  the score insert/update/no-op, top-scores order/limit/JOIN exclusion,
+  `execute` multi-statement + error reporting).
+- `leaderboard_cache.rs` — 6 in-module tests (the 6-s boundary under the
+  strict `>`, replace/refresh, the optional own-score states,
+  independence).
+- `client.rs` — 26 in-module tests: a scripted raw-socket fake drives
+  the connect flow (heartbeat + public-key frames byte-pinned), the
+  16-try ticket-poll failure, the connect-failure events, the
+  partial-send 5-retry limit, the full ENCRYPTED RT-key round trip
+  (server RT keys computed with the issue-16 server function; the
+  encrypted `STCPLoginSuccess` decrypts only if the client's
+  `key_receive` is right), every state transition (ready gates,
+  game-mismatch-event-only vs protocol-mismatch-disconnect, kick, the
+  login→status→ready chain, the validator union), the `try_*`
+  validation events, the compressed-replay unsupported-level TRUE no-op,
+  the 45-s heartbeat window (controlled clock), framing chunking across
+  `update()` calls (3-byte raw reads) + partial-send resume arithmetic,
+  the salted password hash, and `Drop` → `disconnect`.
+- `cargo test -p oh-net`: 93 tests green (53 lib — 26 client + 6
+  leaderboard + 21 pre-existing (5 packet + 4 protocol + 3 sodium + 9
+  shared) — + 20 database + 20 wire); clippy `-D warnings` clean.
+
+**Not yet covered** (issue 18's lane, listed so the contract is clear):
+the Rust↔C++ live loopback (the plan's "Rust client ↔ Rust server"
+full-flow test needs issue 18's `HexagonServer` port; the client's
+decrypt path is pinned by the in-crate encrypted round trip instead),
+and the `oh-app` wiring of `HexagonClient` into `mainClient` (the
+`crates/oh-app/**` path is out of this issue's scope; the `client.rs`
+comments in `oh-app` already mark the seam).

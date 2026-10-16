@@ -14,3 +14,10 @@ oh-replay = { path = "../oh-replay" }
 # primitive mapping (crypto_kx, crypto_secretbox(_open)_easy,
 # crypto_generichash, randombytes).
 sodiumoxide = { workspace = true }
+# rusqlite (bundled) — the `Online/Database` port (issue 17, src/database.rs);
+# DECISIONS.md D-004 SQLite entry.
+rusqlite = { workspace = true }
+
+[dev-dependencies]
+# Test-only: isolated on-disk DB files for the `Database` round-trip tests.
+tempfile = { workspace = true }

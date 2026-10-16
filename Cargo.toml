@@ -41,6 +41,17 @@ thiserror = "2"
 # keypair/session keys, crypto_secretbox(_open)_easy, crypto_generichash,
 # randombytes. See .agents/skills/lib-libsodium.md.
 sodiumoxide = "0.2.7"
+# rusqlite on its `bundled` feature (DECISIONS.md D-004 SQLite entry): the
+# C++ side is sqlite_orm (vendored `public/sqlite_orm/sqlite_orm.h`) on the
+# vendored SQLite C API (`public/sqlite/`), both writing `ohdb.sqlite`.
+# The Rust port executes the hand-transcribed schema + queries (issue 17,
+# `crates/oh-net/src/database.rs`) against the same file. `bundled`
+# compiles the SQLite C engine from source (via `libsqlite3-sys`), matching
+# the build-from-source pattern of `libsodium-sys` and avoiding a system
+# sqlite dev-package dependency.
+rusqlite = { version = "0.31", features = ["bundled"] }
+# tempfile — test-only (issue 17's DB tests need isolated on-disk DB files).
+tempfile = "3"
 
 # Profile tuning is finalized by issue 22 (builds/CI). opt-level is the
 # default; recorded here so later issues have a place to change it.

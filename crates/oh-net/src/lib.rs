@@ -14,11 +14,19 @@
 //! | `protocol` | `Global/ProtocolVersion.hpp`, `Global/Version.hpp` |
 //! | `sodium` | `Online/Sodium.hpp` / `Online/Sodium.cpp` |
 //! | `shared` | `Online/Shared.hpp` / `Online/Shared.cpp` |
+//! | `db_records` | `Online/DatabaseRecords.hpp` |
+//! | `database` | `Online/Database.hpp` / `Online/Database.cpp` (SQLite, `rusqlite` — D-004) |
+//! | `leaderboard_cache` | `Core/LeaderboardCache.hpp` / `Core/LeaderboardCache.cpp` |
+//! | `client` | `Core/HexagonClient.hpp` / `Core/HexagonClient.cpp` (the pull-model online client) |
 //!
 //! The mapping (file/struct/function → Rust, with citations) is
 //! `.agents/plans/001-rust-port/mapping/networking.md`; the byte-exact
 //! oracle vectors are pinned there and asserted in `tests/wire.rs`.
 
+pub mod client;
+pub mod database;
+pub mod db_records;
+pub mod leaderboard_cache;
 pub mod packet;
 pub mod protocol;
 pub mod shared;

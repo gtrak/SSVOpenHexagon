@@ -67,18 +67,10 @@ pub const PREAMBLE_2ND_BYTE: u8 = b'h';
 
 /// C++ `hg::Database::ProcessedScore` (`DatabaseRecords.hpp:39-45`) — the
 /// score row the `STCPTopScores`/`STCPOwnScore`/`STCPTopScoresAndOwnScore`
-/// packets carry.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ProcessedScore {
-    /// C++ `position`.
-    pub position: u32,
-    /// C++ `userName`.
-    pub user_name: String,
-    /// C++ `scoreTimestamp`.
-    pub score_timestamp: u64,
-    /// C++ `scoreValue`.
-    pub score_value: f64,
-}
+/// packets carry. The definition moved to `crate::db_records` (its C++
+/// namespace — the `DatabaseRecords` record set); re-exported here so the
+/// wire-protocol path is unchanged (issue 17, extend-only).
+pub use crate::db_records::ProcessedScore;
 
 /// C++ `hg::PVClientToServer` (`Shared.hpp:87-89`) — the client→server
 /// packet variant. Variant order = wire type byte.
