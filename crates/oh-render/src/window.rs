@@ -41,6 +41,13 @@ use crate::Vec2;
 use std::sync::atomic::AtomicU64;
 #[cfg(target_os = "android")]
 static PREDRAW_PROBE: AtomicU64 = AtomicU64::new(0);
+// 025i PROBE (temporary): shared resume counter (incremented in `resumed`,
+// read in `window_event`) — module-level so both probe sites share it.
+#[cfg(target_os = "android")]
+static PWIN_RES_PROBE: AtomicU64 = AtomicU64::new(0);
+// 025i PROBE (temporary): shared window_event (single_iteration liveness) count.
+#[cfg(target_os = "android")]
+static PWIN_EV: AtomicU64 = AtomicU64::new(0);
 
 /// `sf::Event` — the event set the game's `runEvents` switches on
 /// (mapping §3, SSVStart `GameWindow.hpp`).
@@ -1071,6 +1078,12 @@ impl<F: FnMut(&mut Window)> ApplicationHandler<()> for RunHandler<'_, F> {
         // Desktop: the statement is android-gated (no-op).
         #[cfg(target_os = "android")]
         self.window.ensure_android_gl(el);
+        #[cfg(target_os = "android")]
+        {
+            use std::sync::atomic::Ordering;
+            let c = PWIN_RES_PROBE.fetch_add(1, Ordering::Relaxed) + 1;
+            eprintln!("[025i] resumed #{}", c);
+        }
     }
 
     fn window_event(&mut self, _el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -1106,6 +1119,20 @@ impl<F: FnMut(&mut Window)> ApplicationHandler<()> for RunHandler<'_, F> {
                 "[025i] touch id={} phase={:?} loc=({},{})",
                 touch.id, touch.phase, touch.location.x, touch.location.y
             );
+        }
+        // 025i PROBE (temporary): count every window_event (single_iteration
+        // liveness) + resumed (re-resume / window recreation) to see whether
+        // single_iteration stops at the same point as about_to_wait.
+        #[cfg(target_os = "android")]
+        {
+            use std::sync::atomic::Ordering;
+            let c = PWIN_EV.fetch_add(1, Ordering::Relaxed) + 1;
+            if c % 5000 == 1 {
+                eprintln!(
+                    "[025i] win_evt#{} resumed#{} ev={:?}",
+                    c, PWIN_RES_PROBE.load(Ordering::Relaxed), event
+                );
+            }
         }
         if let Some(e) = map_window_event(&event) {
             // Android (issue 25b SG5; the space clarified by issue 025g):
@@ -1197,7 +1224,21 @@ impl<F: FnMut(&mut Window)> ApplicationHandler<()> for RunHandler<'_, F> {
             });
         }
         if self.window.open {
+            // 025i PROBE (temporary): time the FULL on_frame (vs the period,
+            // which includes the loop's inter-frame gap) to tell whether the
+            // 100% CPU is the frame itself or the redraw-spin gap. Logged
+            // sparsely (every 30 frames) so the logcat IPC itself doesn't
+            // inflate the measured cost.
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static POF: AtomicU64 = AtomicU64::new(0);
+            let _probe_t = Instant::now();
             (self.on_frame)(self.window);
+            if cfg!(target_os = "android") {
+                let c = POF.fetch_add(1, Ordering::Relaxed);
+                if c % 30 == 0 {
+                    eprintln!("[025i] on_frame_ms={:.3} (frame#{})", _probe_t.elapsed().as_secs_f64() * 1000.0, c);
+                }
+            }
         }
         if !self.window.open {
             el.exit();
