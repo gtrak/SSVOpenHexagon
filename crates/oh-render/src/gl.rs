@@ -236,14 +236,6 @@ fn finish_gl(
     let context = not_current.make_current(&surface).ok()?;
     let gl =
         unsafe { glow::Context::from_loader_function_cstr(|name| display.get_proc_address(name)) };
-    // 025i PROBE (temporary, one-shot): the actual GL renderer/vendor — a
-    // software (SwiftShader) context would explain the ~10ms per-frame
-    // gl.clear (a CPU clear); a hardware GLES GPU should clear in <0.5ms.
-    if cfg!(target_os = "android") {
-        let r = unsafe { gl.get_parameter_string(glow::RENDERER) };
-        let v = unsafe { gl.get_parameter_string(glow::VENDOR) };
-        eprintln!("[025i-gl] RENDERER={r} VENDOR={v}");
-    }
     Some(GlParts {
         gl,
         width: width.get(),

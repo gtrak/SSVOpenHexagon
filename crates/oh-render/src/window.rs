@@ -1117,58 +1117,8 @@ impl<F: FnMut(&mut Window)> ApplicationHandler<()> for RunHandler<'_, F> {
     }
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
-        // 025i PROBE (temporary, revert before final commit): log the
-        // frame period (gap between consecutive about_to_wait calls) + the
-        // phase durations + the control flow we are about to set. A spun
-        // (unpaced) loop shows a period ~= frame cost; a paced loop shows
-        // ~= 1/limit + frame cost.
-        {
-            use std::cell::Cell;
-            #[cfg(target_os = "android")]
-            use std::sync::atomic::Ordering;
-            thread_local! {
-                static PLAST: Cell<Option<Instant>> = const { Cell::new(None) };
-                static PCNT: Cell<u64> = const { Cell::new(0) };
-            }
-            let now = Instant::now();
-            PLAST.with(|l| {
-                let prev = l.get();
-                if let Some(p) = prev {
-                    PCNT.with(|c| {
-                        let n = c.get();
-                        c.set(n + 1);
-                        if n % 200 == 0 {
-                            let period_ms = now.duration_since(p).as_secs_f64() * 1000.0;
-                            #[cfg(target_os = "android")]
-                            let ed = PREDRAW_PROBE.swap(0, Ordering::Relaxed);
-                            #[cfg(not(target_os = "android"))]
-                            let ed = 0u64;
-                            eprintln!(
-                                "[025i] frame#{} period_ms={:.2} msUpdate={:.3} msDraw={:.3} redraws_since_last={} winpx={}x{}",
-                                n, period_ms, self.window.get_ms_update(), self.window.get_ms_draw(), ed, self.window.get_width(), self.window.get_height()
-                            );
-                        }
-                    });
-                }
-                l.set(Some(now));
-            });
-        }
         if self.window.open {
-            // 025i PROBE (temporary): time the FULL on_frame (vs the period,
-            // which includes the loop's inter-frame gap) to tell whether the
-            // 100% CPU is the frame itself or the redraw-spin gap. Logged
-            // sparsely (every 30 frames) so the logcat IPC itself doesn't
-            // inflate the measured cost.
-            use std::sync::atomic::{AtomicU64, Ordering};
-            static POF: AtomicU64 = AtomicU64::new(0);
-            let _probe_t = Instant::now();
             (self.on_frame)(self.window);
-            if cfg!(target_os = "android") {
-                let c = POF.fetch_add(1, Ordering::Relaxed);
-                if c % 30 == 0 {
-                    eprintln!("[025i] on_frame_ms={:.3} (frame#{})", _probe_t.elapsed().as_secs_f64() * 1000.0, c);
-                }
-            }
         }
         if !self.window.open {
             el.exit();

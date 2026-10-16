@@ -128,14 +128,8 @@
 use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, RwLock};
-
-// 025i PROBE (temporary): per-frame probe rate gate — the gl.clear /
-// post-msDraw probes fire every 30 frames (logcat load must not inflate the
-// CPU reading; the frame itself is ~30fps on the device).
-#[cfg(target_os = "android")]
-static TF_PROBE: AtomicU32 = AtomicU32::new(0);
 
 use oh_config::{Config, Key, Tid, Trigger, TIME_SLICE, TIME_STEP};
 use oh_game::hexagon_game::HexagonGame;
@@ -2655,17 +2649,7 @@ impl WindowedClient {
         // default `sf::Color::Transparent`) — the per-frame pre-update
         // clear of the default framebuffer.
         if let Some(gl) = window.gl() {
-            // 025i PROBE (temporary): time the pre-update GL clear (the
-            // leading candidate for the ~9ms of on_frame outside the spans).
-            let _pclear = std::time::Instant::now();
             gl.clear(COLOR_TRANSPARENT);
-            #[cfg(target_os = "android")]
-            if TF_PROBE.fetch_add(1, Ordering::Relaxed) % 30 == 0 {
-                eprintln!(
-                    "[025i-tf] gl.clear={:.3}ms",
-                    _pclear.elapsed().as_secs_f64() * 1000.0
-                );
-            }
         }
         // C++ `gameEngine->refreshTimer();` (GameWindow.hpp:128 →
         // GameEngine.hpp:34-37 → GameTimer::refresh, GameTimer.hpp:26-37):
@@ -2738,9 +2722,6 @@ impl WindowedClient {
         }
         // C++ `msDraw = ...` (GameWindow.hpp:144-146).
         window.set_ms_draw(ms_draw_start.elapsed().as_secs_f64() as f32 * 1000.0);
-        // 025i PROBE (temporary): the post-msDraw tail (run_frame_time +
-        // run_fps + loop-exit check) — completes the on_frame breakdown.
-        let _pend = std::time::Instant::now();
         // C++ `gameEngine->runFPS();` (GameWindow.hpp:148 →
         // GameEngine.hpp:96-101): `runFrameTime` (the next frame's
         // `frameTime`, TimerBase.hpp:40-43) then `runFPS`
@@ -2756,14 +2737,6 @@ impl WindowedClient {
         //     `gameEngine->stop()` (GameWindow.hpp:151-155).
         if !window.is_open() || (engine.current() == GameSlot::Menu && menu.quit_requested()) {
             engine.stop();
-        }
-        // 025i PROBE (temporary): the post-msDraw tail time.
-        #[cfg(target_os = "android")]
-        if TF_PROBE.load(Ordering::Relaxed) % 30 == 0 {
-            eprintln!(
-                "[025i-tf] post_msdraw_tail={:.3}ms",
-                _pend.elapsed().as_secs_f64() * 1000.0
-            );
         }
     }
 }
