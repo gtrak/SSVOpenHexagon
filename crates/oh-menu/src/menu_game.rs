@@ -1847,6 +1847,18 @@ impl MenuGame {
 
             s.process_entered_chars();
 
+            // 025i PROBE (temporary, revert): log the menu state + entered
+            // name length to confirm on-device char accumulation + which
+            // state the app is in (the 9-zone ok_action target).
+            {
+                use std::sync::atomic::{AtomicU64, Ordering};
+                static PMENU_CNT: AtomicU64 = AtomicU64::new(0);
+                let n = PMENU_CNT.fetch_add(1, Ordering::Relaxed);
+                if n % 30 == 0 {
+                    eprintln!("[025i-menu] #{} state={:?} entered_len={}", n, s.state, s.entered_str.len());
+                }
+            }
+
             match s.state {
                 States::LoadingScreen => s.hexagon_rotation += ft / 100.0,
                 States::LevelSelection => s.step_pack_change(ft),
