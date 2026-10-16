@@ -32,6 +32,16 @@ use crate::Button;
 use crate::Key;
 use crate::Vec2;
 
+// 025i PROBE (temporary, revert before final commit): a single shared
+// counter of WindowEvent::RedrawRequested, incremented in window_event and
+// read/cleared in about_to_wait to measure how often the winit android
+// backend requests a redraw (the spin hypothesis). Module-level so both
+// probe sites see the same counter.
+#[cfg(target_os = "android")]
+use std::sync::atomic::AtomicU64;
+#[cfg(target_os = "android")]
+static PREDRAW_PROBE: AtomicU64 = AtomicU64::new(0);
+
 /// `sf::Event` — the event set the game's `runEvents` switches on
 /// (mapping §3, SSVStart `GameWindow.hpp`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1064,6 +1074,19 @@ impl<F: FnMut(&mut Window)> ApplicationHandler<()> for RunHandler<'_, F> {
     }
 
     fn window_event(&mut self, _el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        // 025i PROBE (temporary): count WindowEvent::RedrawRequested — if
+        // the winit android backend requests a redraw per frame, this fires
+        // every loop iteration and defeats WaitUntil (the spin hypothesis).
+        if matches!(event, WindowEvent::RedrawRequested) {
+            #[cfg(target_os = "android")]
+            {
+                use std::sync::atomic::Ordering;
+                let c = PREDRAW_PROBE.fetch_add(1, Ordering::Relaxed) + 1;
+                if c % 2000 == 1 {
+                    eprintln!("[025i] RedrawRequested #{}", c);
+                }
+            }
+        }
         if let Some(e) = map_window_event(&event) {
             // Android (issue 25b SG5; the space clarified by issue 025g):
             // winit delivers the touch position in PHYSICAL pixels of the
@@ -1117,6 +1140,42 @@ impl<F: FnMut(&mut Window)> ApplicationHandler<()> for RunHandler<'_, F> {
     }
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        // 025i PROBE (temporary, revert before final commit): log the
+        // frame period (gap between consecutive about_to_wait calls) + the
+        // phase durations + the control flow we are about to set. A spun
+        // (unpaced) loop shows a period ~= frame cost; a paced loop shows
+        // ~= 1/limit + frame cost.
+        {
+            use std::cell::Cell;
+            #[cfg(target_os = "android")]
+            use std::sync::atomic::Ordering;
+            thread_local! {
+                static PLAST: Cell<Option<Instant>> = const { Cell::new(None) };
+                static PCNT: Cell<u64> = const { Cell::new(0) };
+            }
+            let now = Instant::now();
+            PLAST.with(|l| {
+                let prev = l.get();
+                if let Some(p) = prev {
+                    PCNT.with(|c| {
+                        let n = c.get();
+                        c.set(n + 1);
+                        if n % 200 == 0 {
+                            let period_ms = now.duration_since(p).as_secs_f64() * 1000.0;
+                            #[cfg(target_os = "android")]
+                            let ed = PREDRAW_PROBE.swap(0, Ordering::Relaxed);
+                            #[cfg(not(target_os = "android"))]
+                            let ed = 0u64;
+                            eprintln!(
+                                "[025i] frame#{} period_ms={:.2} msUpdate={:.3} msDraw={:.3} redraws_since_last={}",
+                                n, period_ms, self.window.get_ms_update(), self.window.get_ms_draw(), ed
+                            );
+                        }
+                    });
+                }
+                l.set(Some(now));
+            });
+        }
         if self.window.open {
             (self.on_frame)(self.window);
         }
