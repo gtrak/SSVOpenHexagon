@@ -31,7 +31,6 @@
 //! glyph-atlas / sprite-quad work this note anticipated).
 
 use glow::{Context, HasContext};
-use oh_math::ssvs::vector2::Vec2;
 use oh_math::ssvu::math::to_rad;
 
 use crate::draw::{PrimitiveType, Vertex, VertexBatch};
