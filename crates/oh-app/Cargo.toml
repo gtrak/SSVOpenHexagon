@@ -19,6 +19,7 @@ path = "src/main.rs"
 # oh-game must not gain oh-render — oh-lua depends on oh-game, so the
 # adapter cannot live in oh-game or oh-render).
 oh-game = { path = "../oh-game" }
+oh-audio = { path = "../oh-audio" }
 oh-render = { path = "../oh-render" }
 oh-config = { path = "../oh-config" }
 oh-math = { path = "../oh-math" }

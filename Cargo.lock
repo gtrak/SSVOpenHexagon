@@ -1890,6 +1890,7 @@ dependencies = [
  "glow 0.17.0",
  "ndk",
  "oh-assets",
+ "oh-audio",
  "oh-config",
  "oh-data",
  "oh-discord",
@@ -1913,6 +1914,16 @@ version = "0.1.0"
 dependencies = [
  "oh-data",
  "oh-math",
+]
+
+[[package]]
+name = "oh-audio"
+version = "0.1.0"
+dependencies = [
+ "oh-assets",
+ "oh-game",
+ "oh-render",
+ "rodio",
 ]
 
 [[package]]

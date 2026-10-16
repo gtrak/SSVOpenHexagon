@@ -408,10 +408,27 @@ impl AudioDevice {
         Ok(Self { sink: Some(sink) })
     }
 
+    /// Open the default output device, surfacing the exact `rodio`
+    /// (`cpal`) error — the issue-025e `oh-audio` composition logs this so a
+    /// failed Android/AAudio sink open is diagnosable (not silently no-op'd).
+    pub fn try_open_default() -> Result<Self, rodio::DeviceSinkError> {
+        let sink = rodio::DeviceSinkBuilder::open_default_sink()?;
+        Ok(Self { sink: Some(sink) })
+    }
+
     /// Whether a live output sink is attached.
     #[must_use]
     pub fn is_ready(&self) -> bool {
         self.sink.is_some()
+    }
+
+    /// The rodio `Mixer` of the attached sink (`None` headless) — the surface
+    /// a higher layer (issue 025e / `oh-audio`) uses to build its own
+    /// `rodio::Player` (the streamed music source), mirroring how the C++
+    /// `sf::Music` plays on the same device the `sf::Sound`s do.
+    #[must_use]
+    pub fn mixer(&self) -> Option<&rodio::mixer::Mixer> {
+        self.sink.as_ref().map(rodio::MixerDeviceSink::mixer)
     }
 
     /// Play an interleaved `f32` buffer: connect a `rodio::Player` and append

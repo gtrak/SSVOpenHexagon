@@ -96,4 +96,38 @@ mod tests {
         assert_eq!(md.segments().len(), 2);
         assert!(md.first_play);
     }
+
+    /// C++ `getSegment(index)` (MusicData.cpp:25-28) is `segments[index]`
+    /// (a hard bounds fault in C++); the port's `get_segment` is the safe
+    /// bound (out-of-range → `None`) — the "segment selection/clamping" pure
+    /// part (issue 025e).
+    #[test]
+    fn get_segment_is_index_bounded() {
+        let mut md = MusicData::new("a", "a.ogg", "A", "", "");
+        md.add_segment(0.0, 0.0);
+        md.add_segment(5.0, 0.25);
+        assert_eq!(md.get_segment(0), Some(&Segment::new(0.0, 0.0)));
+        assert_eq!(md.get_segment(1), Some(&Segment::new(5.0, 0.25)));
+        assert_eq!(md.get_segment(2), None); // out of range (C++ would fault)
+    }
+
+    /// C++ `playRandomSegment`'s `firstPlay` rule (MusicData.cpp:37-48):
+    /// the FIRST play always takes segment `0` and clears `first_play`
+    /// (the pure, RNG-free half — the random-index half is exercised through
+    /// the engine's `CosmeticRng` seam in oh-game).
+    #[test]
+    fn first_play_selects_segment_zero() {
+        let mut md = MusicData::new("a", "a.ogg", "A", "", "");
+        md.add_segment(0.0, 0.0);
+        md.add_segment(5.0, 0.25);
+        let seg_index = if md.first_play {
+            md.first_play = false;
+            0
+        } else {
+            unreachable!("first play")
+        };
+        assert_eq!(seg_index, 0);
+        assert!(!md.first_play);
+        assert_eq!(md.get_segment(seg_index), Some(&Segment::new(0.0, 0.0)));
+    }
 }

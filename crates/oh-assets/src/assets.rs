@@ -571,6 +571,14 @@ impl Assets {
         self.storage.get_sound_buffer(asset_id)
     }
 
+    /// The on-disk path of a registered sound buffer (the C++ `getSoundBuffer`
+    /// returns the in-memory `sf::SoundBuffer*`; the port exposes the source
+    /// path so `oh-audio` can decode it — issue 025e).
+    #[must_use]
+    pub fn get_sound_path(&self, asset_id: &str) -> Option<&std::path::Path> {
+        self.storage.get_sound_path(asset_id)
+    }
+
     /// C++ `isValidLevelId`.
     #[must_use]
     pub fn is_valid_level_id(&self, level_id: &str) -> bool {

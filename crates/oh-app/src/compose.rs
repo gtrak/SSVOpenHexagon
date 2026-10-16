@@ -65,7 +65,8 @@ use oh_game::hexagon_game::HexagonGame;
 use oh_game::lua_state::{GameApi, ReentrantMutex};
 use oh_game::renderer::Renderer;
 use oh_game::seams::{
-    NoJoystick, NullReplayStore, PcgCosmeticRng, Profiles, ScriptError, ScriptHost, SteamSink,
+    Audio, NoJoystick, NullReplayStore, PcgCosmeticRng, Profiles, ScriptError, ScriptHost,
+    SteamSink,
 };
 use oh_game::{HexagonGameStatus, LevelStatus};
 use oh_lua::api::callbacks;
@@ -476,6 +477,7 @@ pub fn compose_with(
         steam,
         discord,
         None, // the headless composition's renderer (the C++'s `nullptr`)
+        None, // the headless composition's audio (the C++'s `audio == nullptr`)
     )
 }
 
@@ -490,6 +492,12 @@ pub fn compose_with(
 /// window's touch sink (issue 25b SG5 — the `getFingerDownPositions`
 /// data path); the headless composition passes `None` (the C++'s
 /// headless `renderer == nullptr`).
+///
+/// `audio` — the engine's `Audio` seam (the C++ `Audio* audio`;
+/// `main.cpp:392-401` creates `hg::Audio` and hands it to both `MenuGame`
+/// and `HexagonGame`): the windowed composition passes the real
+/// `oh_audio::Audio` (issue 025e); the headless/server composition passes
+/// `None` (the C++'s `audio == nullptr`).
 #[allow(clippy::too_many_arguments)]
 #[must_use]
 pub fn compose_with_config(
@@ -501,6 +509,7 @@ pub fn compose_with_config(
     steam: Arc<dyn SteamSink + 'static>,
     discord: Option<Arc<dyn Discord + 'static>>,
     renderer: Option<Arc<dyn Renderer + 'static>>,
+    audio: Option<Arc<dyn Audio + 'static>>,
 ) -> Composed {
     // Heap-pinned before the `SharedLua` capture (see the `lua` field docs
     // on `Composed`): the host's `SharedLua` points at this box's slot.
@@ -512,7 +521,7 @@ pub fn compose_with_config(
         steam,
         config.clone(),
         assets.clone(),
-        None, // C++ `audio == nullptr` (the step-(b) tree has no Audio port)
+        audio, // C++ `Audio* audio` — `oh_audio::Audio` windowed; `None` headless (issue 025e)
         profiles,
         Arc::new(NullReplayStore),
         host.clone() as Arc<dyn ScriptHost>,

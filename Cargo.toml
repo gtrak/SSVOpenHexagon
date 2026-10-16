@@ -9,6 +9,7 @@ members = [
     "crates/oh-lua",
     "crates/oh-assets",
     "crates/oh-game",
+    "crates/oh-audio",
     "crates/oh-render",
     "crates/oh-menu-system",
     "crates/oh-menu",

@@ -133,7 +133,7 @@ use std::sync::{Arc, RwLock};
 
 use oh_config::{Config, Key, Tid, Trigger, TIME_SLICE, TIME_STEP};
 use oh_game::hexagon_game::HexagonGame;
-use oh_game::seams::NullProfiles;
+use oh_game::seams::{Audio, NullProfiles};
 use oh_lua::api::state::GameApiState;
 use oh_menu::layout::LinearFontHeight;
 use oh_menu::seams::{NewGameCallback, RichPresenceCallback, TriggerRefreshCallback};
@@ -156,14 +156,37 @@ use crate::bridge::AppDraw;
 use crate::compose::compose_with_config;
 use crate::game_state::{GameEngine, GameSlot, GameState};
 
-/// The C++ `hg::Audio` (main.cpp:392-401) is not ported (issue 17 owns
-/// the audio port; the engine is composed with a `None` audio). The
-/// menu's audio calls go through this no-op sink.
-struct NoopAudio;
+/// The menu's `AudioSink` over the REAL `oh_audio::Audio` (issue 025e — the
+/// C++ `hg::Audio`, main.cpp:392-401, shared with the engine). The menu's two
+/// `AudioSink` calls map onto the C++ menu's audio calls:
+///
+/// * `play_sound(assetId)` → C++ `MenuGame::playSoundOverride(assetId)`
+///   (MenuGame.cpp:1057-1061) — the `!Config::getNoSound()` gate +
+///   `audio.playSoundOverride(assetId)`.
+/// * `stop_all()` → C++ `audio.stopMusic(); audio.stopSounds();`
+///   (MenuGame.cpp:798-799, the `MenuGame::init` teardown).
+struct MenuAudioSink {
+    audio: std::sync::Arc<oh_audio::Audio>,
+    config: std::sync::Arc<std::sync::RwLock<Config>>,
+}
 
-impl AudioSink for NoopAudio {
-    fn play_sound(&self, _asset_id: &str) {}
-    fn stop_all(&self) {}
+impl AudioSink for MenuAudioSink {
+    fn play_sound(&self, asset_id: &str) {
+        // C++ `MenuGame::playSoundOverride` (MenuGame.cpp:1057-1061) gates the
+        // menu SFX on `!Config::getNoSound()` (the engine's own one-shots are
+        // gated by its `shouldPlaySounds`; the menu's go straight to the
+        // audio object, so the gate lives here).
+        if self.config.read().expect("config poisoned").get_no_sound() {
+            return;
+        }
+        self.audio.play_sound_override(asset_id);
+    }
+
+    fn stop_all(&self) {
+        // C++ `audio.stopMusic(); audio.stopSounds();` (MenuGame.cpp:798-799).
+        self.audio.stop_music();
+        self.audio.stop_sounds();
+    }
 }
 
 /// issue 25b SG5: the engine's `Renderer` seam over the window's
@@ -1865,6 +1888,21 @@ impl WindowedClient {
             )) as Arc<dyn oh_discord::Discord>
         });
 
+        // C++ main.cpp:392-401 — `hg::Audio audio{ soundBufferGetter,
+        // musicPathGetter }` (both getters capture `&assets`), then
+        // `audio.setSoundVolume(Config::getSoundVolume());
+        // audio.setMusicVolume(Config::getMusicVolume());`. The REAL audio is
+        // shared with the engine (`compose_with_config` below) and the menu
+        // (`MenuAudioSink`, the C++ `mg.emplace(..., audio, ...)` at
+        // main.cpp:434). issue 025e: this replaces the previous `None`
+        // engine-audio / `NoopAudio` menu-sink (the missed subsystem).
+        let audio = Arc::new(oh_audio::Audio::new(assets.clone()));
+        {
+            let c = config.read().expect("config poisoned");
+            audio.set_sound_volume(c.get_sound_volume());
+            audio.set_music_volume(c.get_music_volume());
+        }
+
         let composed = compose_with_config(
             assets.clone(),
             base_dir.to_path_buf(),
@@ -1874,6 +1912,7 @@ impl WindowedClient {
             steam.clone(),
             Some(discord.clone()),
             renderer,
+            Some(audio.clone()),
         );
 
         // The C++ `initText` fonts (HexagonGame.cpp:289-290:
@@ -1987,7 +2026,10 @@ impl WindowedClient {
                 refresh_binds_slot.clone(),
             )),
             Rc::new(NoopNetwork),
-            Rc::new(NoopAudio),
+            Rc::new(MenuAudioSink {
+                audio: audio.clone(),
+                config: config.clone(),
+            }),
             new_game_cb,
             trigger_refresh_cb,
             rich_presence_cb,

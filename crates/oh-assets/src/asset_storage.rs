@@ -21,7 +21,7 @@
 //! actually observe.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// A reference to an asset slot (stand-in for an SFML handle reference; issue
 /// 10 replaces the payload). Mirrors the two C++ getter shapes:
@@ -48,6 +48,12 @@ pub struct AssetStorage {
     textures: BTreeMap<String, bool>,
     fonts: BTreeMap<String, bool>,
     sound_buffers: BTreeMap<String, bool>,
+    /// The on-disk path each sound buffer was loaded from (first load wins,
+    /// mirroring `tryEmplaceAndThenLoadFromFile`). The C++ `AssetStorage`
+    /// keeps the *decoded* `sf::SoundBuffer*` in memory; the port defers the
+    /// decode to `oh-audio`, which needs the path to build its
+    /// `SoundBuffer` (the `Assets` `soundBuffers`/pack-`Sounds/` registry).
+    sound_paths: BTreeMap<String, PathBuf>,
 }
 
 impl AssetStorage {
@@ -82,7 +88,23 @@ impl AssetStorage {
 
     /// C++ `loadSoundBuffer(id, path)`.
     pub fn load_sound_buffer(&mut self, id: &str, path: &Path) -> bool {
-        Self::try_emplace_and_load(&mut self.sound_buffers, id, path)
+        // The decode target (issue 025e / `oh-audio`): record the path on the
+        // FIRST insert only (first load wins, exactly like the C++'s
+        // `emplace`-then-load — a second load of the same id is a no-op).
+        let is_new = !self.sound_buffers.contains_key(id);
+        let loaded = Self::try_emplace_and_load(&mut self.sound_buffers, id, path);
+        if is_new {
+            self.sound_paths.insert(id.to_string(), path.to_path_buf());
+        }
+        loaded
+    }
+
+    /// The on-disk path a registered sound buffer was loaded from (`None` for
+    /// an unknown id). C++ analog: `getSoundBuffer(id)` returns the in-memory
+    /// `sf::SoundBuffer*`; the port exposes the source path so `oh-audio` can
+    /// decode it into a `SoundBuffer`.
+    pub fn get_sound_path(&self, id: &str) -> Option<&Path> {
+        self.sound_paths.get(id).map(PathBuf::as_path)
     }
 
     /// C++ `getTexture(id)` → `sf::Texture*` (non-null iff a slot exists,

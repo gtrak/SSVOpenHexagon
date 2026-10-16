@@ -1,0 +1,21 @@
+[package]
+name = "oh-audio"
+description = "Port of Core/Audio.cpp (+ Data/MusicData.cpp's audio-facing surface): the real hg::Audio over the oh-render::audio (rodio) device — one-shot sounds (decode OGG -> SoundBuffer) + streamed music (loop / offset / pitch / volume / resume / pause / stop), the live-composition replacement for NoopAudio/NoAudio (issue 025e)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# The device surface (AudioDevice / SoundBuffer / Music state) + the rodio
+# backend (the C++ `sf::SoundBuffer`/`sf::Music`/`ssvs::SoundPlayer` analogue).
+oh-render = { path = "../oh-render" }
+# The `oh_game::seams::Audio` trait this crate implements (the 11-method
+# `hg::Audio` surface the engine calls).
+oh-game = { path = "../oh-game" }
+# The `Assets` registry (the C++ `HGAssets`): which sound ids are registered
+# + their on-disk paths, and the music id -> path map.
+oh-assets = { path = "../oh-assets" }
+# The rodio 0.23 pin (already in the tree via oh-render's default features,
+# which include `vorbis`/`symphonia` — so OGG decode needs no new pin).
+rodio = "0.23"
+
+[dev-dependencies]
