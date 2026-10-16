@@ -973,6 +973,10 @@ struct GameSlotAdapter {
     /// (MenuGame.cpp:793-794; `oh-menu` is extend-only, so the
     /// composition makes them here, issue 020).
     steam: Arc<oh_steam::SteamManager>,
+    /// The C++ `discordManager` (main.cpp:264-269) — the `fnGoToMenu`
+    /// consumption's `MenuGame::init`-lifecycle Discord call
+    /// (MenuGame.cpp:796; `oh-menu` is extend-only, issue 021).
+    discord: Option<Arc<dyn oh_discord::Discord>>,
     /// The C++ `fnGoToMenu` signal (0 = none, 1 = no-error, 2 = error):
     /// set by the engine's stored callback, consumed at the start of the
     /// next tick (module docs: fnGoToMenu timing).
@@ -1005,6 +1009,10 @@ impl GameState for GameSlotAdapter {
                 // C++ main.cpp:458-461.
                 self.menu.return_to_level_selection();
                 self.menu.init(error);
+                // C++ mg->init's Discord lines (:796).
+                if let Some(d) = &self.discord {
+                    d.set_rich_presence_in_menu();
+                }
                 if let Some(engine) = self.engine_slot.borrow().clone() {
                     engine.set_game_state(GameSlot::Menu);
                 }
@@ -1557,6 +1565,14 @@ pub struct WindowedClient {
     /// (MenuGame.cpp:793-794 — `oh-menu` is extend-only, so the
     /// composition makes them at the same lifecycle point).
     pub steam: Arc<oh_steam::SteamManager>,
+    /// C++ `discordManager` (main.cpp:264-269 — created only when NOT
+    /// headless; the windowed path is always non-headless, so it is always
+    /// `Some` here). The real IPC impl (`discord-rich-presence`, the
+    /// contract's documented fallback for the absent official-SDK crate);
+    /// it degrades gracefully when no local Discord client is running
+    /// (`init` fails -> the manager is inert, the C++'s
+    /// `Core::Create`-failure path).
+    pub discord: Option<Arc<dyn oh_discord::Discord>>,
     /// The C++ post-construction state-switch slot (main.cpp:442-462):
     /// the `fnHGNewGame` closure and the `GameSlotAdapter`'s `fnGoToMenu`
     /// consumption both resolve `window->setGameState(...)` through it —
@@ -1591,6 +1607,7 @@ impl WindowedClient {
         assets: Arc<oh_assets::Assets>,
         base_dir: &Path,
         steam: Arc<oh_steam::SteamManager>,
+        discord: Option<Arc<dyn oh_discord::Discord>>,
     ) -> Result<Self, String> {
         // ------------------------------------------------------------------
         // C++ main.cpp:330-332 — `window->setTimer<ssvs::TimerStatic>(
@@ -1613,6 +1630,14 @@ impl WindowedClient {
         // process-global `hg::Config` (menu writes reach the engine —
         // e.g. the debug toggle the `Tid::Pause` body reads,
         // HexagonGame.cpp:421-441).
+        // C++ main.cpp:264-269 — `discordManager.emplace()` (only when NOT
+        // headless; the windowed path is always non-headless).
+        let discord = discord.unwrap_or_else(|| {
+            Arc::new(oh_discord::DiscordManager::new(
+                oh_discord::IpcDiscordCore::new(oh_discord::DISCORD_APP_ID),
+            )) as Arc<dyn oh_discord::Discord>
+        });
+
         let composed = compose_with_config(
             assets.clone(),
             base_dir.to_path_buf(),
@@ -1620,6 +1645,7 @@ impl WindowedClient {
             Arc::new(NullProfiles),
             config.clone(),
             steam.clone(),
+            Some(discord.clone()),
         );
 
         // The C++ `initText` fonts (HexagonGame.cpp:289-290:
@@ -1790,6 +1816,7 @@ impl WindowedClient {
             menu: menu.clone(),
             app_draw: app_draw.clone(),
             steam: steam.clone(),
+            discord: Some(discord.clone()),
             return_to_menu: return_to_menu.clone(),
             engine_slot: engine_slot.clone(),
             input_manager: game_manager.clone(),
@@ -1818,11 +1845,24 @@ impl WindowedClient {
             menu,
             game,
             steam,
+            discord: Some(discord),
             engine_slot,
             interrupt: Arc::new(AtomicBool::new(false)),
             _app_draw: app_draw,
             composed,
         })
+    }
+
+    /// C++ `MenuGame::init`'s `discordManager.set_rich_presence_in_menu()`
+    /// (MenuGame.cpp:796) — the one-shot "Selecting Level" activity. oh-menu
+    /// is not edited (issue 21's hard exclusion), so the app layer fires it
+    /// at each menu-init site — the C++ `mg->init` calls: boot `gotoMenu`
+    /// (main.cpp:480), the `-p -l` boot (main.cpp:510), and the
+    /// `fnGoToMenu` consumption (main.cpp:458-461).
+    fn menu_rich_presence(&self) {
+        if let Some(d) = &self.discord {
+            d.set_rich_presence_in_menu();
+        }
     }
 
     /// C++ `main.cpp:471-537` — the boot dispatch (module docs: the two
@@ -1840,6 +1880,7 @@ impl WindowedClient {
             self.steam.set_rich_presence_in_menu();
             self.steam.update_hardcoded_achievements();
             self.menu.init(false); // C++ `mg->init(false /* mError */)`
+            self.menu_rich_presence(); // C++ mg->init's Discord lines (:796)
             self.engine.set_game_state(GameSlot::Menu); // `window->setGameState(mg->getGame())`
         };
 
@@ -1881,11 +1922,12 @@ impl WindowedClient {
                     self.steam.set_rich_presence_in_menu();
                     self.steam.update_hardcoded_achievements();
                     self.menu.init_command_line_level(false, pack, level);
-                    // DOCUMENTED DEVIATION (module docs): the C++ sets no
-                    // state here either (null `gameState` → first-frame
-                    // assert); the port points the window at the menu (the
-                    // `loadCommandLineLevel` tail left it in
-                    // `LevelSelection`, MenuGame.cpp:1773).
+                    self.menu_rich_presence(); // C++ mg->init's Discord lines (:796)
+                                               // DOCUMENTED DEVIATION (module docs): the C++ sets no
+                                               // state here either (null `gameState` → first-frame
+                                               // assert); the port points the window at the menu (the
+                                               // `loadCommandLineLevel` tail left it in
+                                               // `LevelSelection`, MenuGame.cpp:1773).
                     self.engine.set_game_state(GameSlot::Menu);
                 } else {
                     // C++ main.cpp:514-515 — "Start game as normal".
@@ -1968,6 +2010,7 @@ impl WindowedClient {
         // (the `SharedLua` contract, compose.rs).
         let WindowedClient {
             steam: _steam,
+            discord: _discord,
             composed,
             window,
             engine,

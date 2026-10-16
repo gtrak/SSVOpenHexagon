@@ -11,6 +11,11 @@ oh-data = { path = "../oh-data" }
 oh-config = { path = "../oh-config" }
 oh-replay = { path = "../oh-replay" }
 oh-assets = { path = "../oh-assets" }
+# Issue 21: the Discord `discord_manager` seam (the C++
+# `Discord::discord_manager* discordManager`, HexagonGame.hpp:88 — nullable;
+# the retry state `discordAttempt`/`discordHung` live on the engine, not the
+# manager, so only the `Discord` trait surface is needed here).
+oh-discord = { path = "../oh-discord" }
 
 # Issue 009 composition/tests only — never a normal dependency (that would
 # cycle: oh-lua already depends on oh-game).

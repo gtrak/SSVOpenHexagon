@@ -60,6 +60,7 @@ pub fn compose(assets: Arc<oh_assets::Assets>, root: PathBuf, window: bool) -> C
         window,
         Arc::new(TestProfiles),
         Arc::new(oh_game::seams::NoneSteamSink),
+        None, // no Discord (headless test)
     )
 }
 

@@ -61,6 +61,7 @@ pub fn print_lua_docs(root: &Path, out: &mut dyn Write) -> std::io::Result<i32> 
         false, /* window */
         Arc::new(NullProfiles),
         Arc::new(oh_game::seams::NoneSteamSink),
+        None, // C++ `mainPrintLuaDocs`: headless -> no Discord manager
     );
 
     // C++ `std::cout << "\n\n\n\n\n";` — exactly FIVE newlines (a

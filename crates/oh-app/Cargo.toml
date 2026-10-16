@@ -41,6 +41,10 @@ oh-menu = { path = "../oh-menu" }
 signal-hook = "0.3"
 oh-replay = { path = "../oh-replay" }
 oh-rng = { path = "../oh-rng" }
+# Issue 21: the Discord manager (the C++ `main.cpp:264-269` `discordManager`,
+# created only when NOT headless). The windowed composition builds the real
+# IPC impl (`IpcDiscordCore`); headless/server/printLuaDocs pass `None`.
+oh-discord = { path = "../oh-discord" }
 # Issue 18 milestone 4: the `-server` wiring (`dispatch.rs::main_server`
 # — the C++ `mainServer`, main.cpp:197-242) over the ported
 # `HexagonServer` + the `Database`/`ReplayExecutor` composition.

@@ -41,6 +41,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use oh_config::{Config, TIME_STEP};
 use oh_data::{get_level_validator, LevelData, PackData, StyleData};
+use oh_discord::Discord;
 use oh_math::hg::{concat::format_ostream_f64, string::to_uppercase};
 use oh_math::ssvs::Vec2;
 use oh_replay::{compress_replay_file, InputBits, ReplayData, ReplayFile};
@@ -343,9 +344,14 @@ pub struct EngineState {
     pub(crate) fast_forward_target: Option<f64>,
     pub(crate) advance_tick_count: Option<i32>,
 
-    // C++ `timeUntilRichPresenceUpdate` (rich presence; the steam/discord
-    // managers are always null in this port).
+    // C++ `timeUntilRichPresenceUpdate` (rich presence; the STEAM manager is
+    // still null — issue 20; the Discord manager is the `discord` seam).
     pub(crate) time_until_rich_presence_update: f32,
+    // C++ `discordHung` / `discordAttempt` (HexagonGame.hpp:89,91) — the
+    // retry/hang state for the Discord `run_callbacks` (HexagonGame.cpp:
+    // 495-506); `discordAttempt` starts at `1`, `discordHung` at `false`.
+    pub(crate) discord_hung: bool,
+    pub(crate) discord_attempt: i8,
 }
 
 fn entropy_seed() -> u64 {
@@ -393,6 +399,10 @@ pub(crate) struct Inner<S: SharedStore> {
     pub(crate) audio: Option<Arc<dyn Audio + 'static>>,
     // C++ `HGAssets` local-profile/score surface.
     pub(crate) profiles: Arc<dyn Profiles + 'static>,
+    // C++ `Discord::discord_manager* discordManager` (HexagonGame.hpp:88) —
+    // nullable: `main.cpp:264-269` emplaces it only when NOT headless, and
+    // `main.cpp:416` passes `has_value() ? &*discordManager : nullptr`.
+    pub(crate) discord: Option<Arc<dyn Discord + 'static>>,
     // C++ `death_saveReplay` file-write half.
     pub(crate) replay_store: Arc<dyn ReplayStore + 'static>,
     // C++ `Lua::LuaContext lua` / `initLua` / `runLuaFile`.
@@ -490,6 +500,7 @@ impl<S: SharedStore> HexagonGame<S> {
         cosmetic_rng: Arc<dyn CosmeticRng + 'static>,
         window: bool,
         renderer: Option<Arc<dyn Renderer + 'static>>,
+        discord: Option<Arc<dyn Discord + 'static>>,
     ) -> Self {
         let (background_camera, overlay_camera) = if window {
             let c = config.read().expect("config poisoned");
@@ -589,6 +600,9 @@ impl<S: SharedStore> HexagonGame<S> {
             fast_forward_target: None,
             advance_tick_count: None,
             time_until_rich_presence_update: 0.0,
+            // C++ `discordAttempt{1}` / `discordHung{false}` (HexagonGame.hpp:91,89).
+            discord_hung: false,
+            discord_attempt: 1,
         };
 
         Self(Arc::new(Inner {
@@ -598,6 +612,7 @@ impl<S: SharedStore> HexagonGame<S> {
             config,
             audio,
             profiles,
+            discord,
             replay_store,
             script_host,
             joystick,
@@ -997,11 +1012,30 @@ impl<S: SharedStore> HexagonGame<S> {
         self.play_sound_override("go.ogg");
 
         if !self.must_replay_input() {
-            // C++ builds nameStr/packStr/diffStr here for the (absent)
-            // discordManager / hexagonClient — both are null in this port,
-            // so no engine-side effect survives.
+            // C++ (HGUpdate.cpp:512-524): `nameStr = nameFormat(name)`,
+            // `packStr = nameFormat(getPackName())`, `diffStr =
+            // diffFormat(difficultyMult)`, and — when `discordManager !=
+            // nullptr` — `set_rich_presence_in_game(nameStr + " [x" + diffStr
+            // + "]", packStr)` (dead defaults to false).
+            let name_str = self.name_format(&g.level_name);
+            let pack_str = self.name_format(&self.get_pack_name());
+            let diff_str = self.diff_format(g.difficulty_mult);
+            if let Some(discord) = self.0.discord.as_ref() {
+                discord.set_rich_presence_in_game(
+                    &format!("{name_str} [x{diff_str}]"),
+                    &pack_str,
+                    false,
+                );
+            }
+            // C++ `hexagonClient->trySendStartedGame` — the null client
+            // (issue 17; `HexagonClient::State::LoggedIn_Ready` gate).
+        } else {
+            // C++ (HGUpdate.cpp:536-541): the replay branch —
+            // `discordManager->set_rich_presence_on_replay()`.
+            if let Some(discord) = self.0.discord.as_ref() {
+                discord.set_rich_presence_on_replay();
+            }
         }
-        // else: discordManager null -> no-op.
 
         // C++ `if(audio != nullptr && !Config::getNoMusic())` — NOTE: no
         // window gate in the C++.
@@ -1181,10 +1215,31 @@ impl<S: SharedStore> HexagonGame<S> {
         self.st().status.camera_shake = 45.0_f32 * c.get_camera_shake_multiplier();
     }
 
-    /// C++ `death_updateRichPresence()` — windowed-only AND both rich-
-    /// presence managers are null in this port, so this is the C++ no-op.
+    /// C++ `death_updateRichPresence()` (HexagonGame.cpp:847-886): the
+    /// `window == nullptr` gate (849-852) and the `inReplay()` gate (854-857),
+    /// then — when `discordManager != nullptr` —
+    /// `set_rich_presence_in_game(nameStr + " [x" + diffStr + "]",
+    /// "Survived " + timeStr + "s", true)` (878-886).
     fn death_update_rich_presence(&self) {
-        // (no-op: window gate + null managers, verbatim C++ behavior)
+        // C++ `if(window == nullptr) return;` (HexagonGame.cpp:849-852).
+        if !self.0.window {
+            return;
+        }
+        // C++ `if(inReplay()) return;` (HexagonGame.cpp:854-857).
+        if self.in_replay() {
+            return;
+        }
+        if let Some(discord) = self.0.discord.as_ref() {
+            let g = self.st();
+            let name_str = self.name_format(&g.level_name);
+            let diff_str = self.diff_format(g.difficulty_mult);
+            let time_str = self.time_format(g.status.get_time_seconds() as f32);
+            discord.set_rich_presence_in_game(
+                &format!("{name_str} [x{diff_str}]"),
+                &format!("Survived {time_str}s"),
+                true,
+            );
+        }
     }
 
     /// C++ `death_flashEffect()`.

@@ -115,9 +115,11 @@ impl<S: SharedStore> HexagonGame<S> {
         m_ft *= timescale;
 
         // --------------------------------------------------------------------
-        // Update Discord and Steam "rich presence" (window-gated; the
-        // Discord manager is issue 21 (absent) — the Steam half is the
-        // engine's `steam_manager` seam, issue 020).
+        // Update Discord and Steam "rich presence" (window-gated) — the
+        // accounting is the C++ one, verbatim. The Steam half is the
+        // engine's `steam_manager` seam (issue 020); the Discord
+        // `run_callbacks` retry is issue 021; the in-game Discord activity
+        // itself is set in `start` / `death`, per the C++.
         if self.0.window {
             let (name_str, diff_str, time_str) = {
                 let g = self.st();
@@ -127,7 +129,6 @@ impl<S: SharedStore> HexagonGame<S> {
                     self.time_format(g.status.get_time_seconds() as f32),
                 )
             };
-
             {
                 let mut e = self.est();
                 e.time_until_rich_presence_update -= get_ft_to_seconds(m_ft);
@@ -1494,8 +1495,42 @@ impl<S: SharedStore> HexagonGame<S> {
     /// is the engine's `steam_manager` seam (the counter lives in the
     /// `oh_steam::SteamManager` in the port — issue 020); the Discord half
     /// is issue 21 (absent).
-    fn update_rich_presence_callbacks(&self) {
+    /// C++ `updateRichPresenceCallbacks()` (HexagonGame.cpp:477-507) — the
+    /// Steam arm (the `steamAttempt`/`steamHung` hung counter,
+    /// HexagonGame.hpp:90-92 — delegated to the engine's `steam_manager`
+    /// seam, which owns the counter in the port — issue 020) + the Discord
+    /// `run_callbacks` + the `discordAttempt` / `discordHung` retry.
+    /// Driven every frame
+    /// from BOTH states: the in-game `update` (inside the C++'s
+    /// `window != nullptr` block, HGUpdate.cpp:155) and the menu's
+    /// `fnHGUpdateRichPresenceCallbacks` (main.cpp:451-454). The retry state
+    /// is a `HexagonGame` member (HexagonGame.hpp:89,91), NOT a
+    /// `discord_manager` one — so it lives on the engine here. `pub` because
+    /// the menu's per-frame callback (the app's `RichPresenceCallback`) calls
+    /// it through the engine handle.
+    pub fn update_rich_presence_callbacks(&self) {
+        // C++ HexagonGame.cpp:480-492 — the Steam arm.
         self.0.steam_manager.update_rich_presence_callbacks();
+        // C++ `if(discordManager != nullptr && !discordHung)`
+        // (HexagonGame.cpp:495).
+        let Some(discord) = self.0.discord.as_ref() else {
+            return;
+        };
+        let mut e = self.est();
+        if e.discord_hung {
+            return;
+        }
+        // C++ `if(!discordManager->run_callbacks())` (HexagonGame.cpp:497).
+        if !discord.run_callbacks() {
+            e.discord_attempt += 1;
+            // C++ `if(discordAttempt > 20)` (HexagonGame.cpp:500).
+            if e.discord_attempt > 20 {
+                e.discord_hung = true;
+                // C++ `ssvu::lo("Discord") << "Too many failed callbacks.
+                // Stopping Discord callbacks.\n"` (HexagonGame.cpp:503-504).
+                println!("[Discord] Too many failed callbacks. Stopping Discord callbacks.");
+            }
+        }
     }
 
     /// The `particles` vector (test access; the C++ member).

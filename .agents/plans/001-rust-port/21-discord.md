@@ -14,6 +14,11 @@ absent.
   behavior. Prefer a binding of the official SDK if it exists; otherwise use the
   IPC crate and document the difference.
 - Degradation: the C++ has `discordHung`/`discordAttempt` retry logic — reproduce it.
+  (D-014, verified: this retry is a `HexagonGame` member, NOT a `discord_manager`
+  one — `include/.../HexagonGame.hpp:89,91` and `src/.../HexagonGame.cpp:495-506`
+  (in `updateRichPresenceCallbacks`, HexagonGame.cpp:477-507); `Discord.cpp` has
+  zero `discordHung`/`discordAttempt` references. So it is ported in `oh-game`
+  (driving `Discord::run_callbacks`), not in `oh-discord`.)
 - Rich-presence strings must match `death_updateRichPresence` / `updateRichPresenceCallbacks`.
 
 ## Files

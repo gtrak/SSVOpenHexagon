@@ -959,6 +959,9 @@ mod tests {
             fast_forward_target: None,
             advance_tick_count: None,
             time_until_rich_presence_update: 0.0,
+            // C++ `discordAttempt{1}` / `discordHung{false}` (HexagonGame.hpp:91,89).
+            discord_hung: false,
+            discord_attempt: 1,
         }
     }
 
@@ -1914,7 +1917,8 @@ mod tests {
             Arc::new(NoJoystick),
             Arc::new(PcgCosmeticRng::new()),
             false,
-            None,
+            None, // C++ headless tests: no renderer
+            None, // C++ headless tests: no Discord manager
         );
         let state = Arc::new(ReentrantMutex::new(shared_state()));
         game.attach_state(state);

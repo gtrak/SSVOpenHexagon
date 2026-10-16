@@ -215,6 +215,7 @@ fn windowed_client() -> WindowedClient {
         assets,
         &common::release_dir(),
         Arc::new(oh_steam::SteamManager::new(Box::new(oh_steam::NoSteam))),
+        None, // no Discord (headless test; build() creates the real IPC manager when None)
     )
     .expect("windowed build")
 }
@@ -254,6 +255,7 @@ fn live_compressed_replay_path(assets: &Arc<oh_assets::Assets>) -> String {
         false, /* window */
         Arc::new(oh_game::seams::NullProfiles),
         Arc::new(oh_game::seams::NoneSteamSink),
+        None, // no Discord (replay fixture)
     );
     c.game.set_always_spin_right(true);
     c.game.new_game(
@@ -483,6 +485,7 @@ fn scripted_pause_key_toggles_debug_pause() {
         assets,
         &common::release_dir(),
         Arc::new(oh_steam::SteamManager::new(Box::new(oh_steam::NoSteam))),
+        None, // no Discord (headless test; build() creates the real IPC manager when None)
     )
     .expect("windowed build");
     client.boot(Some("cube"), Some("apeirogon"), None);

@@ -491,6 +491,7 @@ pub fn compose(assets: Arc<oh_assets::Assets>, root: PathBuf, window: bool) -> C
         Arc::new(PcgCosmeticRng::new()),
         window,
         None, // C++ headless tests: no renderer
+        None, // C++ headless tests: no Discord manager
     );
 
     // Phase 2: the shared state with the engine itself as backend.

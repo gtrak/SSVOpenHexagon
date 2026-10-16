@@ -119,6 +119,7 @@ pub fn main_server(base_dir: &Path) -> i32 {
         // satisfies Steam requests without a client, exactly as the C++
         // headless server degrades).
         crate::steam::steam_manager(),
+        None, // C++ server: `nullptr /* discordManager */` (main.cpp:217)
     );
     let executor = GameReplayExecutor {
         game: composed.game.clone(),

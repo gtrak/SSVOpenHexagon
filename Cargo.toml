@@ -17,11 +17,12 @@ members = [
     "crates/oh-server-control",
     "crates/oh-workshop-uploader",
     "crates/oh-steam",
+    "crates/oh-discord",
 ]
 # Later issues add workspace members as they land (PLAN.md architecture
 # table): oh-timeline, oh-replay, oh-data, oh-config, oh-assets, oh-lua,
 # oh-game, oh-audio, oh-net, oh-menu-system, oh-render, oh-menu, oh-app,
-# oh-steam, oh-discord.
+# oh-steam, oh-discord. (oh-discord landed with issue 21.)
 
 [workspace.package]
 version = "0.1.0"

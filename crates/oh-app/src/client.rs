@@ -133,6 +133,11 @@ pub fn main_client(
             assets,
             base_dir,
             steam.clone(),
+            // C++ main.cpp:264-269 — `discordManager.emplace()` (the windowed
+            // path is always non-headless): the real IPC manager.
+            Some(Arc::new(oh_discord::DiscordManager::new(
+                oh_discord::IpcDiscordCore::new(oh_discord::DISCORD_APP_ID),
+            )) as Arc<dyn oh_discord::Discord>),
         ) {
             Ok(client) => {
                 // C++ main.cpp:334-350 — the SIGINT handler (the safe
@@ -159,16 +164,17 @@ pub fn main_client(
             }
         }
     } else {
-        // Initialize hexagon game (C++ main.cpp:413-421: the C++ passes
-        // `&steamManager` first — the port's `steam` composition object,
-        // issue 020; null discord/audio/window/client; the step-(b)
-        // engine is window-less).
+        // Initialize hexagon game (C++ main.cpp:413-421: null steam/discord/
+        // audio/window/client; the step-(b) engine is window-less). The C++
+        // headless path has NO Discord manager (main.cpp:264-269 `if(!headless)`
+        // is false), so `discord = None`.
         let composed = compose_with(
             assets,
             base_dir.to_path_buf(),
             false, /* window */
             Arc::new(NullProfiles),
             steam,
+            None, // C++ headless: no Discord manager (main.cpp:264-269)
         );
 
         // (C++ main.cpp:426-463: MenuGame + the fnHG* links — windowed

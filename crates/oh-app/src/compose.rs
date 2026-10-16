@@ -60,6 +60,7 @@ use std::sync::{Arc, OnceLock, RwLock};
 
 use oh_config::Config;
 use oh_data::{MusicData, PackData, StyleData};
+use oh_discord::Discord;
 use oh_game::hexagon_game::HexagonGame;
 use oh_game::lua_state::{GameApi, ReentrantMutex};
 use oh_game::seams::{
@@ -463,6 +464,7 @@ pub fn compose_with(
     window: bool,
     profiles: Arc<dyn Profiles + 'static>,
     steam: Arc<dyn SteamSink + 'static>,
+    discord: Option<Arc<dyn Discord + 'static>>,
 ) -> Composed {
     compose_with_config(
         assets,
@@ -471,6 +473,7 @@ pub fn compose_with(
         profiles,
         Arc::new(RwLock::new(Config::default())),
         steam,
+        discord,
     )
 }
 
@@ -488,6 +491,7 @@ pub fn compose_with_config(
     profiles: Arc<dyn Profiles + 'static>,
     config: Arc<RwLock<Config>>,
     steam: Arc<dyn SteamSink + 'static>,
+    discord: Option<Arc<dyn Discord + 'static>>,
 ) -> Composed {
     // Heap-pinned before the `SharedLua` capture (see the `lua` field docs
     // on `Composed`): the host's `SharedLua` points at this box's slot.
@@ -506,7 +510,8 @@ pub fn compose_with_config(
         Arc::new(NoJoystick),
         Arc::new(PcgCosmeticRng::new()),
         window,
-        None, // C++ headless tests: no renderer
+        None,    // C++ headless tests: no renderer
+        discord, // C++ `discordManager` (main.cpp:264-269,416) — `None` headless
     );
 
     // Phase 2: the shared state with the engine itself as backend.
