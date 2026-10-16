@@ -1912,6 +1912,7 @@ dependencies = [
 name = "oh-assets"
 version = "0.1.0"
 dependencies = [
+ "oh-config",
  "oh-data",
  "oh-math",
  "oh-vfs",

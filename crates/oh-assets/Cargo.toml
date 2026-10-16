@@ -10,3 +10,4 @@ oh-math = { path = "../oh-math" }
 oh-vfs = { path = "../oh-vfs" }
 
 [dev-dependencies]
+oh-config = { path = "../oh-config" }
