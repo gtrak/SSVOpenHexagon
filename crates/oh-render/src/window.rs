@@ -491,6 +491,19 @@ impl Window {
         }
         match crate::gl::create_android_parts(el) {
             Some(parts) => {
+                // C++ `recreateWindow` (GameWindow.hpp:89-95): the render
+                // window is created and IMMEDIATELY
+                // `renderWindow.setVerticalSyncEnabled(vsync)` is applied —
+                // the port's GL materialization here is that creation, so
+                // the stored config value (the `create_android_window`
+                // `window.set_vsync(config.get_vsync())`, the C++ main.cpp:
+                // 308) goes onto the fresh EGL surface now. The explicit
+                // request is load-bearing: the EGL driver's default swap
+                // interval is 1 (glutin 0.32's `SwapInterval` docs) —
+                // without it the shipped `vsync=false` would run at the
+                // driver's vsync pacing instead of the C++'s explicit
+                // `eglSwapInterval(display, 0)`.
+                parts.set_swap_interval(self.vsync);
                 self.gl = Some(parts);
             }
             None => {
@@ -702,6 +715,19 @@ impl Window {
     /// `setVerticalSyncEnabled` (`ssvs::setVsync`).
     pub fn set_vsync(&mut self, enabled: bool) {
         self.vsync = enabled;
+        // C++ `GameWindow::setVsync` (GameWindow.hpp:192-195) stores the
+        // value and marks `mustRecreate`; the next iteration's
+        // `recreateWindow` re-applies `renderWindow.setVerticalSyncEnabled(
+        // vsync)` (GameWindow.hpp:94) — the pinned SFML's
+        // `eglSwapInterval(display, vsync ? 1 : 0)` (see
+        // `GlParts::set_swap_interval`). The port applies the same
+        // OBSERVABLE change — the live EGL swap interval — directly, on the
+        // live context, instead of recreating the winit window (the
+        // documented recreation gap, module docs; the full recreation is
+        // lane 029w's scope).
+        if let Some(gl) = self.gl.as_ref() {
+            gl.set_swap_interval(enabled);
+        }
     }
 
     #[must_use]

@@ -478,6 +478,37 @@ impl GlParts {
         }
     }
 
+    /// C++ `renderWindow.setVerticalSyncEnabled(vsync)` (GameWindow.hpp:94,
+    /// inside `recreateWindow` — re-applied on every recreation; the
+    /// `setVsync` setter :192-195 marks `mustRecreate`) → the pinned SFML fork's
+    /// `Window::setVerticalSyncEnabled` (SFML `2f11710`'s
+    /// `src/SFML/Window/Window.cpp:274-280` — applied at runtime when the
+    /// context is active) → on Android the window's context IS the
+    /// `EglContext` (the `Window.cpp:113` selection, the activity-owned
+    /// display), whose `setVerticalSyncEnabled` (`src/SFML/Window/
+    /// EglContext.cpp:197-200`) is `eglSwapInterval(display, enabled ? 1 : 0)`
+    /// — the display-level request, applied at runtime. glutin 0.32's
+    /// `GlSurface::set_swap_interval` issues exactly that EGL call on the
+    /// EGL backend (glutin 0.32.3 `src/api/egl/surface.rs:369-378`);
+    /// on the other backends it is the platform's equivalent (GLX
+    /// `glXSwapInterval*` — pinned `Unix/GlxContext.cpp:276`; WGL
+    /// `wglSwapIntervalEXT` — pinned `Win32/WglContext.cpp:245`; CGL
+    /// `NSOpenGLCPSwapInterval` — pinned `OSX/SFContext.mm:157`;
+    /// SFML's `GlContext::setVerticalSyncEnabled` backend family).
+    pub fn set_swap_interval(&self, enabled: bool) {
+        use glutin::surface::SwapInterval;
+        let interval = match enabled {
+            true => SwapInterval::Wait(NonZero::new(1).expect("const 1 is non-zero")),
+            false => SwapInterval::DontWait,
+        };
+        if let Err(e) = self._surface.set_swap_interval(&self._context, interval) {
+            // The C++'s `eglCheck` logs and carries on (the request is
+            // re-applied on every recreation — GameWindow.hpp:94 — and the
+            // next `set_vsync` re-applies it here): log and continue.
+            eprintln!("[GlParts] set_swap_interval failed ({e:?})");
+        }
+    }
+
     /// C++ `window->draw(text)` — the text pass, delegated to the
     /// issue-025c pipeline ([`Self::passes`]: the font-atlas glyphs through
     /// `gl_passes::GlPasses::draw_text`; the atlas/program live for the
