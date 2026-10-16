@@ -43,13 +43,17 @@ Full detail lives in the skills — this is the decision record.
   `wasm32-unknown-unknown`. Neither wasi-sdk nor emsdk is installed here (env
   limitation, not a code limitation), so the gate is **toolchain-gated**, not
   yet a compatibility PASS/FAIL. Skill: `.agents/skills/lib-mlua.md` §WASM.
-- **P0.3 / P0.4 — pending.** The web/browser rendering side (WebGL2 init through
-  the windowing stack, a minimal `oh-web` compile for
-  `wasm32-unknown-unknown`, a served page booting to the menu via
-  `agent-browser`) and the replay corpus run against native vs web impls have
-  not yet been exercised. Tooling note: `trunk 0.20.3` + node v24.13.0 are
-   present; `wasm-bindgen`/`wasm-pack`/`wasmtime`/`wasmer` are not. Skill:
-   `.agents/skills/lib-web-stack.md`.
+- **P0.3 — VERIFIED (live); P0.4 (VFS contract inventory) — COMPLETE.** The
+  web/browser rendering side is now verified end-to-end in a real browser — the
+  plain `wasm-bindgen`+`glow` WebGL2 path **and** the `winit` 0.30 web windowing
+  layer (`.agents/skills/lib-web-stack.md` §"P0.3 — web render path
+  (verified)"). The **P0.4 VFS contract inventory** (the Phase 1 / 26a
+  prerequisite) is done: every asset/config filesystem op is inventoried and the
+  minimal `oh-vfs` contract (asset/configuration provider, not a general
+  filesystem) is specified in `.agents/tasks/issue-026a-oh-vfs.md`. The **replay
+  corpus run** against native vs web impls (the original P0.4 body) is still
+  pending. Tooling note: `trunk 0.20.3` + node v24.13.0 are present;
+  `wasm-bindgen`/`wasm-pack`/`wasmtime`/`wasmer` are not.
 
 ## What already works in our favor
 

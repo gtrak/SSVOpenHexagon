@@ -79,12 +79,59 @@ are listed only for completeness of the matrix.
 - **Audio**: rodio/cpal have no wasm backend (the plan's blocker #6); v1 may
   ship silent + documented (D-028c).
 
-**pending P0.3:** the actual web render path — WebGL2 init through the
-windowing stack, a minimal `oh-web` `cargo check`/build for
-`wasm32-unknown-unknown`, and a served page booting to the menu — has **not yet
-been exercised**. `wasm-bindgen`/`wasm-pack` are absent here (the plan's
-`Build/ship shape` assumes `trunk`, which is present, but the bindgen toolchain
-is not confirmed). Do not cite these as verified.
+### P0.3 — web render path (verified)
+
+Executed 2026-10-16 in throwaway crates under
+`C:\Users\garyt\AppData\Local\Temp\opencode\` (outside the repo; no repo source
+touched). Note: the standalone `wasm-bindgen`/`wasm-pack` CLIs are still absent,
+but that is **not** a blocker — `trunk` bundles and drives `wasm-bindgen`
+itself, so both spikes built fine through `trunk build`.
+
+**Plain path — VERIFIED end-to-end (built + run in a real browser).** Spike
+crate `oh-web-spike` (`C:\Users\garyt\AppData\Local\Temp\opencode\oh-web-spike`,
+`cdylib`): deps `wasm-bindgen 0.2.129`, `js-sys 0.3.106`, `web-sys 0.3.106`
+(features `Window`/`Document`/`Element`/`HtmlElement`/`HtmlCanvasElement`/
+`WebGl2RenderingContext`/`console`), `glow 0.18.0`.
+- `cargo build --target wasm32-unknown-unknown` → clean; `trunk build` →
+  success (emits `dist/`).
+- `src/lib.rs` (`#[wasm_bindgen(start)]`) grabs `#canvas`, gets a
+  `WebGl2RenderingContext` via `canvas.get_context("webgl2")`, wraps it in
+  `glow::Context::from_webgl2_context`, then `clear_color(0.1,0.4,0.8,1.0)` +
+  `clear`; `index.html` carries `<canvas id="canvas" width="640" height="480">`
+  + a `#status` div.
+- **Browser check (supervisor, `agent-browser` on Chromium):** `#status` read
+  `WebGL2 OK — WebGL 2.0 (OpenGL ES 3.0 Chromium) — cleared 640x480 to
+  rgb(26,102,204)`; console clean (one benign deprecation warning, no errors);
+  screenshot (`p0_3.png`) shows the blue-cleared 640×480 canvas.
+
+**winit-web backend — VERIFIED live (built + run in a real browser).** Spike
+crate `oh-web-winit-spike`
+(`C:\Users\garyt\AppData\Local\Temp\opencode\oh-web-winit-spike`): adds
+`winit = "0.30"` (resolves to **winit 0.30.13**) on the same `web-sys`/`glow`
+set. `src/lib.rs` builds an `EventLoop`
+(`EventLoop::with_user_event().build()`), and in the `ApplicationHandler`
+`resumed` hook (the web loop emits `NewEvents(Init)` then `Resumed` at start)
+creates a `Window` bound to the page's `#canvas` via
+`WindowAttributesExtWebSys::with_canvas(Some(dom_canvas))`, pulls the canvas
+back with `WindowExtWebSys::canvas()`, and clears through `glow`; the loop is
+started with `EventLoopExtWebSys::spawn_app(app)` (returns immediately — **no**
+blocking loop). All web-specific traits live in
+`winit::platform::web::{EventLoopExtWebSys, WindowAttributesExtWebSys,
+WindowExtWebSys}` (not `winit::event_loop`).
+- `cargo build --target wasm32-unknown-unknown` → **PASS** (winit 0.30.13 +
+  deps cross-compile clean); `trunk build` → **success** (emits `dist/` with
+  `index.html` + `*_bg.wasm` + `*.js`).
+- **Browser check (supervisor, `agent-browser` on Chromium):** the served page's
+  `#status` read `winit-web OK — WebGL 2.0 (OpenGL ES 3.0 Chromium) — cleared
+  640x480 to rgb(26,102,204)`; the console had **no errors**; the screenshot
+  shows the blue-cleared 640×480 canvas. The winit 0.30 web windowing layer is
+  therefore **verified live**.
+
+Net: the former "pending P0.3" item is now fully resolved — **both** web render
+paths are **verified live** in a real browser: the plain `wasm-bindgen`+`glow`
+WebGL2 path (direct `WebGl2RenderingContext`) **and** the `winit` 0.30 web
+windowing layer (`EventLoopExtWebSys::spawn_app` + a `Window` bound to the page
+canvas via `WindowAttributesExtWebSys::with_canvas`). P0.3 is complete.
 
 ## Phase 0 status (2026-10-16)
 
@@ -95,6 +142,14 @@ is not confirmed). Do not cite these as verified.
   go/no-go is blocked on a wasm C++ toolchain (wasi-sdk for `wasm32-wasip1`, or
   emscripten for `wasm32-unknown-unknown`) — see `.agents/skills/lib-mlua.md`
   §WASM and DECISIONS.md D-028a.
-- **P0.3 / P0.4: pending** — the web/browser rendering side (WebGL2 init, a
-  minimal `oh-web` compile, a served page booting to the menu) and the replay
-  corpus run against native vs web impls are not yet exercised.
+- **P0.3: web render path VERIFIED (both paths, live)** — the plain
+  `wasm-bindgen`+`glow` WebGL2 path **and** the `winit` 0.30 web windowing layer
+  (`EventLoopExtWebSys::spawn_app`, a `Window` bound to the page canvas via
+  `WindowAttributesExtWebSys::with_canvas`), each browser-checked via
+  `agent-browser` on a served page (see §"P0.3 — web render path (verified)").
+  **P0.4 (VFS contract inventory): COMPLETE** — the asset/config filesystem
+  inventory + the minimal `oh-vfs` contract (asset/configuration provider, not a
+  general filesystem) is specified in
+  `.agents/tasks/issue-026a-oh-vfs.md` (the Phase 1 / 26a prerequisite). The
+  **replay corpus run** against native vs web impls (the original P0.4 body) is
+  still pending.
