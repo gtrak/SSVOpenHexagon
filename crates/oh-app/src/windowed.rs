@@ -2642,7 +2642,22 @@ impl WindowedClient {
         render_size.update(window.get_width(), window.get_height());
         // C++ `if(mustRecreate) recreateWindow();` (GameWindow.hpp:123) —
         // the port creates the window once (no runtime recreation; module
-        // docs).
+        // docs). The vsync half of that recreation IS live-applicable: the
+        // C++'s `recreateWindow` ends with `renderWindow.setVerticalSync
+        // Enabled(vsync)` (GameWindow.hpp:94 — the pinned SFML's
+        // `eglSwapInterval(display, vsync ? 1 : 0)`), and the options'
+        // "vsync" toggle (MenuGame.cpp:1425-1426 → `Config::setVsync`,
+        // Config.cpp:685-689) writes the CONFIG here — the C++'s
+        // `mustRecreate` re-applies it on the next iteration's recreation.
+        // The port applies the same observable change — the live EGL swap
+        // interval — without recreating the winit window (the documented
+        // recreation gap; the full recreation is lane 029w's scope).
+        // The `!=` gate: the EGL request only on an ACTUAL change (the
+        // per-frame cost is a single `RwLock` read + a bool compare).
+        let cfg_vsync = config.read().expect("config poisoned").get_vsync();
+        if window.get_vsync() != cfg_vsync {
+            window.set_vsync(cfg_vsync);
+        }
         // C++ `renderWindow.setActive(true);` (GameWindow.hpp:125) — the
         // GL context is current by construction (glutin).
         // C++ `this->clear();` (GameWindow.hpp:126; `clear` at :157-160,

@@ -570,3 +570,26 @@ fn gpu_smoke() {
     }
     let _ = std::fs::remove_file(&shot);
 }
+
+// 025j — the swap-interval wiring: `Window::set_vsync` applies the live
+// interval through `GlParts::set_swap_interval` (glutin's
+// `GlSurface::set_swap_interval` — the pinned SFML's `eglSwapInterval`
+// equivalent, `GlParts::set_swap_interval`'s docs). glutin has no
+// read-back of the interval, so this is the no-panic round trip on a live
+// context (the device lane verifies the observable swap behaviour on the
+// phone); the headless store-only half is the `window_headless_surface`
+// test above.
+#[test]
+fn set_vsync_round_trips_and_applies_on_a_live_context() {
+    let mut win = Window::create(64, 64, "oh-render-swap-interval");
+    if win.gl().is_none() {
+        println!(
+            "SKIP: no display/GPU in this environment (winit/GL bootstrap failed or is unavailable); headless path active"
+        );
+        return;
+    }
+    win.set_vsync(true);
+    assert!(win.get_vsync());
+    win.set_vsync(false);
+    assert!(!win.get_vsync());
+}
