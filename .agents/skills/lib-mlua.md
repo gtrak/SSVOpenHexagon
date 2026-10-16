@@ -78,3 +78,51 @@ String→number parsing (`convert.rs` `parse_lua_number`) is Lua 5.1 `tonumber`:
 - Don't hold a `Table`/`Function` across a second eval from another thread — the state is one-thread-owned (C++ parity).
 - Don't call `mlua::Value::to_string()` for number→string where C++ `lua_tostring` output matters (formatting divergence above).
 - `Lua::new()` panics on OOM; `oh_lua::LuaContext::new()` documents that as the fatal-creation contract (like a C++ `bad_alloc` from `lua_newstate`).
+
+## WASM / web (the D-028a gate)
+
+Phase 0 (issue 26, 2026-10-16) ran the Luau go/no-go (DECISIONS.md D-028a) on
+both installed wasm targets. The script/backend is **not** the blocker — the
+**wasm C++ toolchain** is. Versions read: `mlua-sys 0.6.8`
+(`~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mlua-sys-0.6.8/`,
+build scripts `build/main_inner.rs` + `build/find_vendored.rs` + `Cargo.toml`),
+`luau0-src 0.12.3+luau663` (registry; **not** in `Cargo.lock`, since
+`oh-lua` uses `luajit`+`vendored` — it is pulled only when the `luau` feature
+is on), `cc 1.8.0` (`Cargo.lock:230-232`), `getrandom 0.2.17`
+(`Cargo.lock:815-819`), `discord-rich-presence 1.1.0` (`Cargo.lock:437-439`),
+`uuid 0.8.2` (`Cargo.lock:3070-3074`).
+
+- **`wasm32-unknown-unknown`, `vendored` OFF and ON → both FAIL:**
+  `mlua-sys ... cc-rs: failed to find tool "clang++"` (via
+  `luau0-src 0.12.3+luau663`). `vendored` is a **no-op for Luau**:
+  `mlua-sys/build/main_inner.rs` routes
+  `cfg(any(feature = "luau", feature = "vendored"))` to `find_vendored.rs`, and
+  `mlua-sys/Cargo.toml` has `vendored = ["lua-src", "luajit-src"]` (does **not**
+  gate `luau0-src`) while `luau = ["luau0-src"]` — so `find_vendored.rs`
+  builds Luau from `luau0_src::Build::new()...build()` (a `cc` C++ compile)
+  regardless of `vendored`. Enabling `vendored` changes nothing for Luau.
+- **`wasm32-wasip1` (installed) with a host clang 22.1.8** (which does list a
+  `wasm32` backend) → still FAILS at the definitive point:
+  `fatal error: 'iterator' file not found` compiling
+  `luau/Ast/include/Luau/Ast.h` via `clang++ --target=wasm32-wasip1 -std=c++17`
+  — i.e. **no wasm C++ standard library** (no libc++/wasi-libc C++ headers).
+- **Native control (`cargo run`) → PASS** (`third=0.33333333333333`, table loop
+  `sum=20`): the script/backend is fine; only the wasm C++ toolchain is missing.
+- **`oh-lua` transitive blockers (on `wasm32-unknown-unknown`):**
+  (1) `getrandom 0.2.17` `compile_error!` at
+  `getrandom-0.2.17/src/lib.rs:346` — "the wasm\*-unknown-unknown targets are
+  not supported by default, you may need to enable the `js` feature" — reached
+  via `oh-lua → oh-game → oh-discord → discord-rich-presence 1.1.0 →
+  uuid 0.8.2 → getrandom 0.2.17`; (2) `libz-sys` clang (via `oh-replay`'s
+  flate2 `zlib` feature — see `.agents/skills/lib-flate2.md`); plus a latent (3):
+  `lua-src`/`luajit-src` (LuaJIT C) would need a wasm C compiler.
+
+**Toolchain requirement (the bottom line):** Luau **cannot** build on
+`wasm32-unknown-unknown` at all (no libc/stdlib; would require
+**emscripten/emsdk**). The viable path is **`wasm32-wasip1` + wasi-sdk**
+(clang++ + wasi-libc + libc++). In this environment: node v24.13.0 (node:wasi
+present); `wasmtime`/`wasmer` **not** installed; `emcc`/`emsdk`/`wasi-sdk`
+**not** installed; host clang 22.1.8 at `C:\Program Files\LLVM`. wasi-sdk
+prebuilt releases were **not reachable here** (an environment limitation, not a
+code limitation) — so the Luau gate is **toolchain-gated**, not yet PASS/FAIL on
+compatibility. See `.agents/skills/lib-web-stack.md` for the full matrix.

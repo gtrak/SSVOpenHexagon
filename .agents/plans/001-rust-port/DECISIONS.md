@@ -720,7 +720,26 @@ NOT `cargo check --target wasm32-unknown-unknown`.
 - **Do NOT assume** mlua's Luau backend builds/executes on
   `wasm32-unknown-unknown` — a minimal **compile-and-execute** test is
   required (Phase 0).
-- **Status:** decided.
+- **Phase 0 gate evidence (2026-10-16, P0.2):** the compile-and-execute probe
+  was run on both installed wasm targets. **Luau does NOT build on
+  `wasm32-unknown-unknown` at all** — `mlua-sys` (0.6.8) → `luau0-src
+  0.12.3+luau663` needs a C++ standard library that target has no way to supply
+  (`cc-rs: failed to find tool "clang++"`). `vendored` is a **no-op for Luau**
+  (`mlua-sys/build/main_inner.rs` routes `any(feature="luau", feature="vendored")`
+  to `find_vendored.rs`; `vendored = ["lua-src","luajit-src"]` does not gate
+  `luau0-src`). On `wasm32-wasip1` with a host clang 22.1.8 it still fails at
+  `fatal error: 'iterator' file not found` (no wasm C++ stdlib). The native
+  control (`cargo run`) PASSES, so the script/backend is fine — **the blocker is
+  purely a missing wasm C++ toolchain, not a Lua/Luau compatibility question.**
+  The viable path is **`wasm32-wasip1` + wasi-sdk** (clang++ + wasi-libc +
+  libc++); the alternative is **emscripten/emsdk** for `wasm32-unknown-unknown`.
+  wasi-sdk / emsdk were not reachable in this environment (env limitation, not a
+  code limitation).
+- **Status:** decided — **now explicitly toolchain-gated.** Lane 26b must own
+  provisioning + acceptance of the wasm C++ toolchain (wasi-sdk for
+  `wasm32-wasip1`, or emscripten) before the Luau go/no-go can reach a
+  compatibility PASS/CONDITIONAL PASS/FAIL. Skill: `.agents/skills/lib-mlua.md`
+  §WASM; `.agents/skills/lib-web-stack.md`.
 
 ### D-028b — Web replay compression (miniz_oxide): yes, with a clearer replay contract
 
@@ -738,7 +757,18 @@ NOT `cargo check --target wasm32-unknown-unknown`.
 - **Do not weaken replay compatibility until a concrete incompatibility is
   demonstrated** — test the substitution (miniz_oxide compress ↔ zlib
   decompress and vice-versa) rather than assuming best-effort.
-- **Status:** decided.
+- **Phase 0 evidence (2026-10-16, P0.1): PASS.** The substitution was tested,
+  not assumed. On the fixture `test/fixtures/cube_1_apeirogon.ohr.z` (a
+  569-byte serialized replay): (a) the repo's zlib stream (101 B) →
+  `miniz_oxide::inflate::decompress_to_vec_zlib` (miniz_oxide 0.9.1) → the exact
+  569 bytes; (b) `miniz_oxide::deflate::compress_to_vec_zlib(.., 9)` (112 B) →
+  the repo's `decompress_replay_file` → `ReplayFile ==` original, field-for-field.
+  The compressed bytes differ (101 vs 112) — expected, since the contract is
+  **lossless logical recovery, not byte-identity**; byte-identity remains a
+  desktop-oracle property (pinned only by the C++ `compress2` oracle). miniz_oxide
+  is therefore a safe web substitution for interchange. Skill:
+  `.agents/skills/lib-flate2.md`.
+- **Status:** decided (P0.1 PASS).
 
 ### D-028c — v1 scope: prototype yes; silent shipping release only if justified
 

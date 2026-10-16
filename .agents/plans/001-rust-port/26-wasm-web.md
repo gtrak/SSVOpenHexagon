@@ -1,11 +1,55 @@
 # Issue 26 — Investigation: a WASM/Web port (`wasm32-unknown-unknown`)
 
 Status: **approved for 26a + a Phase 0 feasibility spike** (no code landed
-yet). Phase 1+ is gated on Phase 0 evidence; v1 is a **feasibility prototype**,
-not a product commitment (D-028c). This file is the decision surface: what
-blocks, what substitutes, what stays. The port discipline (literal 1:1,
+yet). **Phase 0 is partially complete (2026-10-16): P0.1 PASS (replay
+compression interchange); P0.2 core cross-compile PASS but the Luau go/no-go is
+toolchain-gated; P0.3/P0.4 pending** — see `## Phase 0 findings` below. Phase
+1+ is gated on Phase 0 evidence; v1 is a **feasibility prototype**, not a
+product commitment (D-028c). This file is the decision surface: what blocks,
+what substitutes, what stays. The port discipline (literal 1:1,
 determinism-first) applies double here: the browser is the one platform where
 our byte-exactness guarantees are at risk from the substrate itself.
+
+## Phase 0 findings (2026-10-16)
+
+Phase 0's risky assumptions were probed on this box (2026-10-16). Two of the
+four sub-items are done; the web/browser rendering side is not yet exercised.
+Full detail lives in the skills — this is the decision record.
+
+- **P0.1 — replay compression interchange: PASS.** The D-028b substitution is
+  proven, not assumed: `miniz_oxide 0.9.1` (`deflate::compress_to_vec_zlib(..,
+  9)` / `inflate::decompress_to_vec_zlib`) round-trips the repo's zlib
+  compressed replay **losslessly** against `oh-replay`'s `decompress_replay_file`
+  (field-for-field `ReplayFile ==`), and the repo's zlib stream decompresses to
+  the exact 569-byte serialized replay under miniz_oxide. The compressed bytes
+  differ (101 vs 112) — expected; the contract is **lossless logical recovery,
+  not byte-identity** (byte-identity stays a desktop-oracle property). Skill:
+  `.agents/skills/lib-flate2.md`.
+- **P0.2 — core cross-compile + Luau gate: core PASS; the Luau go/no-go is
+  toolchain-gated.** `cargo check --target wasm32-unknown-unknown -p oh-math -p
+  oh-rng -p oh-data -p oh-config` → all four clean. `oh-replay` FAILs on
+  `libz-sys` (`failed to find tool "clang"` — the D-028b substitution point, web
+  uses miniz_oxide). `oh-lua` FAILs on (1) `getrandom 0.2.17` (needs the `js`
+  feature; path `oh-lua → oh-game → oh-discord → discord-rich-presence → uuid →
+  getrandom`), (2) `libz-sys`, plus a latent (3) LuaJIT C. **The Luau gate
+  (D-028a):** Luau (mlua `luau` → `luau0-src 0.12.3+luau663`) does **NOT build
+  on `wasm32-unknown-unknown`** (no libc/stdlib; `vendored` is a no-op for
+  Luau — `mlua-sys/build/main_inner.rs` routes `luau` to a `cc` C++ compile
+  regardless). On `wasm32-wasip1` with a host clang 22.1.8 it still fails at
+  `fatal error: 'iterator' file not found` (no wasm C++ standard library). The
+  native control (`cargo run`) PASSES, so the script/backend is fine — the
+  blocker is purely the **wasm C++ toolchain**: **wasi-sdk** (clang++ +
+  wasi-libc + libc++) for `wasm32-wasip1`, or **emscripten/emsdk** for
+  `wasm32-unknown-unknown`. Neither wasi-sdk nor emsdk is installed here (env
+  limitation, not a code limitation), so the gate is **toolchain-gated**, not
+  yet a compatibility PASS/FAIL. Skill: `.agents/skills/lib-mlua.md` §WASM.
+- **P0.3 / P0.4 — pending.** The web/browser rendering side (WebGL2 init through
+  the windowing stack, a minimal `oh-web` compile for
+  `wasm32-unknown-unknown`, a served page booting to the menu via
+  `agent-browser`) and the replay corpus run against native vs web impls have
+  not yet been exercised. Tooling note: `trunk 0.20.3` + node v24.13.0 are
+   present; `wasm-bindgen`/`wasm-pack`/`wasmtime`/`wasmer` are not. Skill:
+   `.agents/skills/lib-web-stack.md`.
 
 ## What already works in our favor
 
