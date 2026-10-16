@@ -10,9 +10,11 @@
 //! - [`states`] — §11.1 the `States` enum (+ `PackChange` / `DialogInputState`),
 //!   `is_entering_text`
 //! - [`seams`] — the `fnHG*` hexagon-game callback seams, the asset/config/
-//!   network/audio seam traits (the `fnHGNewGame`/`fnHGTriggerRefresh`/
+//!   network/audio/window seam traits (the `fnHGNewGame`/`fnHGTriggerRefresh`/
 //!   `fnHGUpdateRichPresenceCallbacks` closures, `MenuAssets`, `MenuConfig`,
-//!   the issue-017 `NetworkClient` seam, `AudioSink`)
+//!   the issue-017 `NetworkClient` seam, `AudioSink`, the issue-025f
+//!   `MenuTouch` finger seam, the issue-025g `MenuWindow` actual-window-size
+//!   seam)
 //! - [`layout`] — §11.11/11.12/11.13 layout constants, font-sizing math,
 //!   `refresh_camera`, `calc_menu_offset` / `calc_menu_item_offset`
 //! - [`menu`] — §11.6 every menu + every item (verbatim names + callbacks)
@@ -41,9 +43,9 @@ pub use menu_game::{LevelDrawer, MenuGame, Shared};
 pub use oh_menu_system::{Category, Item, Menu};
 pub use real::RealMenuAssets;
 pub use seams::{
-    AudioSink, ConfigValues, ConnectionState, FakeAssets, FakeConfig, IgnoreInputsCallback,
-    LevelInfo, MenuAssets, MenuConfig, MenuTouch, NetEvent, NetworkClient, NewGameCallback,
-    NoopNetwork, NoopTouch, PackDataInfo, RecordingAudio, RichPresenceCallback, ScoreEntry,
-    StyleBackground, TriggerRefreshCallback,
+    AudioSink, ConfigValues, ConnectionState, FakeAssets, FakeConfig, FakeWindow,
+    IgnoreInputsCallback, LevelInfo, MenuAssets, MenuConfig, MenuTouch, MenuWindow, NetEvent,
+    NetworkClient, NewGameCallback, NoopNetwork, NoopTouch, PackDataInfo, RecordingAudio,
+    RichPresenceCallback, ScoreEntry, StyleBackground, TriggerRefreshCallback,
 };
 pub use states::{DialogInputState, PackChange, States};

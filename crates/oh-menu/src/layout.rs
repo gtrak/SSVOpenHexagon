@@ -276,6 +276,52 @@ mod tests {
         assert_eq!(skew, 0.8);
     }
 
+    /// issue 025g — the desktop (window == config) case: when the actual
+    /// window size equals the config size, the C++ formula's output is the
+    /// value the pre-025g port computed from the config — the desktop must
+    /// not change. 1024×768: fmax = max(1024/1024, 768/768) = 1 → w = 1024,
+    /// h = 768; fourByThree = 10×1024/768 = 13.33 < 16 → true, skew 0.8.
+    #[test]
+    fn refresh_view_matching_window_desktop_unchanged() {
+        let (w, h, fbt, skew) = refresh_view(1024.0, 768.0);
+        assert!((w - 1024.0).abs() < 1e-3);
+        assert!((h - 768.0).abs() < 1e-3);
+        assert!(fbt);
+        assert_eq!(skew, 0.8);
+        // Scale-invariance: the desktop window is config × pixelMult — a
+        // uniform factor leaves the math unchanged (2×: fmax = 0.5, w =
+        // 2048×0.5, h = 1536×0.5).
+        let (w2, h2, fbt2, skew2) = refresh_view(2048.0, 1536.0);
+        assert!((w2 - 1024.0).abs() < 1e-3);
+        assert!((h2 - 768.0).abs() < 1e-3);
+        assert!(fbt2);
+        assert_eq!(skew2, 0.8);
+    }
+
+    /// issue 025g — the mismatched (mobile-like) case: the phone's actual
+    /// window 1530×678 vs a 1024×768-ish config. The formula must run on
+    /// the ACTUAL window: fmax = max(1024/1530, 768/678) = 768/678 ≈
+    /// 1.1327 → w = 1530×768/678 = 1733.097…, h = 678×768/678 = 768;
+    /// fourByThree = 10×1530/678 = 22.57 > 16 → false, skew 0.6. The
+    /// config-size input (1024×768) gives (1024, 768) — a different
+    /// space: the pre-025g port's defect.
+    #[test]
+    fn refresh_view_mismatched_mobile_window() {
+        let (w, h, fbt, skew) = refresh_view(1530.0, 678.0);
+        assert!((w - 1530.0 * 768.0 / 678.0).abs() < 1e-3); // 1733.097…
+        assert!((w - 1733.097).abs() < 1e-1);
+        assert!((h - 768.0).abs() < 1e-3);
+        assert!(!fbt);
+        assert_eq!(skew, 0.6);
+        // The config input would have produced a different space — the
+        // divergence the fix removes (the probe read (1024, 1024) for the
+        // port's config-derived phone space).
+        let (cw, ch, cfbt, _c_skew) = refresh_view(1024.0, 768.0);
+        assert!((cw - w).abs() > 100.0);
+        assert!((ch - h).abs() < 1e-3); // h happens to coincide (768)
+        assert_ne!(cfbt, fbt);
+    }
+
     #[test]
     fn calc_menu_offset_eases_to_max() {
         let mut offset = 0.0;

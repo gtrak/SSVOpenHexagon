@@ -520,12 +520,51 @@ pub trait MenuTouch {
     /// C++ `window.getFingerDownCount()` — the number of fingers down.
     fn finger_down_count(&self) -> usize;
     /// C++ `window.getFingerDownPositions()` — the down fingers' current
-    /// positions in LOGICAL window coordinates (the C++'s
-    /// `getWindowWidth()` / `getWindowHeight()` member space, the
-    /// port's `Shared::w` / `Shared::h`); `(0, 0)` for a down finger
-    /// with no recorded position (the C++'s unknown-position value,
-    /// GameWindow.hpp:299-309).
+    /// positions in window coordinates (the C++'s `mapPixelToCoords`,
+    /// GameWindow.hpp:285-287 — the space the grid's thirds run in, the
+    /// C++ `getWindowWidth()` / `getWindowHeight()` space, [`MenuWindow`];
+    /// issue 025g: the port's feed maps physical touch pixels to the
+    /// window's CURRENT size, so in every live steady state the
+    /// coordinates are in the actual-window space — on Android the
+    /// `Resized` fold sets the window's size to the native size, making
+    /// the scale the identity); `(0, 0)` for a down finger with no
+    /// recorded position (the C++'s unknown-position value, GameWindow
+    /// .hpp:299-309).
     fn finger_down_positions(&self) -> Vec<Vec2>;
+}
+
+/// issue 025g — the C++ ctor's `window` reference (MenuGame.hpp:111 —
+/// `ssvs::GameWindow& window`) size half: the C++
+/// `MenuGame::getWindowWidth()` / `getWindowHeight()` (MenuGame.cpp:
+/// 3350-3357) read `window.getRenderWindow().getSize()` — the ACTUAL
+/// current render-target size (the desktop's requested physical size,
+/// the Android native window's screen size), NOT the config's
+/// resolution (`Config::getSizeX()` / `getSizeY()`). The port's
+/// equivalent source is the window's current size bookkeeping
+/// (`oh_render` `Window::get_width()` / `get_height()` — the
+/// `WindowEvent::Resized` fold's `set_size`, the creation size before
+/// the first resize), refreshed per frame by the composition
+/// (`oh_app::windowed::tick_fields` — the liveness the C++ gets from
+/// reading the window object at every call site).
+///
+/// Every menu-layout consumer of the C++'s `getWindowWidth()` /
+/// `getWindowHeight()` runs in this space: `refreshCamera()`'s view
+/// math (MenuGame.cpp:3129-3136 — the port's `layout::refresh_view`),
+/// the 9-zone touch grid's thirds (MenuGame.cpp:2804-2807), and the
+/// `drawOnlineStatus` identity view (MenuGame.cpp:6001-6002). The
+/// config-vs-actual divergence this fixes: on the phone the window is
+/// 1530×678 (the screen minus system bars) while the config
+/// resolution is 1024×768-ish, so a config-derived layout space put
+/// the grid's thirds in the wrong place (the 025g device finding — a
+/// center tap landed in the "right" band). On the desktop the two
+/// agree (window == config resolution × pixelMult, and the
+/// `refresh_view` math is scale-invariant under a uniform factor), so
+/// the desktop layout is unchanged.
+pub trait MenuWindow {
+    /// C++ `getWindowWidth()` (MenuGame.cpp:3350-3352).
+    fn width(&self) -> f32;
+    /// C++ `getWindowHeight()` (MenuGame.cpp:3355-3357).
+    fn height(&self) -> f32;
 }
 
 // ---------------------------------------------------------------------------
@@ -760,6 +799,41 @@ impl MenuAssets for FakeAssets {
     }
     fn local_profile_score(&self, _validator: &str) -> f32 {
         0.0
+    }
+}
+
+/// issue 025g — a `MenuWindow` backed by a mutable size (the tests'
+/// window-resize handle — the C++ `window.onRecreation`'s size half).
+/// The default 800×450 matches `FakeConfig`'s default `size_x` /
+/// `size_y` — the desktop "window == config" case, where the C++'
+/// render size and the config size agree.
+pub struct FakeWindow {
+    size: RefCell<(f32, f32)>,
+}
+
+impl FakeWindow {
+    #[must_use]
+    pub fn new() -> Rc<Self> {
+        Rc::new(Self {
+            size: RefCell::new((800.0, 450.0)),
+        })
+    }
+    /// A test-side window resize (the C++'s `onRecreation` size half).
+    pub fn set_size(&self, width: f32, height: f32) {
+        *self.size.borrow_mut() = (width, height);
+    }
+    #[must_use]
+    pub fn size(&self) -> (f32, f32) {
+        *self.size.borrow()
+    }
+}
+
+impl MenuWindow for FakeWindow {
+    fn width(&self) -> f32 {
+        self.size.borrow().0
+    }
+    fn height(&self) -> f32 {
+        self.size.borrow().1
     }
 }
 

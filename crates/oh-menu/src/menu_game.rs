@@ -32,8 +32,8 @@ use crate::layout::{
 };
 use crate::menu;
 use crate::seams::{
-    AudioSink, IgnoreInputsCallback, LevelInfo, MenuAssets, MenuConfig, MenuTouch, NetEvent,
-    NetworkClient, NewGameCallback, RichPresenceCallback, TriggerRefreshCallback,
+    AudioSink, IgnoreInputsCallback, LevelInfo, MenuAssets, MenuConfig, MenuTouch, MenuWindow,
+    NetEvent, NetworkClient, NewGameCallback, RichPresenceCallback, TriggerRefreshCallback,
 };
 use crate::states::{DialogInputState, PackChange, States};
 
@@ -145,6 +145,15 @@ pub struct Shared {
     /// (the 9-zone grid's `getFingerDownCount` / `getFingerDownPositions`
     /// data, MenuGame.cpp:2802-2835).
     touch: Rc<dyn MenuTouch>,
+    /// issue 025g — the C++ ctor's `window` reference's size half
+    /// (MenuGame.hpp:111 — the C++ `MenuGame::getWindowWidth()` /
+    /// `getWindowHeight()`, MenuGame.cpp:3350-3357, read
+    /// `window.getRenderWindow().getSize()` — the ACTUAL current
+    /// render-target size, NOT the config's resolution; the 9-zone
+    /// grid's thirds, `refresh_camera`'s view math, and the
+    /// `drawOnlineStatus` identity view run in this space —
+    /// `seams::MenuWindow`'s docs).
+    window: Rc<dyn MenuWindow>,
     new_game: Option<NewGameCallback>,
     trigger_refresh: Option<TriggerRefreshCallback>,
     rich_presence: Option<RichPresenceCallback>,
@@ -160,6 +169,7 @@ impl Shared {
         network: Rc<dyn NetworkClient>,
         audio: Rc<dyn AudioSink>,
         touch: Rc<dyn MenuTouch>,
+        window: Rc<dyn MenuWindow>,
         new_game: Option<NewGameCallback>,
         trigger_refresh: Option<TriggerRefreshCallback>,
         rich_presence: Option<RichPresenceCallback>,
@@ -234,6 +244,7 @@ impl Shared {
             network,
             audio,
             touch,
+            window,
             new_game,
             trigger_refresh,
             rich_presence,
@@ -263,6 +274,14 @@ impl Shared {
     #[must_use]
     pub fn touch(&self) -> &Rc<dyn MenuTouch> {
         &self.touch
+    }
+
+    /// The C++ ctor's `window` reference's size half (`seams::MenuWindow`'s
+    /// docs — issue 025g): the actual current window size the C++ reads
+    /// live from `window.getRenderWindow().getSize()`.
+    #[must_use]
+    pub fn window(&self) -> &Rc<dyn MenuWindow> {
+        &self.window
     }
 
     /// C++ `window.stop()` (EXIT items).
@@ -1014,6 +1033,7 @@ impl MenuGame {
         network: Rc<dyn NetworkClient>,
         audio: Rc<dyn AudioSink>,
         touch: Rc<dyn MenuTouch>,
+        window: Rc<dyn MenuWindow>,
         new_game: Option<NewGameCallback>,
         trigger_refresh: Option<TriggerRefreshCallback>,
         rich_presence: Option<RichPresenceCallback>,
@@ -1026,6 +1046,7 @@ impl MenuGame {
             network,
             audio,
             touch,
+            window,
             new_game,
             trigger_refresh,
             rich_presence,
@@ -1099,15 +1120,19 @@ impl MenuGame {
         self.shared.borrow().state
     }
 
-    /// C++ `getWindowWidth()` / `getWindowHeight()` (MenuGame.cpp:2804-
-    /// 2807, 3131-3168) — the logical window size (the `width` / `height`
-    /// members `refresh_camera` recomputes from the config size): the
+    /// C++ `getWindowWidth()` / `getWindowHeight()` (MenuGame.cpp:
+    /// 3350-3357) — the ACTUAL current window size (the render-target /
+    /// window size the C++ reads live from its `window` reference — the
     /// space the 9-zone touch grid's third-math and the C++'s
-    /// `getFingerDownPositions()` coordinates run in.
+    /// `getFingerDownPositions()` coordinates run in; `seams::MenuWindow`
+    /// for the port source + the config-vs-actual divergence this fixes,
+    /// issue 025g). NOT the derived layout space (`Shared::w` / `h` —
+    /// the C++ `refreshCamera`'s `w` / `h` member output):
     #[must_use]
     pub fn window_size(&self) -> (f32, f32) {
         let s = self.shared.borrow();
-        (s.w, s.h)
+        let win = s.window();
+        (win.width(), win.height())
     }
 
     /// The name of the currently selected item in the active menu
@@ -1192,11 +1217,27 @@ impl MenuGame {
     /// C++ `refreshCamera()` (§11.11) — recompute `w`/`h`, aspect flag,
     /// background skew and the per-font char sizes; reset all category
     /// offsets to 0.
+    ///
+    /// issue 025g — the C++'s view math runs on `getWindowWidth()` /
+    /// `getWindowHeight()` (MenuGame.cpp:3131-3136 —
+    /// `window.getRenderWindow().getSize()`, the ACTUAL current render
+    /// target — the desktop's requested physical size, the Android
+    /// native window's screen size), NOT on `Config::getSizeX()` /
+    /// `getSizeY()`: on the phone the window is 1530×678 while the
+    /// config resolution is 1024×768-ish, so the config-derived space
+    /// the port used to read put the 9-zone grid's thirds in the wrong
+    /// place (a center tap landed in the "right" band — the 025g device
+    /// finding). The desktop is unchanged: the window matches the
+    /// config resolution × pixelMult there, and the `refresh_view`
+    /// math is scale-invariant under a uniform factor (the C++'s
+    /// `backgroundCamera` / `overlayCamera` derivation, MenuGame.cpp:
+    /// 3138-3159, is applied to these values by the draw bridge —
+    /// `oh_app::menu_draw::refresh_if_stale`).
     pub fn refresh_camera(&self) {
         let (size_x, size_y) = {
             let s = self.shared.borrow();
-            let c = s.config();
-            (c.size_x(), c.size_y())
+            let win = s.window();
+            (win.width(), win.height())
         };
         let (w, h, four_by_three, skew) = refresh_view(size_x, size_y);
         let sizes = char_sizes(four_by_three);
@@ -1827,9 +1868,14 @@ impl MenuGame {
         // deliver, 025f), the top / bottom bands to `upAction` /
         // `downAction`. Finger data is the platform's `MenuTouch` seam
         // (the C++'s `window.getFingerDownCount()` /
-        // `getFingerDownPositions()` — LOGICAL coordinates, the C++'s
-        // `getWindowWidth()` / `getWindowHeight()` member space, here
-        // `s.w` / `s.h`); headless / desktop feed `NoopTouch` (never
+        // `getFingerDownPositions()` — window coordinates, the C++'s
+        // `getWindowWidth()` / `getWindowHeight()` space — the ACTUAL
+        // current window size, issue 025g: the C++'s grid thirds run on
+        // `getWindowWidth()` / `getWindowHeight()` (MenuGame.cpp:2804-
+        // 2807), the live render-target size, NOT the derived `w` /
+        // `h` layout space the port used to return from
+        // `window_size()` (the config-vs-actual divergence — the 025g
+        // device finding)); headless / desktop feed `NoopTouch` (never
         // fires — the C++ desktop's `Touch::isDown`-always-false
         // equivalent), and the desktop MOUSE is deliberately NOT wired to
         // the zones (the `MouseButtonReleased` exec path would
