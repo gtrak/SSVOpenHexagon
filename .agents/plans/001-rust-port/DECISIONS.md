@@ -691,11 +691,59 @@ master's own on-device fixes:
   implementation) is decided at 25c's landing: one text pipeline wins,
   the other is retired with its tests.
 
-## D-028 — wasm/web investigation opened (issue 26)
+## D-028 — wasm/web: a bounded portability experiment (issue 26)
 
-`26-wasm-web.md` is the investigation record. Decision requests for the
-user: (1) Luau instead of LuaJIT on web only (behavioral compat — LuaJIT
-does not run on wasm); (2) miniz_oxide replay deflate on web only (the
-D-006 zlib pin is system-zlib, libz-sys does not build on wasm);
-(3) v1 scope without net/steam/discord/audio. The main refactor is an
-`oh-vfs` trait (fetch-into-memory VFS on web) routing oh-assets/oh-config.
+Stance (user, post-investigation): this is a **bounded portability
+experiment**, NOT an approval of the whole port. The user approves **26a
+(`oh-vfs`)** + a **narrow Phase 0 feasibility spike** and requires evidence
+before committing to the rest. The real risk is **behavioral differences**,
+not whether Rust compiles to wasm. Phase 1+ is gated on Phase 0 evidence; the
+three decisions below are tracked **separately** (D-028a/b/c) so a stop can
+isolate what to retain. The strongest reason to pursue: the VFS boundary +
+platform separation may be useful beyond wasm. Track the **native regression
+burden** of the VFS refactor explicitly. `26-wasm-web.md` is the record; the
+decisive milestone is **running a representative game session in a browser**,
+NOT `cargo check --target wasm32-unknown-unknown`.
+
+### D-028a — Web Lua runtime (Luau): conditional yes
+
+- **Decision:** Luau (mlua `luau`) on web only; desktop stays LuaJIT-locked.
+  Acceptable ONLY if script behavior is part of the compatibility contract
+  **where explicitly tested**, and the `oh-parity` corpus can establish that
+  boundary.
+- **Contract split:** distinguish **API parity / semantic parity / runtime
+  parity** (do not conflate them).
+- **Lane 26b is a real gate** with three outcomes: **PASS** (corpus + targeted
+  adversarial tests establish acceptable compatibility) / **CONDITIONAL PASS**
+  (differences identified, bounded, explicitly documented) / **FAIL** (scripts
+  rely on unreproducible behavior).
+- **Do NOT assume** mlua's Luau backend builds/executes on
+  `wasm32-unknown-unknown` — a minimal **compile-and-execute** test is
+  required (Phase 0).
+- **Status:** decided.
+
+### D-028b — Web replay compression (miniz_oxide): yes, with a clearer replay contract
+
+- **Decision:** establish which contract the replay system actually promises
+  before weakening anything.
+- **Verified finding:** replays are exchanged as an **encrypted compressed
+  blob** — `ClientToServer::CTSPCompressedReplay` → `send_encrypted`
+  (`crates/oh-net/src/client.rs`); the server calls `decompress_replay_file`
+  (`crates/oh-net/src/server.rs`). There is **no hash/signature/checksum over
+  the compressed payload** in `oh-replay`/`oh-net` (the `levelValidator` is a
+  separate field — used only for the supported-level gate + verbose log).
+- **Contract:** therefore the promise is **"same replay semantics —
+  decompression recovers the same logical replay"**, NOT byte-identity.
+  Byte-identity is asserted only by the desktop oracle pins in `oh-parity`.
+- **Do not weaken replay compatibility until a concrete incompatibility is
+  demonstrated** — test the substitution (miniz_oxide compress ↔ zlib
+  decompress and vice-versa) rather than assuming best-effort.
+- **Status:** decided.
+
+### D-028c — v1 scope: prototype yes; silent shipping release only if justified
+
+- **Decision:** v1 = no networking / Steam / Discord; audio may be silent
+  **only if justified**.
+- **Framing:** treat v1 as a **feasibility prototype**, not a product
+  commitment. Prove rendering + the game loop first (Phase 2 vertical slice).
+- **Status:** decided.

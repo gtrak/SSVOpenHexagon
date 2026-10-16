@@ -1,10 +1,11 @@
 # Issue 26 — Investigation: a WASM/Web port (`wasm32-unknown-unknown`)
 
-Status: **investigation/spec** (no code landed). This file is the decision
-surface: what blocks, what substitutes, what stays. The port discipline
-(literal 1:1, determinism-first) applies double here: the browser is the one
-platform where our byte-exactness guarantees are at risk from the substrate
-itself.
+Status: **approved for 26a + a Phase 0 feasibility spike** (no code landed
+yet). Phase 1+ is gated on Phase 0 evidence; v1 is a **feasibility prototype**,
+not a product commitment (D-028c). This file is the decision surface: what
+blocks, what substitutes, what stays. The port discipline (literal 1:1,
+determinism-first) applies double here: the browser is the one platform where
+our byte-exactness guarantees are at risk from the substrate itself.
 
 ## What already works in our favor
 
@@ -30,6 +31,14 @@ itself.
       different float formatting/GC timing. The 07 API surface would need
       re-verification against the C++ oracle corpus (oh-parity's Lua
       vectors). NOT byte-compatible; behavioral compatibility only.
+      **D-028a gate (conditional yes):** a real go/no-go with three outcomes
+      — **PASS** (corpus + targeted adversarial tests establish acceptable
+      compatibility) / **CONDITIONAL PASS** (differences identified, bounded,
+      explicitly documented) / **FAIL** (scripts rely on unreproducible
+      behavior). Distinguish **API parity / semantic parity / runtime
+      parity**. **Do NOT assume** mlua's Luau backend builds/executes on
+      `wasm32-unknown-unknown` — a minimal **compile-and-execute** test is
+      required (Phase 0).
    b. **Wasm Lua 5.4** (mlua `lua54` + a wasm-compatible `lua54-src`... not
       available; would need a hand-built Lua C shim via emscripten) — heavy.
    c. **Rust Lua interpreter** (e.g. `hematita`-class) — no.
@@ -43,10 +52,18 @@ itself.
    The CZHEX/replay byte-exactness pin was verified against system zlib.
    Substitution: `miniz_oxide` — its deflate output is *usually*
    zlib-compatible but NOT guaranteed byte-identical to `compress2(level 9)`.
-   Decision needed: re-pin the oracle corpus against miniz_oxide for the web
-   target (replays stay self-consistent on web; desktop replays remain the
-   canonical wire format — cross-platform replay exchange becomes
-   best-effort, documented).
+   **Replay contract (D-028b):** replays are exchanged as an **encrypted
+   compressed blob** — `ClientToServer::CTSPCompressedReplay` →
+   `send_encrypted` (`crates/oh-net/src/client.rs`); the server calls
+   `decompress_replay_file` (`crates/oh-net/src/server.rs`). There is **no
+   hash/signature/checksum over the compressed payload** in `oh-replay`/
+   `oh-net` (the `levelValidator` is a separate field). So the promise is
+   **"same replay semantics — decompression recovers the same logical
+   replay"**, NOT byte-identity; byte-identity is asserted only by the
+   desktop oracle pins in `oh-parity`. **Do not weaken replay compatibility
+   until a concrete incompatibility is demonstrated** — *test* the
+   substitution (miniz_oxide compress ↔ zlib decompress and vice-versa), do
+   not assume best-effort.
 3. **Filesystem**: no CWD, no `std::fs`. oh-assets has 13 `fs::` sites; the
    android extraction (25b SG4) already centralized content acquisition —
    the web analogue is a **fetch-into-memory VFS**: `_RELEASE` packed into
@@ -56,6 +73,13 @@ itself.
    exist yet — it is the main *refactor* this issue needs (oh-assets +
    oh-config's file reads route through it; behavior-identical on native,
    gate-enforced).
+   **Smallest contract (user guidance):** prefer the *smallest* contract that
+   matches actual use — an **asset/configuration provider**, not a general
+   filesystem. The browser needs only resolve-known-path / read /
+   load-config-and-defaults / predictable missing-asset handling. The
+   interface must **not force eager loading** (startup latency + memory).
+   Track the **native regression burden** of this refactor explicitly — it is
+   the largest reusable change even if the browser port is later abandoned.
 4. **std::thread** (2 sites in the render/app path — the audio mixer and
    the 25b extraction?): wasm is single-threaded (without COOP/COEP +
    atomics). Audit + cfg-gate; the game loop is already single-threaded.
@@ -90,13 +114,48 @@ itself.
 | 26c | the oh-web crate: winit-web entry + glow/WebGL2 + translate_for_gles reuse |
 | 26d | WebAudio sink (or silent-v1), flate2/miniz re-pin decision, content packing |
 
-## Decision requests (D-028 candidates — user call)
+## Decisions (D-028a/b/c — user call, resolved)
 
-1. Luau-instead-of-LuaJIT on web only (behavioral-compat; desktop stays
-   LuaJIT-locked)? — required for any real web game.
-2. miniz_oxide replay deflate on web only (web replays self-consistent,
-   cross-platform replay exchange documented best-effort)?
-3. v1 scope: no net/no steam/discord/no audio (silent) — acceptable?
+1. **D-028a — Web Lua runtime (Luau):** conditional yes. Acceptable only where
+   script behavior is explicitly tested and the `oh-parity` corpus establishes
+   that boundary; desktop stays LuaJIT-locked. Distinguish API / semantic /
+   runtime parity. Lane 26b is a real gate (PASS / CONDITIONAL PASS / FAIL);
+   do NOT assume mlua's Luau backend builds/executes on
+   `wasm32-unknown-unknown` (a compile-and-execute test is required).
+2. **D-028b — Web replay compression (miniz_oxide):** yes, with a clearer
+   replay contract. The exchange is an encrypted compressed blob with no
+   hash/checksum over the payload, so the contract is "same replay semantics —
+   decompression recovers the same logical replay", not byte-identity
+   (byte-identity is pinned only by the desktop `oh-parity` oracle). Do not
+   weaken replay compatibility until a concrete incompatibility is demonstrated
+   — test the substitution, don't assume best-effort.
+3. **D-028c — v1 scope:** prototype yes. v1 = no net/Steam/Discord; audio may
+   be silent only if justified. v1 is a feasibility prototype, not a shipping
+   commitment; prove rendering + the game loop first.
+
+## Sequencing (approved)
+
+The port is a gated progression; each phase has an explicit exit. Phase 0
+proves the risky assumptions **before** any broad refactoring.
+
+- **Phase 0 — prove the risky assumptions** (before broad refactoring):
+  compile a minimal `oh-web` binary for `wasm32-unknown-unknown`; execute a
+  representative script with Luau; test WebGL2 init through the windowing
+  stack; run the replay corpus against native and web impls.
+  *Exit: no fundamental toolchain/compatibility blocker.*
+- **Phase 1 — extract the VFS**: smallest useful abstraction, native behavior
+  retained. *Exit: native builds/tests pass; asset/config behavior
+  unchanged.* (Note: the largest reusable change even if the browser port is
+  later abandoned.)
+- **Phase 2 — playable vertical slice**: load real content, run scripts,
+  render, input, reach a representative gameplay state in a browser.
+  *Exit: a real gameplay loop works, not merely `cargo check`.*
+- **Phase 3 — ship/no-ship decision**: evaluate startup time, memory,
+  rendering correctness, browser support, replay compatibility,
+  silent-operation acceptability. *Exit: explicit ship/no-ship decision.*
+
+Defer audio / content-packing / peripheral browser features until Phase 2
+succeeds.
 
 ## Verification
 
