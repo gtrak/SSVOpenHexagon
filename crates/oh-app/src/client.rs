@@ -29,13 +29,19 @@ use crate::lifecycle::{create_folder_if_non_existant, load_and_reapply, ConfigSa
 /// headless (engine `:413-421` window-less + the replay run `:537-582`)
 /// → Finished (`:594-595`).
 ///
-/// `base_dir` = the process CWD (the binary passes
-/// `std::env::current_dir()`; the C++ paths — `Profiles/`, `Replays/`,
-/// `config.json`, the asset roots — are CWD-relative, and the C++'s
-/// `main()` chdir-to-`argv[0]`-parent (`main.cpp:650`) is NOT ported: it is
-/// a release-packaging convenience outside this issue's dispatch scope,
-/// and the Rust test idiom (oh-config/oh-assets) resolves against an
-/// explicit base dir instead).
+/// `base_dir` = the game-data root the binary's `dispatch::run` resolves
+/// and chdirs to before dispatching (the C++'s chdir to `argv[0]`'s
+/// parent, `main.cpp:653`, ported as
+/// `oh_app::dispatch::resolve_game_root` followed by `set_current_dir`):
+/// the executable's directory if it contains `Assets/` (the C++
+/// behavior), else the CWD if it does (the port's CWD-based test
+/// harnesses), else the nearest ancestor with `_RELEASE/Assets`, else
+/// the CWD. The C++ paths — `Profiles/`, `Replays/`, `config.json`, the
+/// asset roots — are CWD-relative, and the Rust test idiom
+/// (oh-config/oh-assets) resolves against an explicit base dir instead.
+/// Documented deviation: the C++ chdirs UNCONDITIONALLY to the exe dir;
+/// the port's fallback branches are reached only in layouts where the
+/// C++ would fail outright (`resolve_game_root`'s docs).
 ///
 /// `cli_level_name` / `cli_level_pack` are the C++ `-l` / `-p` arguments:
 /// the C++ headless branch IGNORES them (they are consumed by the windowed

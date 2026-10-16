@@ -35,7 +35,7 @@ use glow::HasContext;
 use glutin::config::ConfigTemplateBuilder;
 use glutin::context::{ContextAttributesBuilder, NotCurrentGlContext, PossiblyCurrentContext};
 use glutin::display::{Display, DisplayApiPreference, GlDisplay};
-use glutin::surface::{Surface, SurfaceAttributesBuilder, WindowSurface};
+use glutin::surface::{GlSurface, Surface, SurfaceAttributesBuilder, WindowSurface};
 use winit::event_loop::EventLoop;
 use winit::window::{Window as WinitWindow, WindowAttributes};
 
@@ -116,7 +116,7 @@ impl GlBackend {
         let surface_attrs =
             SurfaceAttributesBuilder::<WindowSurface>::new().build(window_handle, width, height);
         let surface = unsafe { display.create_window_surface(&config, &surface_attrs) }.ok()?;
-        let ctx_attrs = ContextAttributesBuilder::new().build(None);
+        let ctx_attrs = ContextAttributesBuilder::new().build(Some(window_handle));
         let not_current = unsafe { display.create_context(&config, &ctx_attrs) }.ok()?;
         let context = not_current.make_current(&surface).ok()?;
         let gl = unsafe {
@@ -259,6 +259,17 @@ impl GlParts {
             gl.clear_color(color[0], color[1], color[2], color[3]);
             gl.clear(glow::COLOR_BUFFER_BIT);
         }
+    }
+
+    /// C++ `renderWindow.display()` (GameWindow.hpp:143) — the per-frame swap
+    /// of the GL back-buffer to the front buffer, called every frame AFTER
+    /// `runDraw()` (the C++'s `runDraw()` → `display()` order,
+    /// GameWindow.hpp:141-143). winit does NOT swap a glutin `Surface` at
+    /// event-loop end — this explicit `swap_buffers` is the port's
+    /// equivalent. The C++ ignores `display()`'s result, so a transient swap
+    /// error is likewise ignored (not fatal).
+    pub fn swap_buffers(&self) {
+        let _ = self._surface.swap_buffers(&self._context);
     }
 }
 

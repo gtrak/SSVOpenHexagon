@@ -20,7 +20,7 @@
 //!     runEvents()                         // poll → inputState + per-event handleEvent
 //!     gameEngine->runUpdate()             // refreshInput → timer->runUpdate (N×update) → onPostUpdate
 //!     gameEngine->runDraw()               // timer->runDraw → the current state's draw
-//!     renderWindow.display()              // the swap (winit at event-loop end)
+//!     renderWindow.display()              // the explicit per-frame back-buffer swap (`window.swap_buffers`; winit does NOT swap a glutin `Surface` at event-loop end)
 //!     gameEngine->runFPS()                // runFrameTime + runFPS (GameEngine.hpp:96-101)
 //! }
 //! ```
@@ -2185,12 +2185,14 @@ impl WindowedClient {
         window.set_ms_update(ms_update_start.elapsed().as_secs_f64() as f32 * 1000.0);
         // C++ `gameEngine->runDraw();` + `renderWindow.display();`
         // (GameWindow.hpp:141-143) — the current state's `draw`, then the
-        // swap (winit displays at event-loop end). The target is a
+        // explicit per-frame back-buffer swap (`window.swap_buffers()`,
+        // GameWindow.hpp:143 — winit does NOT swap a glutin `Surface` at
+        // event-loop end). The target is a
         // per-frame scratch (the concrete type — no `'static` erasure):
         // the `GlParts` lives in the client's window for the whole loop.
         // The C++ `msDraw` span (GameWindow.hpp:143-146 — the C++ timer
-        // wraps `runDraw()` + `display()`; the port's swap is winit's,
-        // unmeasured from here: documented).
+        // wraps `runDraw()` + `display()`; the port's swap is the
+        // explicit `window.swap_buffers()` above, measured in this span).
         let ms_draw_start = std::time::Instant::now();
         if let Some(gl) = window.gl() {
             let mut target = GlDrawTarget::new(gl);
@@ -2201,6 +2203,13 @@ impl WindowedClient {
             if engine.current() == GameSlot::Game {
                 crate::lua_console_ui::frame_draw(window, game, ilc);
             }
+            // C++ `renderWindow.display()` (GameWindow.hpp:143) — the
+            // explicit per-frame back-buffer swap, AFTER the draws (the
+            // C++'s `runDraw()` → `display()` order, GameWindow.hpp:141-143).
+            // winit does NOT swap a glutin `Surface` at event-loop end; this
+            // is the port's swap. Only the GL branch swaps (the null-target
+            // branch has no back-buffer to present).
+            window.swap_buffers();
         } else {
             let mut target = NullDrawTarget;
             engine.draw(&mut target);
