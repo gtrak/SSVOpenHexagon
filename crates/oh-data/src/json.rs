@@ -532,32 +532,37 @@ pub fn get_arch_vec_str(items: &[String]) -> Obj {
 // `Reader` file IO (C++ `Io.hpp`)
 // ---------------------------------------------------------------------------
 
+/// C++ `getFromFileWithErrors`'s parse half, made pure (no `std::fs`): parse
+/// the file content in `bytes`; on failure return `(Null, "<formatted
+/// messages> in file <file_name>")`. Invalid UTF-8 — which
+/// `std::fs::read_to_string` reports as a read failure — yields the
+/// read-failure shape `(Null, " in file <file_name>")` instead.
+#[must_use = "mirrors the C++ [[nodiscard]]"]
+pub fn parse_with_errors(bytes: &[u8], file_name: &str) -> (Obj, String) {
+    match std::str::from_utf8(bytes) {
+        Err(_) => (SerdeValue::Null, format!(" in file {file_name}")),
+        Ok(contents) => match parse(contents) {
+            Ok(obj) => (obj, String::new()),
+            Err(e) => (
+                SerdeValue::Null,
+                format!("{} in file {}", e.formatted_messages(), file_name),
+            ),
+        },
+    }
+}
+
 /// C++ `getFromFileWithErrors(path)`: parse a whole file; on failure the
 /// error is `""` if the reader produced no message, else
 /// `formatted_messages() + " in file " + fileName`.
 #[must_use = "mirrors the C++ [[nodiscard]]"]
 pub fn read_file_with_errors(path: &std::path::Path) -> (Obj, String) {
-    match std::fs::read_to_string(path) {
-        Err(_) => (
-            SerdeValue::Null,
-            format!(
-                " in file {}",
-                path.file_name().unwrap_or_default().to_string_lossy()
-            ),
-        ),
-        Ok(contents) => match parse(&contents) {
-            Ok(obj) => (obj, String::new()),
-            Err(e) => {
-                let name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                (
-                    SerdeValue::Null,
-                    format!("{} in file {}", e.formatted_messages(), name),
-                )
-            }
-        },
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    match std::fs::read(path) {
+        Err(_) => (SerdeValue::Null, format!(" in file {name}")),
+        Ok(bytes) => parse_with_errors(&bytes, &name),
     }
 }
 
@@ -815,5 +820,45 @@ fn trim_fork_trailing_zeros(s: &str) -> String {
         if ch < 0 {
             return s.to_string();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_with_errors_valid_bytes_parses() {
+        let (obj, err) = parse_with_errors(b"{ \"a\" : 1 }", "x.json");
+        assert_eq!(err, "");
+        assert_eq!(obj, parse("{ \"a\" : 1 }").unwrap());
+    }
+
+    #[test]
+    fn parse_with_errors_invalid_bytes_pinned_shape() {
+        let src = "{ \"a\" : }";
+        let (obj, err) = parse_with_errors(src.as_bytes(), "bad.json");
+        assert_eq!(obj, SerdeValue::Null);
+        // Exact pinned shape: "<formatted messages> in file <name>".
+        let e = parse(src).unwrap_err();
+        assert_eq!(err, format!("{} in file bad.json", e.formatted_messages()));
+        assert!(err.starts_with("* Line "));
+    }
+
+    #[test]
+    fn parse_with_errors_invalid_utf8_read_failure_shape() {
+        // `std::fs::read_to_string` fails on invalid UTF-8; the pure parser
+        // must reproduce that read-failure shape (no message prefix).
+        let (obj, err) = parse_with_errors(&[0xFF, 0xFE, b'{'], "x.json");
+        assert_eq!(obj, SerdeValue::Null);
+        assert_eq!(err, " in file x.json");
+    }
+
+    #[test]
+    fn read_file_with_errors_missing_file_shape() {
+        let (obj, err) =
+            read_file_with_errors(std::path::Path::new("oh_data_missing_dir/missing.json"));
+        assert_eq!(obj, SerdeValue::Null);
+        assert_eq!(err, " in file missing.json");
     }
 }
