@@ -1087,6 +1087,17 @@ impl<F: FnMut(&mut Window)> ApplicationHandler<()> for RunHandler<'_, F> {
                 }
             }
         }
+        // 025i PROBE (temporary): log incoming KeyboardInput text to confirm
+        // the on-device character pipeline (does `adb input text` reach us?).
+        #[cfg(target_os = "android")]
+        if let WindowEvent::KeyboardInput { event: ke, .. } = &event {
+            if ke.state == winit::event::ElementState::Pressed {
+                eprintln!(
+                    "[025i] key phys={:?} text={:?}",
+                    ke.physical_key, ke.text.as_deref()
+                );
+            }
+        }
         if let Some(e) = map_window_event(&event) {
             // Android (issue 25b SG5; the space clarified by issue 025g):
             // winit delivers the touch position in PHYSICAL pixels of the
@@ -1167,8 +1178,8 @@ impl<F: FnMut(&mut Window)> ApplicationHandler<()> for RunHandler<'_, F> {
                             #[cfg(not(target_os = "android"))]
                             let ed = 0u64;
                             eprintln!(
-                                "[025i] frame#{} period_ms={:.2} msUpdate={:.3} msDraw={:.3} redraws_since_last={}",
-                                n, period_ms, self.window.get_ms_update(), self.window.get_ms_draw(), ed
+                                "[025i] frame#{} period_ms={:.2} msUpdate={:.3} msDraw={:.3} redraws_since_last={} winpx={}x{}",
+                                n, period_ms, self.window.get_ms_update(), self.window.get_ms_draw(), ed, self.window.get_width(), self.window.get_height()
                             );
                         }
                     });
