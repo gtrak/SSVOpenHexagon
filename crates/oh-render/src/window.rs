@@ -1098,6 +1098,15 @@ impl<F: FnMut(&mut Window)> ApplicationHandler<()> for RunHandler<'_, F> {
                 );
             }
         }
+        // 025i PROBE (temporary): log touch phase + location (the raw winit
+        // coordinate, the space the 9-zone grid's thirds run in).
+        #[cfg(target_os = "android")]
+        if let WindowEvent::Touch(touch) = &event {
+            eprintln!(
+                "[025i] touch id={} phase={:?} loc=({},{})",
+                touch.id, touch.phase, touch.location.x, touch.location.y
+            );
+        }
         if let Some(e) = map_window_event(&event) {
             // Android (issue 25b SG5; the space clarified by issue 025g):
             // winit delivers the touch position in PHYSICAL pixels of the
