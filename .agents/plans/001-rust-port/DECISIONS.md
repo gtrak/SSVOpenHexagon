@@ -821,3 +821,22 @@ same commit — issue 28's standing rule):
 | 7 | 028c… | the remaining FIX list from the triaged register | risk-ranked |
 
 Operator directive also: after the fixes, **finish the wasm branch**.
+
+## D-035 — No worktrees for lanes; single-writer discipline (operator directive)
+
+Operator directive (2026-10-16): **do not use worktrees going forward.**
+Workers run in the main checkout. Consequences, which the orchestrator must
+enforce:
+
+- **One writer at a time.** Never dispatch two lanes that both touch the
+  repo. Read-only lanes (scouts/reviewers reading files) may run alongside
+  a writer only if they never write; the audit workflow's children are
+  read-only except their own report file, and even that must be serialized
+  against a writer's commit.
+- **Commit early, always.** With no worktree the lane's uncommitted work
+  sits in the shared tree, so a timeout/crash can collide with the
+  orchestrator's own commits. Lanes must commit every few tool calls.
+- **Recovery is simpler**: dangling commits + `git status` in the main tree
+  replace worktree branches; the runner's `worktree-diffs` artifact no
+  longer applies.
+- Landing: squash into master (D-025) still applies for multi-commit lanes.
