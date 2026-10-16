@@ -4915,11 +4915,7 @@ mod tests {
             // The four "0" counters (packs/levels/assets/errors, all zero
             // on the default `LoadResults`): one per `textOffset` column
             // at the C++ `numbersHeight`.
-            let zeroes: Vec<_> = rec
-                .texts
-                .iter()
-                .filter(|(t, _)| t == "0")
-                .collect();
+            let zeroes: Vec<_> = rec.texts.iter().filter(|(t, _)| t == "0").collect();
             assert_eq!(zeroes.len(), 4, "the four 0-counters at {win_w}×{win_h}");
             let cols = [
                 (w - 3.0 * (w / 4.0)) / 2.0,
@@ -4952,7 +4948,8 @@ mod tests {
             assert!(
                 (none_pos.y - none_y).abs() < 0.5,
                 "NO LOAD ERRORS: y {} vs C++ {} at {win_w}×{win_h}",
-                none_pos.y, none_y
+                none_pos.y,
+                none_y
             );
         }
     }
