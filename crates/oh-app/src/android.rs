@@ -72,6 +72,10 @@ use crate::windowed::WindowedClient;
 /// over the partial tree; a content UPDATE ships a new APK — clearing the
 /// app data, or the marker's absence after a wipe, re-extracts).
 const CONTENT_MARKER: &str = ".oh_content_extracted";
+/// The packaging-generated file list (tools/package-android.sh staging):
+/// one assets-relative path per line — the extraction's enumeration-free
+/// source (module docs: why openDir is not used).
+const FILELIST: &str = "oh.filelist"; // non-hidden: cargo-apk skips dotfiles (smoke finding)
 
 /// The `_RELEASE`-content base dir for this run (the C++'s CWD).
 ///
@@ -97,20 +101,42 @@ fn assets_base_dir(app: &AndroidApp) -> Result<PathBuf, String> {
 /// threads CWD-relative filesystem paths, so the content must land on
 /// disk before the `config.json` load + the `Assets` scan in [`run`].
 ///
-/// The walk: `AAssetManager_openDir` (the `""` root — the assets tree
-/// top) → per entry, a subdir recurses (with the local dir created), a
-/// file is read whole (`AAsset` streaming mode) and written ATOMICALLY
-/// (`.oh_partial` + rename — a crash mid-extraction never leaves a
-/// half-file at the real name). Returns `Err` (the `[FATAL ERROR]` in
-/// [`run`] — the C++'s `std::terminate` on missing content) when an
-/// open/read/write fails.
+/// The walk: the packaging-generated `oh.filelist` (one assets path per
+/// line, written by tools/package-android.sh into the staging assets
+/// dir). NO `AAssetManager_openDir` enumeration: the on-device smoke
+/// (emulator, API 34) caught `openDir("")` returning an EMPTY root
+/// listing (the classic NDK root-enum quirk), which silently extracted 0
+/// files. Each listed path is opened (`AAssetManager_open`, which is
+/// reliable where openDir is not), read whole (streaming mode) and
+/// written ATOMICALLY (`.oh_partial` + rename — a crash mid-extraction
+/// never leaves a half-file at the real name; parents are created on
+/// demand). Returns `Err` (the `[FATAL ERROR]` in [`run`] — the C++'s
+/// `std::terminate` on missing content) when an open/read/write fails
+/// OR when the filelist is missing/empty (never write the marker over a
+/// zero-file extraction — the original smoke bug also wrote the marker
+/// on the empty walk, permanently skipping a future good run).
 fn extract_content(app: &AndroidApp, base_dir: &Path) -> Result<(), String> {
     if base_dir.join(CONTENT_MARKER).exists() {
         return Ok(());
     }
     let asset_manager = app.asset_manager();
+    let filelist_asset = asset_manager
+        .open(cstr(FILELIST)?.as_c_str())
+        .ok_or_else(|| format!("the packaging-generated {FILELIST:?} is missing from the APK assets (stale/absent staging — rebuild via tools/package-android.sh)"))?;
+    let mut filelist_bytes = Vec::new();
+    std::io::Read::read_to_end(&mut { filelist_asset }, &mut filelist_bytes)
+        .map_err(|e| format!("asset read({FILELIST:?}): {e}"))?;
+    let filelist = std::str::from_utf8(&filelist_bytes)
+        .map_err(|e| format!("{FILELIST:?} is not UTF-8: {e}"))?;
     let mut file_count = 0usize;
-    extract_asset_dir(&asset_manager, "", base_dir, &mut file_count)?;
+    for path in filelist.lines().filter(|l| !l.is_empty()) {
+        extract_asset_file(&asset_manager, path, base_dir, &mut file_count)?;
+    }
+    if file_count == 0 {
+        return Err(format!(
+            "the {FILELIST:?} extraction copied 0 files — refusing to write the content marker (stale/absent APK assets)"
+        ));
+    }
     std::fs::write(base_dir.join(CONTENT_MARKER), b"ok")
         .map_err(|e| format!("write the content marker {CONTENT_MARKER:?}: {e}"))?;
     eprintln!(
@@ -119,50 +145,32 @@ fn extract_content(app: &AndroidApp, base_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// One level of the asset tree at `asset_path` (the `""` root): subdirs
-/// recurse, files copy (module docs: the walk).
-fn extract_asset_dir(
+/// One listed file `path` (from the packaging-generated `oh.filelist`, e.g.
+/// `Assets/OpenSquare-Bold.ttf` or `Packs/.../level.json`): open, read
+/// whole (streaming mode), write ATOMICALLY (module docs: the walk).
+fn extract_asset_file(
     asset_manager: &AssetManager,
-    asset_path: &str,
-    local_dir: &Path,
+    path: &str,
+    base_dir: &Path,
     file_count: &mut usize,
 ) -> Result<(), String> {
-    let dir_name = cstr(asset_path)?;
-    let dir = asset_manager
-        .open_dir(&dir_name)
-        .ok_or_else(|| format!("AAssetManager_openDir({asset_path:?} failed"))?;
-    for entry in dir {
-        let entry_name = entry.to_string_lossy().into_owned();
-        let entry_asset = if asset_path.is_empty() {
-            entry_name.clone()
-        } else {
-            format!("{asset_path}/{entry_name}")
-        };
-        let local = local_dir.join(&entry_name);
-        if asset_manager.open_dir(&entry).is_some() {
-            // A subdirectory: create + recurse.
-            std::fs::create_dir_all(&local)
-                .map_err(|e| format!("create_dir_all({local:?}): {e}"))?;
-            extract_asset_dir(asset_manager, &entry_asset, &local, file_count)?;
-        } else {
-            // A file: read whole (streaming mode), write atomically.
-            let mut asset = asset_manager
-                .open(&entry)
-                .ok_or_else(|| format!("AAssetManager_open({entry_asset:?}) failed"))?;
-            let mut bytes = Vec::new();
-            std::io::Read::read_to_end(&mut asset, &mut bytes)
-                .map_err(|e| format!("asset read({entry_asset:?}): {e}"))?;
-            if let Some(parent) = local.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("create_dir_all({parent:?}): {e}"))?;
-            }
-            let partial = local.with_extension("oh_partial");
-            std::fs::write(&partial, &bytes).map_err(|e| format!("write({partial:?}): {e}"))?;
-            std::fs::rename(&partial, &local)
-                .map_err(|e| format!("rename({partial:?} -> {local:?}): {e}"))?;
-            *file_count += 1;
-        }
+    let cpath = cstr(path)?;
+    let mut asset = asset_manager
+        .open(cpath.as_c_str())
+        .ok_or_else(|| format!("AAssetManager_open({path:?}) failed"))?;
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut asset, &mut bytes)
+        .map_err(|e| format!("asset read({path:?}): {e}"))?;
+    let local = base_dir.join(path);
+    if let Some(parent) = local.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create_dir_all({parent:?}): {e}"))?;
     }
+    let partial = local.with_extension("oh_partial");
+    std::fs::write(&partial, &bytes).map_err(|e| format!("write({partial:?}): {e}"))?;
+    std::fs::rename(&partial, &local)
+        .map_err(|e| format!("rename({partial:?} -> {local:?}): {e}"))?;
+    *file_count += 1;
     Ok(())
 }
 

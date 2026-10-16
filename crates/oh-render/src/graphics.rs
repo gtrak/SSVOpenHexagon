@@ -152,6 +152,15 @@ pub trait DrawTarget {
 
     /// C++ `window->saveScreenshot(path)`.
     fn save_screenshot(&mut self, path: &str);
+
+    /// C++ `renderWindow.display()` — the frame present (the swap). The
+    /// C++ `GameWindow::run()` loop calls `display()` after `runDraw` each
+    /// iteration (GameWindow.hpp:117-150; main.cpp:588-595 `window->run()`).
+    /// Default no-op: the non-GL targets (headless/Recording) have nothing
+    /// to present. The GL target implements it with the glutin
+    /// `Surface::swap_buffers` (issue 25, on-device finding: the swap was
+    /// never wired — every GL platform presented nothing).
+    fn present(&mut self) {}
 }
 
 // ---------------------------------------------------------------------------

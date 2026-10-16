@@ -82,6 +82,7 @@ use glutin::context::PossiblyCurrentContext;
 use glutin::context::Version;
 use glutin::context::{ContextAttributes, ContextAttributesBuilder, NotCurrentGlContext};
 use glutin::display::{Display, DisplayApiPreference, GlDisplay};
+use glutin::surface::GlSurface;
 use glutin::surface::{Surface, SurfaceAttributesBuilder, WindowSurface};
 #[cfg(target_os = "android")]
 use winit::event_loop::ActiveEventLoop;
@@ -379,6 +380,16 @@ impl GlParts {
             gl.clear_color(color[0], color[1], color[2], color[3]);
             gl.clear(glow::COLOR_BUFFER_BIT);
         }
+    }
+
+    /// C++ `renderWindow.display()` — the frame present:
+    /// `Surface::swap_buffers` (the context is current on this thread —
+    /// single-threaded GL, the `GlParts` contract; issue 25, on-device
+    /// finding: the swap was never wired and no GL platform presented).
+    pub fn present(&self) {
+        self._surface
+            .swap_buffers(&self._context)
+            .expect("glutin Surface::swap_buffers failed");
     }
 }
 

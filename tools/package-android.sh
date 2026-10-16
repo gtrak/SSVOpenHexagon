@@ -75,6 +75,21 @@ export CARGO_APK_RELEASE_KEYSTORE="$(pwd)/$KEYSTORE"
 export CARGO_APK_RELEASE_KEYSTORE_PASSWORD="$KEYSTORE_PASS"
 
 # ----------------------------------------------------------------------
+# The staging assets dir (the on-device smoke fix): cargo-apk packs the
+# folder named by the metadata `assets` key; we stage a COPY of _RELEASE
+# (never mutating the tracked content) + the generated `.filelist` (one
+# assets-relative path per line) the extractor reads instead of the
+# unreliable AAssetManager_openDir("") root enumeration (module docs in
+# oh-app/src/android.rs::extract_content — the emulator caught openDir
+# returning an EMPTY root listing, a silent 0-file extraction).
+STAGE="target/oh-apk-assets"
+rm -rf "$STAGE"
+mkdir -p "$STAGE"
+cp -a _RELEASE/. "$STAGE/"
+( cd "$STAGE" && find . -type f ! -name oh.filelist -printf '%P\n' | LC_ALL=C sort > oh.filelist )
+echo "staged $(wc -l < "$STAGE/oh.filelist") asset files + oh.filelist into $STAGE"
+
+# ----------------------------------------------------------------------
 # The 16KB-page-size alignment (Android 15's 16KB OEM devices, the 25b
 # note): the NDK r27c lld DEFAULT is 4KB ELF LOAD alignment (verified
 # empirically: llvm-readelf -l on an NDK-linked .so shows align 0x1000
@@ -96,7 +111,15 @@ export RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384"
 # rejects it); the build stays in this workspace (the target dir, the
 # workspace manifest, the _RELEASE asset path all resolve from the
 # crate's manifest).
-cargo apk build --release --manifest-path crates/oh-android/Cargo.toml
+# OH_APK_TARGET (optional): override the ABI (metadata pins
+# aarch64-linux-android) — e.g. OH_APK_TARGET=x86_64-linux-android for
+# the emulator smoke (the x86_64 CC/CXX/AR env exported separately).
+TARGET_ARGS=()
+if [ -n "${OH_APK_TARGET:-}" ]; then
+    TARGET_ARGS=(--target "$OH_APK_TARGET")
+    echo "ABI override: $OH_APK_TARGET"
+fi
+cargo apk build --release --manifest-path crates/oh-android/Cargo.toml "${TARGET_ARGS[@]}"
 
 # ----------------------------------------------------------------------
 # The build-level verification (the 25b spec's acceptance surface).

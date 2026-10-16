@@ -886,15 +886,25 @@ struct RunHandler<'a, F> {
 }
 
 impl<F: FnMut(&mut Window)> ApplicationHandler<()> for RunHandler<'_, F> {
-    fn resumed(&mut self, _el: &ActiveEventLoop) {
+    fn resumed(&mut self, el: &ActiveEventLoop) {
+        // The C++ loop model is an UNCAPPED spin: SFML's `poll()` is
+        // non-blocking, so `while (isOpen) { poll; update; draw; }`
+        // (GameWindow.hpp:117-150) iterates as fast as it can. winit
+        // 0.30's default is `ControlFlow::Wait` — `about_to_wait` fires
+        // once per EVENT WAKEUP, so without `Poll` the loop only ticks
+        // while events stream in (the on-device smoke caught it: ~20
+        // frames through the android lifecycle burst, then silence;
+        // desktop masked it — the scripted tests inject an event per
+        // step). `Poll` = winit returns from the wait immediately, the
+        // faithful `while (isOpen)` spin (issue 25, on-device finding).
+        el.set_control_flow(winit::event_loop::ControlFlow::Poll);
         // Android (issue 25b SG2): the first `resumed` IS the
         // `InitWindow` dispatch — the `ANativeWindow` exists from here;
         // materialize the platform window + the GLES context (once; the
         // `ensure_android_gl_failed` guard covers the re-`resumed`s).
-        // Desktop: the statement is android-gated (no-op) and `_el`
-        // stays unused (the underscore suppresses the warning).
+        // Desktop: the statement is android-gated (no-op).
         #[cfg(target_os = "android")]
-        self.window.ensure_android_gl(_el);
+        self.window.ensure_android_gl(el);
     }
 
     fn window_event(&mut self, _el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {

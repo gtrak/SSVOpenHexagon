@@ -970,6 +970,14 @@ impl DrawTarget for GlDrawTarget<'_> {
         // on the `DrawTarget` surface).
         self.parts.save_screenshot(path);
     }
+
+    fn present(&mut self) {
+        // C++ `renderWindow.display()` (GameWindow.hpp:145 — the swap after
+        // the frame's draws). Issue 25, on-device finding: this was never
+        // wired — every GL platform presented nothing (the desktop live
+        // check was MANUAL and never run; the emulator caught it).
+        self.parts.present();
+    }
 }
 
 /// A no-op target (headless windows / GL-less fallback): the C++'s
@@ -2245,6 +2253,12 @@ impl WindowedClient {
             if engine.current() == GameSlot::Game {
                 crate::lua_console_ui::frame_draw(window, game, ilc);
             }
+            // C++ `renderWindow.display()` — the swap is INSIDE the C++
+            // msDraw span (GameWindow.hpp:141-143: runDraw + display).
+            // Issue 25, on-device finding: the swap was never wired in this
+            // loop body — every GL platform presented nothing (the desktop
+            // live check was MANUAL and never run; the emulator caught it).
+            target.present();
         } else {
             let mut target = NullDrawTarget;
             engine.draw(&mut target);
@@ -2363,6 +2377,10 @@ pub fn frame(
     engine.on_post_update();
     // C++ `runDraw` (GameEngine.hpp:89-94).
     engine.draw(target);
+    // C++ `renderWindow.display()` (GameWindow.hpp:145 — the swap after
+    // runDraw, inside the run loop's iteration; issue 25 on-device finding:
+    // the present was never wired — no GL platform showed a frame).
+    target.present();
     // C++ `runFPS` (GameEngine.hpp:96-101).
     timer.run_frame_time();
     timer.run_fps();

@@ -26,7 +26,15 @@ build_targets = ["aarch64-linux-android"]
 # The `_RELEASE` game content as APK assets (the SG4 extraction source —
 # the folder's entries land at the APK assets root: assets/Packs/..., the
 # internal-data-dir extraction's `Packs/...` target, issue 25b SG4).
-assets = "../../_RELEASE"
+# Smoke fix (issue 25, on-device): `AAssetManager_openDir("")` returns an
+# EMPTY root listing on the emulator (the classic NDK root-enum quirk), so
+# the extractor no longer enumerates directories at all — it reads the
+# packaging-generated `.filelist` (every assets path, one per line,
+# produced by tools/package-android.sh into this staging dir). The
+# staging copy (never the tracked `_RELEASE/`) also carries `.filelist`;
+# a bare `cargo apk build` without the script stages nothing (empty or
+# stale dir) — the script is the canonical build path.
+assets = "../../target/oh-apk-assets"
 
 # SDK range: minSdk 28 / target 34 — the NDK's API-28 clang target
 # (.cargo/config.toml) + the installed platform-34 build-tools; every
