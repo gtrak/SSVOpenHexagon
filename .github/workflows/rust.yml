@@ -1,0 +1,61 @@
+name: Rust gate
+
+# Issue 22 — the Rust-port CI (tools/gate.sh on both OSes + the fast
+# x86_64-pc-windows-gnu cross-check on ubuntu). The C++ build stays in
+# ci_linux.yml / ci_windows.yml.
+#
+# Portability notes (the gate was adapted for, not around, the OS):
+#   * tools/gate.sh runs verbatim on both OSes — it is plain bash (the
+#     windows-latest runner's Git-bash runs it via `bash tools/gate.sh`),
+#     four cargo stages, no python/g++ (the oracle C++ probes are a
+#     separate tools/oracle/ concern, not a gate stage).
+#   * The pinned toolchain (rust-toolchain.toml: 1.97.1 + clippy + rustfmt)
+#     is installed explicitly on both OSes; cargo picks it up via
+#     rust-toolchain.toml.
+#   * The gate's `cargo test --workspace` includes the subprocess test
+#     suites (they spawn the just-built binary via CARGO_BIN_EXE) — the
+#     headless-replay sandbox creates the read-only `_RELEASE` views with
+#     symlinks (unix) or directory-symlinks with a recursive-copy fallback
+#     (windows; the hosted runner has the symlink privilege).
+#   * Native SDKs (Steam/Discord) are NEVER linked by the default build:
+#     oh-steam's `steam` feature is default-OFF (the C++ no-SDK build
+#     analogue, issue 20) and there is no oh-discord workspace member yet
+#     (issue 21) — so no per-OS SDK setup is required.
+
+on: [push, pull_request]
+
+jobs:
+  gate:
+    name: Gate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install 1.97.1 --component clippy --component rustfmt
+
+      - name: Run the gate
+        # git-bash on the windows runner / the default bash on ubuntu.
+        run: bash tools/gate.sh
+
+  cross-check:
+    name: Cross-check (x86_64-pc-windows-gnu on ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install 1.97.1 --component clippy --component rustfmt
+
+      - name: MinGW cross toolchain (preinstalled on the image; defensive)
+        run: |
+          command -v x86_64-w64-mingw32-gcc || sudo apt-get install -y mingw-w64
+
+      # cargo check --workspace --target x86_64-pc-windows-gnu — the fast
+      # cross signal (incl. the libsodium cross-prebuild; see the script).
+      - name: Cross check
+        run: bash tools/build-windows.sh --check

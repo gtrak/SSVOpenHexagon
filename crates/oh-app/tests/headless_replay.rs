@@ -58,7 +58,7 @@ impl Sandbox {
         std::fs::create_dir_all(&dir).expect("sandbox dir");
         let release = release_dir();
         for name in ["Packs", "Assets", "ConfigOverrides"] {
-            std::os::unix::fs::symlink(release.join(name), dir.join(name)).expect("sandbox link");
+            sandbox_link(&release.join(name), &dir.join(name));
         }
         std::fs::copy(release.join("config.json"), dir.join("config.json"))
             .expect("sandbox config copy");
@@ -74,6 +74,44 @@ impl Drop for Sandbox {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+/// The sandbox's read-only views of the tracked `_RELEASE` subtrees:
+/// symlinks on Unix (cheap) and Windows (`symlink_dir` — the
+/// GitHub-hosted runner runs with the privilege; on a local machine
+/// without symlink rights — non-admin without Developer Mode — fall
+/// back to a recursive copy). The copy fallback keeps the sandbox
+/// invariant ("never write through into the tracked `_RELEASE`")
+/// strictly stronger.
+fn sandbox_link(src: &Path, dst: &Path) {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(src, dst).expect("sandbox link");
+    }
+    #[cfg(windows)]
+    {
+        if std::os::windows::fs::symlink_dir(src, dst).is_err() {
+            copy_dir_recursive(src, dst).expect("sandbox copy fallback");
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        copy_dir_recursive(src, dst).expect("sandbox copy");
+    }
+}
+
+#[cfg_attr(unix, allow(dead_code))] // the Windows/other-platform fallbacks
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if src.is_dir() {
+        std::fs::create_dir_all(dst)?;
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            copy_dir_recursive(&entry.path(), &dst.join(entry.file_name()))?;
+        }
+    } else {
+        std::fs::copy(src, dst)?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------

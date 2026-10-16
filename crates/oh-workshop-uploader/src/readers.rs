@@ -109,8 +109,11 @@ pub fn cin_getline_path(input: &mut dyn BufRead, out: &mut dyn Write) -> Option<
     Some(path_from_bytes(&buf))
 }
 
-/// The raw input bytes as a `Path` (byte-exact on Linux/macOS; Windows
-/// parity is issue 22).
+/// The raw input bytes as a `Path` (byte-exact on Linux/macOS; on Windows
+/// the bytes are lossily decoded as UTF-8 into the (UTF-16-backed) path —
+/// Rust Windows paths cannot hold arbitrary bytes, and the C++ read them
+/// as a byte string interpreted by the current locale; issue-22 documents
+/// this as the Windows interpretation).
 fn path_from_bytes(bytes: &[u8]) -> PathBuf {
     #[cfg(unix)]
     {
@@ -119,7 +122,7 @@ fn path_from_bytes(bytes: &[u8]) -> PathBuf {
     }
     #[cfg(not(unix))]
     {
-        PathBuf::from(String::from_utf8_lossy(bytes))
+        PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
     }
 }
 

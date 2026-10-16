@@ -1,0 +1,14 @@
+# Issue 22 — Windows cross-compile target config (x86_64-pc-windows-gnu).
+#
+# -ladvapi32: the cross-built static libsodium 1.0.18 (the D-004 pin, via
+# sodiumoxide 0.2.7 — prebuilt for the canonical MinGW triple by
+# tools/build-windows.sh, linked through SODIUM_LIB_DIR) references exactly
+# one Windows platform symbol, SystemFunction036 (the random-bytes
+# RtlGenRandom path, randombytes_sysrandom.c:366), which lives in advapi32.
+# The libsodium build system does not record platform Libs.private for the
+# MinGW static build, so the final executables (the ones linking oh-net's
+# sodiumoxide) must carry it here. Target-scoped: zero effect on the Linux
+# gate or the MSVC CI target (whose libsodium comes from the native
+# toolchain's own link line).
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "link-arg=-ladvapi32"]
