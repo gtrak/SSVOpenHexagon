@@ -729,3 +729,30 @@ Real hardware is the sanctioned on-device verification target. The
 histograms over image reads, stop-and-report on long sessions) is part of
 every 025x spec from 025d on and worked: 025d finished in 1/3 the context
 of the lane that died.
+
+## D-031 — Android text entry: the IME route first (the C++ has no reference)
+
+The C++ has NO Android text-entry implementation to transcribe: its
+`SSVOH_ANDROID` guards only exclude Discord/Steam/Imgui, and text input came
+from SFML's own Android layer (the IME wiring lived in SFML, not in this
+repo). So the port needs a deliberate platform addition — a decision, not a
+transcription.
+
+Route chosen (in order):
+1. **The system IME** via `AndroidApp::show_soft_input(force=true)` /
+   `hide_soft_input`, called on the game's own text-entry transitions (the
+   already-ported `isEnteringText()` gate gives exact enter/leave points),
+   plus the activity's `windowSoftInputMode` (`stateVisible|adjustResize` —
+   cargo-apk 0.10's activity metadata has no such field, so it goes through
+   the `[package.metadata.android] android_manifest` manifest override or a
+   custom manifest). Characters then arrive the way they already do:
+   android-activity's `TextInputState` → the `KeyboardInput.text` field →
+   the 025d `TextEntered` sink → `enteredChars` (that half is DONE and
+   verified on device by 025d).
+2. **Fallback, only if (1) fails on hardware** (IME shows but no characters
+   arrive — a known NativeActivity/InputConnection hazard): a small in-game
+   touch keyboard drawn with the existing GL text/rectangle passes and
+   driven by the existing touch pipeline. Higher cost, zero platform risk,
+   and it would also serve desktop-less builds. The operator explicitly
+   accepts either outcome, so (1) is tried first and the fallback is
+   escalated on evidence rather than assumed.
