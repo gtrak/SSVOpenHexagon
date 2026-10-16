@@ -297,8 +297,9 @@ pub fn run(app: AndroidApp) {
     // C++ main.cpp:279-283 — the config load + reapply (the base dir's
     // `config.json` — the extracted `_RELEASE/config.json` on SG4; the
     // C++'s `hg::Config::loadConfig(args)` with the empty android argv).
+    let vfs = Arc::new(oh_vfs::RealFs::new(&base_dir));
     let mut config = Config::default();
-    if let Err(e) = load_and_reapply(&mut config, &base_dir, &[]) {
+    if let Err(e) = load_and_reapply(&mut config, &*vfs, &[]) {
         eprintln!("[::mainClient] config load failed: {e}");
         return;
     }
@@ -307,11 +308,11 @@ pub fn run(app: AndroidApp) {
     // C++ main.cpp:285-291 — the config-save scope guard (fires on EVERY
     // exit below, the C++'s scope-guard semantics): the config writes land
     // in the internal dir (module docs: the Android storage model).
-    let _config_save = ConfigSaveGuard::new(config.clone(), base_dir.join("config.json"));
+    let _config_save = ConfigSaveGuard::new(config.clone(), vfs.clone());
 
     // C++ main.cpp:380 — the assets (`HGAssets{&steamManager, false}` —
     // the android windowed build is non-headless; `levelsOnly` = false).
-    let assets = match oh_assets::Assets::new(Arc::new(oh_vfs::RealFs::new(&base_dir)), false, false) {
+    let assets = match oh_assets::Assets::new(vfs.clone(), false, false) {
         Ok(a) => Arc::new(a),
         Err(e) => {
             // The C++ would `std::terminate()` (Assets.cpp:323-352).

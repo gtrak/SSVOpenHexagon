@@ -3,10 +3,11 @@
 //! save scope guard), ported for the pieces that exist in the step-(b)
 //! tree. Issue 15 step (b).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 use oh_config::Config;
+use oh_vfs::Vfs;
 
 /// C++ `sf::VideoMode::getDesktopMode()` placeholder (main.cpp:283 —
 /// `Config::reapplyResolution()` reads the desktop mode through SFML,
@@ -66,10 +67,10 @@ pub fn create_folder_if_non_existant(base_dir: &Path, folder_name: &str) {
 /// data layer owns.)
 pub fn load_and_reapply(
     config: &mut Config,
-    base_dir: &Path,
+    vfs: &dyn Vfs,
     override_ids: &[String],
 ) -> Result<(), oh_data::json::JsonError> {
-    config.load_config(base_dir, override_ids)?;
+    config.load_config(vfs, override_ids)?;
     config.reapply_resolution(DESKTOP_WIDTH, DESKTOP_HEIGHT);
     Ok(())
 }
@@ -98,15 +99,16 @@ pub fn load_and_reapply(
 /// scope-end effect, at the same (last) relative position.
 pub struct ConfigSaveGuard {
     config: Arc<RwLock<Config>>,
-    path: PathBuf,
+    vfs: Arc<dyn Vfs>,
 }
 
 impl ConfigSaveGuard {
-    /// `path` = the C++ `"config.json"` in the CWD (the binary passes
-    /// `base_dir.join("config.json")`).
+    /// `vfs` = the content root the config was loaded from (the binary roots
+    /// a `RealFs` at the game base dir); the guard writes the logical
+    /// `"config.json"` under that root at drop.
     #[must_use]
-    pub fn new(config: Arc<RwLock<Config>>, path: PathBuf) -> Self {
-        Self { config, path }
+    pub fn new(config: Arc<RwLock<Config>>, vfs: Arc<dyn Vfs>) -> Self {
+        Self { config, vfs }
     }
 }
 
@@ -120,7 +122,7 @@ impl Drop for ConfigSaveGuard {
         // skips the save but still prints both C++ log lines; in the
         // binary the config is main-thread-only, so this is unreachable.
         if let Ok(mut config) = self.config.write() {
-            let _ = config.save_config(&self.path);
+            let _ = config.save_config(&*self.vfs);
         }
         println!("[::main] Done saving config");
     }
@@ -130,6 +132,7 @@ impl Drop for ConfigSaveGuard {
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::PathBuf;
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -168,7 +171,7 @@ mod tests {
     fn load_and_reapply_missing_config_keeps_defaults() {
         let dir = temp_dir("defaults");
         let mut config = Config::default();
-        load_and_reapply(&mut config, &dir, &[]).expect("load");
+        load_and_reapply(&mut config, &oh_vfs::RealFs::new(dir.as_path()), &[]).expect("load");
         assert_eq!(config.get_windowed_width(), 800, "NSDMI default");
         assert!(config.get_official(), "NSDMI default");
         // recalculateSizes: max(800, 600) * 1.3.
@@ -193,14 +196,14 @@ mod tests {
         let mut config = Config::default();
         load_and_reapply(
             &mut config,
-            &dir,
+            &oh_vfs::RealFs::new(dir.as_path()),
             &["open-hexagon".to_string(), "foo".to_string()],
         )
         .expect("load");
         assert_eq!(config.get_windowed_width(), 640, "named override applied");
 
         let mut config = Config::default();
-        load_and_reapply(&mut config, &dir, &["open-hexagon".to_string()]).expect("load");
+        load_and_reapply(&mut config, &oh_vfs::RealFs::new(dir.as_path()), &["open-hexagon".to_string()]).expect("load");
         assert_eq!(
             config.get_windowed_width(),
             800,
@@ -221,13 +224,13 @@ mod tests {
         let shared = Arc::new(RwLock::new(config));
         let path = dir.join("config.json");
         {
-            let _guard = ConfigSaveGuard::new(shared.clone(), path.clone());
+            let _guard = ConfigSaveGuard::new(shared.clone(), Arc::new(oh_vfs::RealFs::new(dir.as_path())));
             // (C++ `return` — the guard fires here, at scope end.)
         }
         assert!(path.is_file(), "config.json saved by the guard");
         let mut reloaded = Config::default();
         reloaded
-            .load_config(&dir, &[] as &[String])
+            .load_config(&oh_vfs::RealFs::new(dir.as_path()), &[] as &[String])
             .expect("reload");
         assert_eq!(reloaded.get_windowed_width(), 1024, "round-trip");
         let _ = fs::remove_dir_all(&dir);

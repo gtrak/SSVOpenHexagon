@@ -20,9 +20,6 @@
 //!   key for spawn distance (so `isEligibleForScore`'s spawn branch is
 //!   effectively dead, kept for 1:1).
 
-#[cfg(not(target_arch = "wasm32"))]
-use std::path::Path;
-
 use oh_data::json::{self, JsonError, Obj};
 use oh_data::LinkedValue;
 use oh_vfs::{EntryKind, Vfs};
@@ -594,7 +591,7 @@ impl Config {
     /// name) is shallow-merged into `root` top-level-key by
     /// top-level-key; then every `LinkedValue` re-syncs and empty triggers
     /// are fixed up to four unbound slots.
-    pub fn load_config_with_vfs(
+    pub fn load_config(
         &mut self,
         vfs: &dyn Vfs,
         override_ids: &[impl AsRef<str>],
@@ -666,20 +663,6 @@ impl Config {
         self.sync_all_from_obj()?;
         self.fixup_missing_triggers();
         Ok(())
-    }
-
-    /// Path-based `load_config` (issue 026a sub-goal 4 transitional shim):
-    /// builds a `RealFs` over `base_dir` and delegates to
-    /// [`Config::load_config_with_vfs`]. Dropped in sub-goal 5 when the real
-    /// callers migrate to the `Vfs` provider directly.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn load_config(
-        &mut self,
-        base_dir: &Path,
-        override_ids: &[impl AsRef<str>],
-    ) -> Result<(), JsonError> {
-        let vfs = oh_vfs::RealFs::new(base_dir);
-        self.load_config_with_vfs(&vfs, override_ids)
     }
 
     /// C++ `syncAllFromObj()`: every `LinkedValue` re-syncs from `root`.
@@ -929,28 +912,9 @@ impl Config {
 
     /// C++ `saveConfig()` → `writeToFile(root(), "config.json")`, routed
     /// through the `oh-vfs` `Vfs` provider (issue 026a §3).
-    pub fn save_config_with_vfs(&mut self, vfs: &dyn Vfs) -> oh_vfs::VfsResult<()> {
+    pub fn save_config(&mut self, vfs: &dyn Vfs) -> oh_vfs::VfsResult<()> {
         self.sync_all_to_obj();
         vfs.write("config.json", json::write_to_string(&self.root).as_bytes())
-    }
-
-    /// Path-based `save_config` (issue 026a sub-goal 4 transitional shim):
-    /// the pre-VFS contract took the full file path (the binary passes
-    /// `base_dir.join("config.json")`); the `Vfs` contract writes the logical
-    /// `"config.json"` under a root, so root a `RealFs` at the file's parent
-    /// and delegate (the bytes land at exactly `path`). Dropped in sub-goal 5
-    /// when the real callers migrate to the `Vfs` provider directly.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn save_config(&mut self, path: &Path) -> std::io::Result<()> {
-        let base_dir = path.parent().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "save_config path has no parent directory",
-            )
-        })?;
-        let vfs = oh_vfs::RealFs::new(base_dir);
-        self.save_config_with_vfs(&vfs)
-            .map_err(|e| std::io::Error::other(format!("{e:?}")))
     }
 
     /// `saveConfig`'s output as a string (the StyledStreamWriter format,

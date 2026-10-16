@@ -17,7 +17,7 @@ fn release_dir() -> PathBuf {
 
 fn load_release(override_ids: &[&str]) -> Config {
     let mut cfg = Config::default();
-    cfg.load_config(&release_dir(), override_ids)
+    cfg.load_config(&oh_vfs::RealFs::new(release_dir()), override_ids)
         .expect("loading the shipped _RELEASE config must not fail");
     cfg
 }
@@ -142,7 +142,7 @@ fn default_config_values() {
     // no config.json in base_dir -> null root -> all compile-time defaults
     let dir = temp_dir("defaults");
     let mut cfg = Config::default();
-    cfg.load_config(&dir, &[] as &[&str]).unwrap();
+    cfg.load_config(&oh_vfs::RealFs::new(&dir), &[] as &[&str]).unwrap();
 
     assert!(cfg.get_official());
     assert!(!cfg.get_no_pulse());
@@ -301,7 +301,7 @@ fn save_reload_round_trip_is_stable() {
 
     // save through the file API too
     let dir = temp_dir("roundtrip");
-    cfg.save_config(&dir.join("config.json")).unwrap();
+    cfg.save_config(&oh_vfs::RealFs::new(&dir)).unwrap();
     assert_eq!(
         std::fs::read_to_string(dir.join("config.json")).unwrap(),
         s1
@@ -309,7 +309,7 @@ fn save_reload_round_trip_is_stable() {
 
     // reload from the written file and re-save: byte-identical
     let mut cfg2 = Config::default();
-    cfg2.load_config(&dir, &[] as &[&str])
+    cfg2.load_config(&oh_vfs::RealFs::new(&dir), &[] as &[&str])
         .expect("reloading the saved config must not fail");
     let s2 = cfg2.save_to_string();
     assert_eq!(s2, s1, "second save must be byte-identical");

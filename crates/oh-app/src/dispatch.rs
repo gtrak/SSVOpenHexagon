@@ -78,8 +78,9 @@ impl ReplayExecutor for GameReplayExecutor {
 /// failure and its `run()` never ran, `main.cpp:240-241`).
 pub fn main_server(base_dir: &Path) -> i32 {
     // C++ main.cpp:199-203.
+    let vfs = Arc::new(oh_vfs::RealFs::new(base_dir));
     let mut config = Config::default();
-    if let Err(e) = load_and_reapply(&mut config, base_dir, &[]) {
+    if let Err(e) = load_and_reapply(&mut config, &*vfs, &[]) {
         // The C++ would throw out of `loadConfig` (uncaught in
         // mainServer); the port exits non-zero (documented deviation,
         // the `main_client` precedent).
@@ -90,11 +91,11 @@ pub fn main_server(base_dir: &Path) -> i32 {
     let config = Arc::new(RwLock::new(config));
 
     // C++ main.cpp:205-209: the config-save scope guard.
-    let _config_save = ConfigSaveGuard::new(config.clone(), base_dir.join("config.json"));
+    let _config_save = ConfigSaveGuard::new(config.clone(), vfs.clone());
 
     // C++ main.cpp:211-214: the headless `HGAssets` (the C++'s
     // steam-manager argument is issue 20).
-    let assets = match oh_assets::Assets::new(Arc::new(oh_vfs::RealFs::new(base_dir)), true, false) {
+    let assets = match oh_assets::Assets::new(vfs.clone(), true, false) {
         Ok(a) => Arc::new(a),
         Err(e) => {
             // The C++ would `std::terminate()` (Assets.cpp:323-352).

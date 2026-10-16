@@ -83,8 +83,9 @@ pub fn main_client(
     create_folder_if_non_existant(base_dir, "Replays/");
 
     // Load configuration (and overrides) (C++ main.cpp:279-283).
+    let vfs = Arc::new(oh_vfs::RealFs::new(base_dir));
     let mut config = Config::default();
-    if let Err(e) = load_and_reapply(&mut config, base_dir, args) {
+    if let Err(e) = load_and_reapply(&mut config, &*vfs, args) {
         // C++ would throw out of `syncAllFromObj` (uncaught in mainClient);
         // the port exits non-zero (documented deviation).
         eprintln!("[::mainClient] config load failed: {e}");
@@ -96,7 +97,7 @@ pub fn main_client(
     // including the headless branch's early returns (LIFO-last of the
     // three mainClient guards; the pSaveAll/ImGui pieces are issues 17 /
     // step (c)).
-    let _config_save = ConfigSaveGuard::new(config.clone(), base_dir.join("config.json"));
+    let _config_save = ConfigSaveGuard::new(config.clone(), vfs.clone());
 
     // (C++ main.cpp:305-332: window + config setters + timer — the
     // windowed branch builds it in `crate::windowed::WindowedClient::build`
@@ -104,7 +105,7 @@ pub fn main_client(
 
     // Initialize assets (C++ main.cpp:380: `HGAssets{&steamManager,
     // headless}`).
-    let assets = match oh_assets::Assets::new(Arc::new(oh_vfs::RealFs::new(base_dir)), headless, false) {
+    let assets = match oh_assets::Assets::new(vfs.clone(), headless, false) {
         Ok(a) => Arc::new(a),
         Err(e) => {
             // C++ would `std::terminate()` (Assets.cpp:323-352).
