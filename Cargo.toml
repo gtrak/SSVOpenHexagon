@@ -5,6 +5,7 @@ members = [
     "crates/oh-rng",
     "crates/oh-replay",
     "crates/oh-data",
+    "crates/oh-vfs",
     "crates/oh-config",
     "crates/oh-lua",
     "crates/oh-assets",

@@ -2062,6 +2062,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "oh-vfs"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
 name = "oh-workshop-uploader"
 version = "0.1.0"
 dependencies = [

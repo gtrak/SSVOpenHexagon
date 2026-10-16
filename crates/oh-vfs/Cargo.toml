@@ -1,0 +1,12 @@
+[package]
+name = "oh-vfs"
+description = "Port of SSVOpenHexagon's content VFS contract (issue 026a §3): the asset/configuration provider the asset/config layer routes every content fs op through — read/list/is_dir/is_file/write, with a native RealFs and a pure in-memory MemoryVfs"
+version.workspace = true
+edition.workspace = true
+
+# Zero regular dependencies (issue 026a §3: a tiny, pure-Rust, zero-dependency
+# crate that cross-compiles to wasm32-unknown-unknown trivially).
+
+[dev-dependencies]
+# Test-only: isolated on-disk roots for the `RealFs` round-trip tests.
+tempfile = { workspace = true }
