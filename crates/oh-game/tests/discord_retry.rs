@@ -81,7 +81,9 @@ impl Discord for HealthyDiscord {
 /// engine-local retry state, never the shared Lua state).
 fn engine_with_discord(discord: Option<Arc<dyn Discord>>) -> HexagonGame {
     let assets = oh_assets::Assets::new(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_RELEASE"),
+        Arc::new(oh_vfs::RealFs::new(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_RELEASE"),
+        )),
         true,
         true,
     )

@@ -27,3 +27,4 @@ rusqlite = { workspace = true }
 [dev-dependencies]
 # Test-only: isolated on-disk DB files for the `Database` round-trip tests.
 tempfile = { workspace = true }
+oh-vfs = { path = "../oh-vfs" }

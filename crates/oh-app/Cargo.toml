@@ -31,6 +31,7 @@ oh-data = { path = "../oh-data" }
 # coupling to the Lua backend; the composition crate legitimately does.
 oh-lua = { path = "../oh-lua" }
 oh-assets = { path = "../oh-assets" }
+oh-vfs = { path = "../oh-vfs" }
 oh-menu = { path = "../oh-menu" }
 # C++ main.cpp:340-349 — the SIGINT handler, the SAFE port (the C++'s
 # `TODO (P2): UB`, main.cpp:339: the C++ handler called

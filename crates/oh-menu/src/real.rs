@@ -7,11 +7,11 @@
 //! profile *editor* API, issue 005); those are documented no-op seams here.
 //! Packs / levels / styles / load-results are fully backed.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use oh_assets::Assets;
 use oh_math::hg::color::Color;
+use oh_vfs::Vfs;
 
 use crate::seams::{LevelInfo, LoadResults, MenuAssets, PackDataInfo, StyleBackground};
 
@@ -32,10 +32,10 @@ pub struct RealMenuAssets {
 }
 
 impl RealMenuAssets {
-    /// Load `_RELEASE`-style assets (headless, full).
-    pub fn new(root: impl AsRef<Path>) -> Result<Self, oh_assets::FatalLoadError> {
+    /// Load assets from a VFS provider (headless, full).
+    pub fn new(vfs: Arc<dyn Vfs>) -> Result<Self, oh_assets::FatalLoadError> {
         Ok(Self {
-            assets: Arc::new(Assets::new(root, true, false)?),
+            assets: Arc::new(Assets::new(vfs, true, false)?),
             current_profile: std::cell::RefCell::new(None),
         })
     }

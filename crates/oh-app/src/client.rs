@@ -104,7 +104,7 @@ pub fn main_client(
 
     // Initialize assets (C++ main.cpp:380: `HGAssets{&steamManager,
     // headless}`).
-    let assets = match oh_assets::Assets::new(base_dir, headless, false) {
+    let assets = match oh_assets::Assets::new(Arc::new(oh_vfs::RealFs::new(base_dir)), headless, false) {
         Ok(a) => Arc::new(a),
         Err(e) => {
             // C++ would `std::terminate()` (Assets.cpp:323-352).

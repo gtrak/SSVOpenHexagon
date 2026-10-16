@@ -1942,7 +1942,9 @@ mod tests {
     fn bare_engine(host: Arc<dyn ScriptHost>) -> HexagonGame {
         let config = Arc::new(RwLock::new(Config::default()));
         let assets = oh_assets::Assets::new(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_RELEASE"),
+            Arc::new(oh_vfs::RealFs::new(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_RELEASE"),
+            )),
             true,
             true,
         )

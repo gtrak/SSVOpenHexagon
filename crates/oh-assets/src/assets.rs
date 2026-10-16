@@ -20,7 +20,6 @@
 //! - the `reloadPack` / `reloadLevel` / `reloadAllShaders` dev-tool paths.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::Path;
 use std::sync::Arc;
 
 use oh_data::json::{self, Obj};
@@ -96,7 +95,7 @@ impl Assets {
     ///   `RealFs` rooted at the process CWD (the `_RELEASE` directory in tests);
     /// - `headless` — C++ `mHeadless`;
     /// - `levels_only` — C++ `mLevelsOnly`.
-    pub fn new_with_vfs(
+    pub fn new(
         vfs: Arc<dyn Vfs>,
         headless: bool,
         levels_only: bool,
@@ -157,27 +156,6 @@ impl Assets {
         a.sort_selectable_pack_infos_by_priority();
 
         Ok(a)
-    }
-
-    /// Transitional convenience (issue 026a sub-goal 3): construct over a
-    /// native filesystem root. Sub-goal 5 migrates the remaining callers to
-    /// [`Self::new_with_vfs`] and removes this shim. `#[cfg(not(target_arch =
-    /// "wasm32"))]` because it wraps `RealFs` (which uses `std::fs`).
-    ///
-    /// The parameter stays `impl AsRef<Path>` (the pre-refactor signature) so
-    /// every existing caller — including generic `impl AsRef<Path>` forwarders
-    /// such as `oh_menu::RealMenuAssets::new` — keeps compiling untouched.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn new(
-        root: impl AsRef<Path>,
-        headless: bool,
-        levels_only: bool,
-    ) -> Result<Self, FatalLoadError> {
-        Self::new_with_vfs(
-            Arc::new(oh_vfs::RealFs::new(root.as_ref().to_path_buf())),
-            headless,
-            levels_only,
-        )
     }
 
     fn fatal(self, reason: &str) -> FatalLoadError {

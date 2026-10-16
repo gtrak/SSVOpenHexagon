@@ -9,3 +9,4 @@ oh-math = { path = "../oh-math" }
 oh-data = { path = "../oh-data" }
 oh-menu-system = { path = "../oh-menu-system" }
 oh-assets = { path = "../oh-assets" }
+oh-vfs = { path = "../oh-vfs" }

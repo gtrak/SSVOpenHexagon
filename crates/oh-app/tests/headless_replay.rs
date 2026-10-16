@@ -138,7 +138,7 @@ fn run_binary(sandbox: &Path, args: &[&str]) -> Output {
 /// `playedTimeSeconds` + its replay file.
 fn live_run_to_death() -> (f64, oh_replay::ReplayFile) {
     let assets = Arc::new(
-        oh_assets::Assets::new(release_dir(), true, false).expect("_RELEASE loads headless"),
+        oh_assets::Assets::new(Arc::new(oh_vfs::RealFs::new(release_dir())), true, false).expect("_RELEASE loads headless"),
     );
     let c = oh_app::compose::compose_with(
         assets,

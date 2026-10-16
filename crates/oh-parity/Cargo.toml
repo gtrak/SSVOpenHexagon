@@ -21,4 +21,5 @@ oh-config = { path = "../oh-config" }
 oh-assets = { path = "../oh-assets" }
 oh-lua = { path = "../oh-lua" }
 oh-game = { path = "../oh-game" }
+oh-vfs = { path = "../oh-vfs" }
 serde_json = { workspace = true }

@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use oh_menu::layout::LinearFontHeight;
 use oh_menu::{
@@ -25,8 +26,9 @@ fn release_dir() -> PathBuf {
 
 #[test]
 fn menu_lists_every_pack_and_level() {
-    let assets: Rc<dyn MenuAssets> =
-        Rc::new(RealMenuAssets::new(release_dir()).expect("_RELEASE loads"));
+    let assets: Rc<dyn MenuAssets> = Rc::new(
+        RealMenuAssets::new(Arc::new(oh_vfs::RealFs::new(release_dir()))).expect("_RELEASE loads"),
+    );
     let config: Rc<dyn MenuConfig> = FakeConfig::new();
 
     let menu = MenuGame::new(

@@ -311,7 +311,7 @@ pub fn run(app: AndroidApp) {
 
     // C++ main.cpp:380 — the assets (`HGAssets{&steamManager, false}` —
     // the android windowed build is non-headless; `levelsOnly` = false).
-    let assets = match oh_assets::Assets::new(&base_dir, false, false) {
+    let assets = match oh_assets::Assets::new(Arc::new(oh_vfs::RealFs::new(&base_dir)), false, false) {
         Ok(a) => Arc::new(a),
         Err(e) => {
             // The C++ would `std::terminate()` (Assets.cpp:323-352).

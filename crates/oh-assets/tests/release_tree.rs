@@ -3,9 +3,11 @@
 //! `LoadInfo` error-accumulation contract (task spec verification §1–5).
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use oh_assets::pack_scan;
 use oh_assets::Assets;
+use oh_vfs::RealFs;
 
 fn release_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -21,7 +23,7 @@ fn cube_id() -> &'static str {
 /// (assets.json, shaders, custom sounds, music `.ogg`) that the render/audio
 /// backend owns (issue 10), so this asserts the pure data-side pipeline.
 fn load_headless() -> Assets {
-    Assets::new(release_dir(), true, false).expect("_RELEASE loads headless")
+    Assets::new(Arc::new(RealFs::new(release_dir())), true, false).expect("_RELEASE loads headless")
 }
 
 #[test]
@@ -185,7 +187,7 @@ fn pack_infos_are_priority_ordered() {
 
 #[test]
 fn headless_false_loads_assets_json_and_shaders() {
-    let a = Assets::new(release_dir(), false, false).expect("_RELEASE loads full");
+    let a = Assets::new(Arc::new(RealFs::new(release_dir())), false, false).expect("_RELEASE loads full");
     let li = a.get_load_results();
     // 4 shaders + 24 music json + 33 style json.
     assert_eq!(li.assets, 61);
@@ -270,7 +272,7 @@ fn type_mismatch_level_is_a_fatal_exception_with_exact_message() {
     )
     .unwrap();
 
-    let res = Assets::new(&root, true, false);
+    let res = Assets::new(Arc::new(RealFs::new(&root)), true, false);
     let _ = std::fs::remove_dir_all(&root);
 
     let fatal = res.expect_err("a type mismatch in a level file is fatal");
@@ -308,7 +310,7 @@ fn unparseable_level_accumulates_a_formatted_error_and_null_id_level() {
     // level still loads with all defaults (id = "nullId").
     std::fs::write(root.join("Packs/p/Levels/bad.json"), r#"{"id":"x","#).unwrap();
 
-    let a = Assets::new(&root, true, false).expect("parse error is non-fatal");
+    let a = Assets::new(Arc::new(RealFs::new(&root)), true, false).expect("parse error is non-fatal");
     let _ = std::fs::remove_dir_all(&root);
 
     let li = a.get_load_results();

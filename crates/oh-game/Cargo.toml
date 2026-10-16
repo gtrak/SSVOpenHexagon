@@ -21,6 +21,7 @@ oh-discord = { path = "../oh-discord" }
 # cycle: oh-lua already depends on oh-game).
 [dev-dependencies]
 oh-lua = { path = "../oh-lua" }
+oh-vfs = { path = "../oh-vfs" }
 
 [features]
 # D-023/D-024: mirror oh-lua's `produce-lua-metadata` (the C++

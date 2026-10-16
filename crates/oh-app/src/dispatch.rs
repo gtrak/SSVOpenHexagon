@@ -94,7 +94,7 @@ pub fn main_server(base_dir: &Path) -> i32 {
 
     // C++ main.cpp:211-214: the headless `HGAssets` (the C++'s
     // steam-manager argument is issue 20).
-    let assets = match oh_assets::Assets::new(base_dir, true, false) {
+    let assets = match oh_assets::Assets::new(Arc::new(oh_vfs::RealFs::new(base_dir)), true, false) {
         Ok(a) => Arc::new(a),
         Err(e) => {
             // The C++ would `std::terminate()` (Assets.cpp:323-352).

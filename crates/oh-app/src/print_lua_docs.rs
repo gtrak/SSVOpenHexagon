@@ -41,7 +41,7 @@ use crate::compose::compose_with;
 ///   profiles anyway.
 pub fn print_lua_docs(root: &Path, out: &mut dyn Write) -> std::io::Result<i32> {
     let assets = match oh_assets::Assets::new(
-        root, true,  /* headless — the C++ `HGAssets{nullptr, true}` */
+        Arc::new(oh_vfs::RealFs::new(root)), true,  /* headless — the C++ `HGAssets{nullptr, true}` */
         false, /* levelsOnly — the C++ two-arg ctor default */
     ) {
         Ok(a) => Arc::new(a),
