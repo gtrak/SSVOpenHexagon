@@ -145,11 +145,15 @@ fn reject_userdata(value: &Value) -> Result<(), LuaError> {
 
 /// C++ `lua_tointeger` (64-bit): nil -> 0, float truncated toward zero,
 /// bool -> 1/0, string -> `tonumber` truncated, anything else -> 0.
+///
+/// `mlua::Integer` is `i64` on LuaJIT and `i32` on Luau; the `i64::from`
+/// is a no-op on the former and a widening cast on the latter.
+#[allow(clippy::useless_conversion)]
 pub(crate) fn read_i64(value: &Value) -> Result<i64, LuaError> {
     reject_userdata(value)?;
     Ok(match value {
         Value::Nil => 0,
-        Value::Integer(i) => *i,
+        Value::Integer(i) => i64::from(*i),
         Value::Number(n) => *n as i64,
         Value::Boolean(b) => i64::from(*b),
         Value::String(_) => lua_tonumber(value).unwrap_or(0.0) as i64,
@@ -329,17 +333,21 @@ macro_rules! impl_into_lua_int {
         impl IntoLuaValue for $t {
             fn into_lua_value(&self, _lua: &mlua::Lua) -> Result<Value, mlua::Error> {
                 // C++: `lua_pushinteger(_state, nb)` — every integer type is
-                // pushed as a 64-bit integer; values that do not fit i64
-                // saturate (the C++ cast is implementation-defined there).
-                Ok(Value::Integer(i64::try_from(*self).unwrap_or(i64::MAX)))
+                // pushed as a 64-bit integer; values that do not fit the
+                // backend's integer width saturate (the C++ cast is
+                // implementation-defined there).
+                Ok(Value::Integer(
+                    mlua::Integer::try_from(*self).unwrap_or(mlua::Integer::MAX),
+                ))
             }
         }
     };
 }
-// Unsigned values wider than i64::MAX wrap exactly like the C++ cast.
+// Unsigned values wider than the backend integer width wrap exactly like
+// the C++ cast.
 impl IntoLuaValue for u64 {
     fn into_lua_value(&self, _lua: &mlua::Lua) -> Result<Value, mlua::Error> {
-        Ok(Value::Integer(*self as i64))
+        Ok(Value::Integer(*self as mlua::Integer))
     }
 }
 impl_into_lua_int!(i8);
