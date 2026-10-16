@@ -120,6 +120,7 @@ pub fn main_server(base_dir: &Path) -> i32 {
         // headless server degrades).
         crate::steam::steam_manager(),
         None, // C++ server: `nullptr /* discordManager */` (main.cpp:217)
+        None, // C++ server: no window → no renderer (the headless `nullptr`)
     );
     let executor = GameReplayExecutor {
         game: composed.game.clone(),

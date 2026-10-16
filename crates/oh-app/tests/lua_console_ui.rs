@@ -38,6 +38,7 @@ fn debug_composed() -> (oh_app::compose::Composed, Arc<RwLock<Config>>) {
         config.clone(),
         Arc::new(oh_game::seams::NoneSteamSink),
         None, // no Discord (headless test)
+        None, // no window touch sink (the headless test's `nullptr` renderer)
     );
     (composed, config)
 }

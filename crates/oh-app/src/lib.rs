@@ -36,6 +36,8 @@
 //! `drawImguiLuaConsole` on the D-022 egui stack — the composition's
 //! windowed-only half; `oh-game` stays egui-free).
 
+#[cfg(target_os = "android")]
+pub mod android;
 pub mod args;
 pub mod bridge;
 pub mod camera;

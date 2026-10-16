@@ -17,9 +17,19 @@ rustflags = ["-C", "link-arg=-ladvapi32"]
 # self-contained linker (sysroot + libc++_shared semantics); the cc-rs crates
 # (luajit-src, libsodium-sys) get CC/AR/CXX_<target> env vars from
 # tools/android-env.sh (the cargo-ndk equivalent, without the tool).
+# Issue 25b SG6 — the 16KB-page-size alignment (Android 15's 16KB OEM
+# devices): the NDK r27c lld DEFAULT is 4KB ELF LOAD alignment (verified
+# empirically: llvm-readelf -l on an NDK-linked .so shows align 0x1000
+# on the API-28 AND the API-35 clang targets), so -z max-page-size=16384
+# is added at link time to make the .so 16KB-aligned (align 0x4000 — a
+# superset: it still loads on 4KB-page devices; the APK is thereby
+# 16KB-page-ready). Target-scoped (zero effect on the desktop gate);
+# link-arg hits only final links (the cdylib / any android bin).
 [target.aarch64-linux-android]
 linker = "aarch64-linux-android28-clang"
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
 
 # Issue 25 — Android x86_64 (emulator smoke): same scheme as aarch64.
+# (x86_64 Android stays 4KB-page — no 16KB rustflags needed here.)
 [target.x86_64-linux-android]
 linker = "x86_64-linux-android28-clang"

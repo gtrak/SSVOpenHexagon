@@ -17,6 +17,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use glow::HasContext;
+
 use crate::error::RenderError;
 
 /// `sf::Shader::Type`.
@@ -172,6 +174,115 @@ impl Shader {
     }
 }
 
+// === GLES translation (issue 25b SG3) ===
+
+/// The GLES translation pass — the deterministic string transform that
+/// makes the pack `.frag`/`.vert` sources (no `#version`, the desktop
+/// fixed-function defaults — `gl_FragColor`) compile on a GLES context
+/// (GLSL ES 1.00, the GLES 3.0 driver's shader language for ES 1.00
+/// sources).
+///
+/// Applied ONLY on GLES contexts (the `GlBatchUploader`'s compile site —
+/// a desktop-GL context gets its sources verbatim, the desktop path
+/// stays behavior-identical; the _RELEASE files are never modified — the
+/// translation is in-memory at compile time). A future pack-shader GL
+/// compile (the issue-10 remainder) must run pack sources through this
+/// same function on GLES contexts.
+///
+/// The transform (pure string, host-testable, no GL needed):
+/// * no `#version` line: prepend `#version 100`;
+/// * a DESKTOP-only `#version` line (`130`/`140`/`150`/`330`/… — no
+///   `es` qualifier; `_RELEASE/Packs/experimental/Shaders/text.frag`
+///   ships `#version 130`): that line is replaced by `#version 100` —
+///   a desktop-version program can never compile on a GLES driver. (The
+///   `gl_Color`/`gl_TexCoord`/`texture()` fixed-function builtins such
+///   shaders additionally use have no GLSL ES equivalent — they need the
+///   issue-10 render pass; documented in the 25b report, not rewritten
+///   here.);
+/// * an ES `#version` line (`100`, `300 es`, `310 es`): left untouched
+///   (already GLES — the idempotent no-op);
+/// * a FRAGMENT shader without a float `precision` declaration: insert
+///   `precision mediump float;` directly after the version line (GLSL ES
+///   1.00 fragment shaders have NO default float precision — without the
+///   declaration the compile fails; `mediump` is the ES-conventional
+///   fragment default. Vertex shaders get the ES highp default — no line
+///   is inserted);
+/// * everything else stays verbatim.
+#[must_use]
+pub fn translate_for_gles(source: &str, kind: ShaderType) -> String {
+    // The first statement line (GLSL: only comments/whitespace may
+    // precede `#version`). Locate it: the index of the first line whose
+    // trim is not blank and is not a comment, if it is a `#version` line.
+    let lines: Vec<&str> = source.lines().collect();
+    let mut version_line: Option<usize> = None;
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim_start();
+        if t.is_empty() || t.starts_with("//") || t.starts_with("/*") || t.starts_with('*') {
+            continue;
+        }
+        if t.starts_with("#version") {
+            version_line = Some(i);
+        }
+        break; // the first real statement: a `#version` or not
+    }
+
+    let already_es = version_line.is_some_and(|i| {
+        let rest = lines[i]
+            .trim_start()
+            .strip_prefix("#version")
+            .unwrap()
+            .trim_start();
+        match rest.split_once(char::is_whitespace) {
+            // `es`-qualified (300 es / 310 es): already GLES.
+            Some((_, qualifier)) if qualifier.trim() == "es" => true,
+            // `#version 100` (optionally with a trailing comment): ES 1.00.
+            Some((number, _)) => number == "100",
+            None => rest == "100",
+        }
+    });
+
+    let mut out: Vec<String> = Vec::with_capacity(lines.len() + 2);
+    // The leading comment/blank lines stay verbatim at the front.
+    let front_end = version_line.unwrap_or(0);
+    out.extend(lines[..front_end].iter().map(|l| l.to_string()));
+    // The version line: inserted / replaced / kept.
+    match (version_line, already_es) {
+        (Some(i), true) => out.push(lines[i].to_string()),
+        _ => out.push("#version 100".to_string()),
+    }
+    // The fragment float-precision declaration (ES 1.00 has no fragment
+    // default) — directly after the version line, only when absent.
+    if kind == ShaderType::Fragment && !float_precision_declared(&lines) {
+        out.push("precision mediump float;".to_string());
+    }
+    // The rest, verbatim.
+    let rest_start = version_line.map_or(0, |i| i + 1);
+    out.extend(lines[rest_start..].iter().map(|l| l.to_string()));
+    out.join("\n")
+}
+
+/// Whether any line declares a float precision (the ES 1.00 fragment
+/// requirement — `precision (lowp|mediump|highp) float;` in any form).
+fn float_precision_declared(lines: &[&str]) -> bool {
+    lines.iter().any(|l| {
+        let t = l.trim();
+        t.starts_with("precision") && t.contains("float")
+    })
+}
+
+/// Whether a live `glow` context is a GLES one (the issue 25b SG3 gate: the
+/// translation is applied only here, so a desktop-GL context compiles its
+/// sources verbatim and the desktop path stays behavior-identical).
+///
+/// `GL_VERSION` is a core query of every GL context — the `unsafe` is the
+/// raw call (the caller holds a current context — the uploader's compile
+/// site).
+#[must_use]
+pub fn is_gles_context(gl: &glow::Context) -> bool {
+    let version = unsafe { gl.get_parameter_string(glow::VERSION) };
+    version.contains("OpenGL ES")
+}
+
 /// `Assets::shadersById` + the `<packId>_<fileName>` name map — the shader
 /// registry the `shdr_*` Lua API and `getShaderByShaderId` resolve against.
 ///
@@ -290,5 +401,106 @@ mod tests {
         // through load() is the error path (checked via the guard in load).
         let s = Shader::from_source(ShaderType::Fragment, "uniform float t;");
         assert!(!s.source().is_empty());
+    }
+
+    // === issue 25b SG3: the GLES translation (pure string, no GL) ===
+
+    /// The `_RELEASE/Packs/artwork/Shaders/gradient.frag` shape (no
+    /// `#version`, desktop fixed-function defaults — `gl_FragColor` +
+    /// `gl_Color`; the file itself is never modified, this is the inline
+    /// fixture the translation is pinned against).
+    const GRADIENT_FRAG: &str = r#"uniform vec2 u_resolution;
+uniform vec3 u_color0;
+uniform vec3 u_color1;
+uniform float u_blend;
+
+void main()
+{
+    vec2 st = gl_FragCoord.xy / u_resolution.xy;
+
+    gl_FragColor = mix(gl_Color, vec4(mix(vec4(u_color1, 1.0), vec4(u_color0, 1.0), st.y)), u_blend);
+}
+"#;
+
+    #[test]
+    fn no_version_fragment_gets_version_and_precision_rest_verbatim() {
+        let out = translate_for_gles(GRADIENT_FRAG, ShaderType::Fragment);
+        let expected = format!(
+            "#version 100\nprecision mediump float;\n{}",
+            GRADIENT_FRAG.trim_end_matches('\n')
+        );
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn translate_is_idempotent_noop_on_already_es_source() {
+        let es = "#version 100\nprecision mediump float;\nvoid main() { gl_FragColor = gl_Color; }";
+        assert_eq!(translate_for_gles(es, ShaderType::Fragment), es);
+        // Double application == single application (idempotent).
+        let once = translate_for_gles(GRADIENT_FRAG, ShaderType::Fragment);
+        assert_eq!(translate_for_gles(&once, ShaderType::Fragment), once);
+    }
+
+    #[test]
+    fn desktop_version_line_replaced_with_es_100() {
+        // The `_RELEASE/Packs/experimental/Shaders/text.frag` shape (its
+        // `#version 130` is desktop-only; the fixed-function builtins it
+        // uses are the issue-10 remainder — only the VERSION line is the
+        // translation's concern).
+        let src = "#version 130\nuniform sampler2D font;\nvoid main() { gl_FragColor = texture(font, gl_TexCoord[0].xy); }";
+        let out = translate_for_gles(src, ShaderType::Fragment);
+        assert_eq!(
+            out,
+            "#version 100\nprecision mediump float;\nuniform sampler2D font;\nvoid main() { gl_FragColor = texture(font, gl_TexCoord[0].xy); }"
+        );
+    }
+
+    #[test]
+    fn vertex_source_gets_version_but_no_precision() {
+        let src =
+            "attribute vec2 a_position;\nvoid main() { gl_Position = vec4(a_position, 0.0, 1.0); }";
+        let out = translate_for_gles(src, ShaderType::Vertex);
+        assert_eq!(
+            out,
+            "#version 100\nattribute vec2 a_position;\nvoid main() { gl_Position = vec4(a_position, 0.0, 1.0); }"
+        );
+    }
+
+    #[test]
+    fn es_300_es_version_left_untouched() {
+        let src = "#version 300 es\nprecision highp float;\nout vec4 frag_color;\nvoid main() { frag_color = vec4(1.0); }";
+        assert_eq!(translate_for_gles(src, ShaderType::Fragment), src);
+    }
+
+    #[test]
+    fn leading_comment_before_version_preserved_and_version_found() {
+        let src = "// patriciogv noise\n#version 130\nvoid main() {}";
+        let out = translate_for_gles(src, ShaderType::Fragment);
+        assert_eq!(
+            out,
+            "// patriciogv noise\n#version 100\nprecision mediump float;\nvoid main() {}"
+        );
+    }
+
+    #[test]
+    fn existing_precision_declaration_not_duplicated() {
+        let src = "precision highp float;\nvoid main() { gl_FragColor = vec4(0.0); }";
+        let out = translate_for_gles(src, ShaderType::Fragment);
+        assert_eq!(
+            out,
+            "#version 100\nprecision highp float;\nvoid main() { gl_FragColor = vec4(0.0); }"
+        );
+    }
+
+    #[test]
+    fn internal_batching_fragment_source_gets_the_gles_fix() {
+        // The `batching.rs` internal pass-through fragment source — the
+        // actual GLES-breaking source (no version, no float precision
+        // declaration): the translation is exactly what makes it compile
+        // on the android EGL context (regression pin).
+        let src = "varying vec4 v_color;\nvoid main() {\n    gl_FragColor = v_color;\n}\n";
+        let out = translate_for_gles(src, ShaderType::Fragment);
+        assert!(out.starts_with("#version 100\nprecision mediump float;\n"));
+        assert!(out.contains("gl_FragColor = v_color;"));
     }
 }

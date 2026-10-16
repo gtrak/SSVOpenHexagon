@@ -73,7 +73,19 @@ glow = "0.17"
 # The console's event hook sees the window's raw winit events (the C++
 # `runEvents`'s per-event `gameEngine->handleEvent`, GameWindow.hpp:79;
 # the D-011 stack's `winit 0.30.13` — the same major the lockfile pins).
-winit = "0.30"
+# The `android-native-activity` feature (D-026, issue 25b): the same
+# feature + version oh-render already unifies workspace-wide (the lockfile
+# graph is unchanged) — it enables the `winit::platform::android` surface
+# the `android.rs` entry module (issue 25b) consumes on the android target.
+winit = { version = "0.30", features = ["android-native-activity"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+# Issue 25b SG4: the APK asset extraction — the `AAssetManager` traversal
+# (`open_dir`/`open`) that copies the `_RELEASE` content tree out of the
+# APK's `assets/` on first run. `0.9.0` is already in the lockfile (the
+# `android-activity` dependency) — no version change; winit's `AndroidApp::
+# asset_manager()` returns this crate's `AssetManager` directly.
+ndk = "0.9"
 
 [features]
 # Issue 020: the real Steam backend (the C++'s `#ifndef SSVOH_ANDROID`

@@ -18,6 +18,8 @@
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
+#[cfg(target_os = "android")]
+use winit::event_loop::EventLoop;
 use winit::keyboard::{Key as WKey, KeyCode, KeyLocation, NamedKey, PhysicalKey};
 use winit::window::WindowId;
 
@@ -55,7 +57,12 @@ pub enum Event {
     /// `sf::Event::TextEntered`.
     TextEntered { character: char },
     /// `sf::Event::TouchBegan`.
-    TouchBegan { finger: u32 },
+    TouchBegan { finger: u32, position: Vec2 },
+    /// The touch moved (the winit `TouchPhase::Moved` — the port's
+    /// addition over the SFML `Event` set: the SFML touch positions are
+    /// polled, the port's are event-updated; issue 25b SG5's
+    /// `finger_down_positions` seam).
+    TouchMoved { finger: u32, position: Vec2 },
     /// `sf::Event::TouchEnded`.
     TouchEnded { finger: u32 },
 }
@@ -256,6 +263,11 @@ pub fn map_window_event(event: &WindowEvent) -> Option<Event> {
         WindowEvent::Touch(touch) => Some(match touch.phase {
             winit::event::TouchPhase::Started => Event::TouchBegan {
                 finger: touch.id as u32,
+                position: Vec2::new(touch.location.x as f32, touch.location.y as f32),
+            },
+            winit::event::TouchPhase::Moved => Event::TouchMoved {
+                finger: touch.id as u32,
+                position: Vec2::new(touch.location.x as f32, touch.location.y as f32),
             },
             winit::event::TouchPhase::Ended => Event::TouchEnded {
                 finger: touch.id as u32,
@@ -318,6 +330,28 @@ pub struct Window {
     // Real-GL backend (both `None` in headless mode):
     event_loop: Option<winit::event_loop::EventLoop<()>>,
     gl: Option<GlParts>,
+    // Android (issue 25b SG2): the `ensure_android_gl` once-only flag —
+    // a GL creation failure (no GLES context) degrades to the headless
+    // frames permanently (the C++'s no-GL `window == nullptr` equivalent),
+    // so the re-`resumed`s after activity pauses don't retry (nor log).
+    // Desktop: always `false` (the desktop bootstrap is pre-`run`).
+    #[cfg(target_os = "android")]
+    ensure_android_gl_failed: bool,
+    // issue 25b SG5: the down-finger positions (LOGICAL coordinates — the
+    // winit touch positions are scaled physical→logical in
+    // `RunHandler::window_event`, the C++'s `mapPixelToCoords`),
+    // finger-id → position; the C++ `getFingerDownPositions`'s data
+    // (SSVStart GameWindow.hpp:299 — the C++ polls SFML, the port
+    // event-updates on TouchBegan/TouchMoved/TouchEnded). Always empty
+    // on the desktop path (no `WindowEvent::Touch` there).
+    finger_down_positions: std::collections::HashMap<u32, Vec2>,
+    // issue 25b SG5: the SHARED sink the engine's `Renderer` seam reads
+    // (the windowed client installs it — the `Window` itself is not
+    // shareable: its winit `EventLoop` field is not `Send`). One slot per
+    // finger (the C++'s 0..`FINGER_COUNT` iteration order), `None` = the
+    // finger is up. The field `None` = no sink (headless / pre-install).
+    touch_position_sink:
+        Option<std::sync::Arc<std::sync::RwLock<[Option<Vec2>; crate::input::FINGER_COUNT]>>>,
 }
 
 impl Window {
@@ -342,6 +376,57 @@ impl Window {
                 }
             }
             None => Self::new_inner(width, height, title),
+        }
+    }
+
+    /// Android (issue 25b): the window over the event loop the
+    /// `android_main` entry built (the `AndroidApp`-bound winit loop —
+    /// `EventLoop::new()` panics on Android, so the loop arrives pre-built;
+    /// the caller passes the platform window's LOGICAL size — the C++'s
+    /// logical `width`/`height` members — while the platform window itself
+    /// is screen-sized).
+    ///
+    /// The activity's `ANativeWindow` only exists between `InitWindow` and
+    /// `TerminateWindow`, so the winit window + the glutin EGL context
+    /// materialize on the first `resumed` ([`Self::ensure_android_gl`]);
+    /// until then `gl()` is `None` and the loop frames run on the
+    /// `NullDrawTarget` — the headless degradation, exactly the
+    /// [`Self::create`] no-display arm.
+    #[cfg(target_os = "android")]
+    #[must_use]
+    pub fn create_android(event_loop: EventLoop<()>, width: u32, height: u32, title: &str) -> Self {
+        let base = Self::new_inner(width, height, title);
+        Self {
+            event_loop: Some(event_loop),
+            ..base
+        }
+    }
+
+    /// Android (issue 25b SG2): materialize the platform window + the
+    /// glutin EGL context (the GLES 3.0 request — `gl.rs`'s
+    /// `create_android_parts` module docs carry the full assessment) on
+    /// the first `resumed` (the `ANativeWindow` exists from `InitWindow` —
+    /// winit's android `create_window` wraps it; the `resumed` IS the
+    /// `InitWindow` dispatch, `winit::platform_impl::android`). A creation
+    /// failure degrades once to the headless frames
+    /// (`ensure_android_gl_failed` — the re-`resumed`s after activity
+    /// pauses are no-ops, the C++'s no-GL `window == nullptr` equivalent);
+    /// desktop never calls this (the desktop bootstrap is pre-`run`).
+    #[cfg(target_os = "android")]
+    fn ensure_android_gl(&mut self, el: &ActiveEventLoop) {
+        if self.gl.is_some() || self.ensure_android_gl_failed {
+            return;
+        }
+        match crate::gl::create_android_parts(el) {
+            Some(parts) => {
+                self.gl = Some(parts);
+            }
+            None => {
+                self.ensure_android_gl_failed = true;
+                eprintln!(
+                    "[Window::ensure_android_gl] Android GL context unavailable (headless frames)"
+                );
+            }
         }
     }
 
@@ -370,7 +455,50 @@ impl Window {
             ms_draw: 0.0,
             event_loop: None,
             gl: None,
+            #[cfg(target_os = "android")]
+            ensure_android_gl_failed: false,
+            finger_down_positions: std::collections::HashMap::new(),
+            touch_position_sink: None,
         }
+    }
+
+    /// issue 25b SG5: install the shared down-finger-position sink (the
+    /// engine's `Renderer::finger_down_positions` seam source — the
+    /// windowed client calls this once before the loop; the touch events
+    /// update BOTH the window's own `finger_down_positions` map and this
+    /// sink; headless windows never get one).
+    pub fn set_touch_position_sink(
+        &mut self,
+        sink: std::sync::Arc<std::sync::RwLock<[Option<Vec2>; crate::input::FINGER_COUNT]>>,
+    ) {
+        self.touch_position_sink = Some(sink);
+    }
+
+    /// The sink's write half (the touch-event updates — `None` = no-op).
+    fn with_touch_sink(&self, f: impl FnOnce(&mut [Option<Vec2>; crate::input::FINGER_COUNT])) {
+        if let Some(sink) = &self.touch_position_sink {
+            f(&mut sink.write().expect("touch sink poisoned"));
+        }
+    }
+
+    /// C++ `getFingerDownPositions()` (SSVStart GameWindow.hpp:299-309):
+    /// for each finger whose `InputState` bit is set, its current LOGICAL
+    /// position — `(0,0)` for a down finger with no recorded position
+    /// (the SFML `Touch::getPosition` unknown-position value). The engine's
+    /// `updateInput_UpdateTouchControls` half-width comparison runs
+    /// against these (oh-game `update_input_update_touch_controls`, the
+    /// verbatim C++ port reading the `Renderer` seam).
+    #[must_use]
+    pub fn finger_down_positions(&self) -> Vec<Vec2> {
+        (0..crate::input::FINGER_COUNT)
+            .filter(|i| self.input.is_finger(*i as u32))
+            .map(|i| {
+                self.finger_down_positions
+                    .get(&(i as u32))
+                    .copied()
+                    .unwrap_or_default()
+            })
+            .collect()
     }
 
     /// Whether a real GL context is attached.
@@ -714,8 +842,32 @@ impl Window {
             Event::MouseButtonReleased { button } => window.input.set_button_pressed(button, false),
             Event::MouseMoved { position } => window.mouse_pixel = position,
             Event::Resized { width, height } => window.set_size(width, height),
-            Event::TouchBegan { finger } => window.input.set_finger(finger, true),
-            Event::TouchEnded { finger } => window.input.set_finger(finger, false),
+            Event::TouchBegan { finger, position } => {
+                window.input.set_finger(finger, true);
+                window.finger_down_positions.insert(finger, position);
+                window.with_touch_sink(|slots| {
+                    if (finger as usize) < slots.len() {
+                        slots[finger as usize] = Some(position);
+                    }
+                });
+            }
+            Event::TouchMoved { finger, position } => {
+                window.finger_down_positions.insert(finger, position);
+                window.with_touch_sink(|slots| {
+                    if (finger as usize) < slots.len() {
+                        slots[finger as usize] = Some(position);
+                    }
+                });
+            }
+            Event::TouchEnded { finger } => {
+                window.input.set_finger(finger, false);
+                window.finger_down_positions.remove(&finger);
+                window.with_touch_sink(|slots| {
+                    if (finger as usize) < slots.len() {
+                        slots[finger as usize] = None;
+                    }
+                });
+            }
             Event::MouseWheelScrolled { .. } | Event::TextEntered { .. } => {}
         }
     }
@@ -734,10 +886,52 @@ struct RunHandler<'a, F> {
 }
 
 impl<F: FnMut(&mut Window)> ApplicationHandler<()> for RunHandler<'_, F> {
-    fn resumed(&mut self, _el: &ActiveEventLoop) {}
+    fn resumed(&mut self, _el: &ActiveEventLoop) {
+        // Android (issue 25b SG2): the first `resumed` IS the
+        // `InitWindow` dispatch — the `ANativeWindow` exists from here;
+        // materialize the platform window + the GLES context (once; the
+        // `ensure_android_gl_failed` guard covers the re-`resumed`s).
+        // Desktop: the statement is android-gated (no-op) and `_el`
+        // stays unused (the underscore suppresses the warning).
+        #[cfg(target_os = "android")]
+        self.window.ensure_android_gl(_el);
+    }
 
     fn window_event(&mut self, _el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        if let Some(e) = map_window_event(&event) {
+        if let Some(mut e) = map_window_event(&event) {
+            // Android (issue 25b SG5): winit delivers the touch position
+            // in PHYSICAL pixels (the activity window's drawable); the
+            // engine's seam (the C++ `getFingerDownPositions` →
+            // `mapPixelToCoords`) wants the LOGICAL coordinates — scale
+            // each axis by the window's logical/physical ratio (the
+            // screen-sized platform window vs the config logical size;
+            // per-axis, the SFML `mapPixelToCoords`). The physical size
+            // is the GL surface's (`GlParts`'s `width`/`height` — the
+            // native window's screen size on android, the requested
+            // physical size on desktop; winit 0.30 has no window-by-id
+            // lookup, the surface IS the drawable). Before the first
+            // `resumed` (or on a GL-creation failure) the surface is
+            // unknown: the position stays raw (the documented headless
+            // degradation — no GL, the frames are null-target anyway).
+            // Desktop: `WindowEvent::Touch` never arrives (the arm is
+            // dead there) — behavior-identical.
+            if matches!(e, Event::TouchBegan { .. } | Event::TouchMoved { .. }) {
+                if let Some(gl) = self.window.gl.as_ref() {
+                    let sx = self.window.get_width() as f32 / (gl.width as f32).max(1.0);
+                    let sy = self.window.get_height() as f32 / (gl.height as f32).max(1.0);
+                    e = match e {
+                        Event::TouchBegan { finger, position } => Event::TouchBegan {
+                            finger,
+                            position: Vec2::new(position.x * sx, position.y * sy),
+                        },
+                        Event::TouchMoved { finger, position } => Event::TouchMoved {
+                            finger,
+                            position: Vec2::new(position.x * sx, position.y * sy),
+                        },
+                        other => other,
+                    };
+                }
+            }
             Window::apply_event(self.window, e);
         }
         // C++ `runEvents` (GameWindow.hpp:42-83): the input state is
@@ -801,5 +995,106 @@ mod tests {
         );
         assert_eq!(frames.load(Ordering::SeqCst), 1);
         assert_eq!(hook_fired.load(Ordering::SeqCst), 0);
+    }
+
+    // issue 25b SG5: the touch → engine seam (the C++
+    // `getFingerDownPositions` data path; the positions arrive LOGICAL —
+    // the `RunHandler::window_event`'s physical→logical scale is the
+    // `mapPixelToCoords` equivalent, exercised over the already-scaled
+    // `Event`s here).
+    #[test]
+    fn touch_events_fold_into_input_state_and_the_sink() {
+        use crate::input::FINGER_COUNT;
+        use std::sync::{Arc, RwLock};
+
+        let mut w = Window::headless(800, 600);
+        let sink: Arc<RwLock<[Option<Vec2>; FINGER_COUNT]>> =
+            Arc::new(RwLock::new([None; FINGER_COUNT]));
+        w.set_touch_position_sink(sink.clone());
+
+        // Finger 2 down at (100, 300) logical (the C++'s left half of an
+        // 800-wide window — the `updateInput_UpdateTouchControls` CCW arm).
+        Window::apply_event(
+            &mut w,
+            Event::TouchBegan {
+                finger: 2,
+                position: Vec2::new(100.0, 300.0),
+            },
+        );
+        assert!(w.input.is_finger(2));
+        assert_eq!(w.finger_down_positions(), vec![Vec2::new(100.0, 300.0)]);
+        assert_eq!(
+            sink.read().expect("poisoned")[2],
+            Some(Vec2::new(100.0, 300.0))
+        );
+        assert!(sink.read().expect("poisoned")[0].is_none());
+
+        // The move updates both (the down position tracks the finger).
+        Window::apply_event(
+            &mut w,
+            Event::TouchMoved {
+                finger: 2,
+                position: Vec2::new(500.0, 300.0),
+            },
+        );
+        assert_eq!(w.finger_down_positions(), vec![Vec2::new(500.0, 300.0)]);
+        assert_eq!(
+            sink.read().expect("poisoned")[2],
+            Some(Vec2::new(500.0, 300.0))
+        );
+
+        // A second finger: the C++'s 0..FINGER_COUNT order (ascending id).
+        Window::apply_event(
+            &mut w,
+            Event::TouchBegan {
+                finger: 1,
+                position: Vec2::new(700.0, 300.0),
+            },
+        );
+        assert_eq!(
+            w.finger_down_positions(),
+            vec![Vec2::new(700.0, 300.0), Vec2::new(500.0, 300.0)]
+        );
+
+        // Up: the bit clears, both storages drop the position.
+        Window::apply_event(&mut w, Event::TouchEnded { finger: 2 });
+        assert!(!w.input.is_finger(2));
+        assert!(w.input.is_finger(1));
+        assert_eq!(w.finger_down_positions(), vec![Vec2::new(700.0, 300.0)]);
+        assert!(sink.read().expect("poisoned")[2].is_none());
+    }
+
+    #[test]
+    fn map_window_event_touch_phases_carry_the_position() {
+        use winit::dpi::PhysicalPosition;
+        use winit::event::DeviceId;
+
+        let touch = |phase: winit::event::TouchPhase| {
+            WindowEvent::Touch(winit::event::Touch {
+                device_id: DeviceId::dummy(),
+                phase,
+                location: PhysicalPosition::new(40.0, 90.0),
+                force: None,
+                id: 3,
+            })
+        };
+        match map_window_event(&touch(winit::event::TouchPhase::Started)).unwrap() {
+            Event::TouchBegan { finger, position } => {
+                assert_eq!(finger, 3);
+                assert_eq!(position, Vec2::new(40.0, 90.0));
+            }
+            other => panic!("expected TouchBegan, got {other:?}"),
+        }
+        match map_window_event(&touch(winit::event::TouchPhase::Moved)).unwrap() {
+            Event::TouchMoved { finger, position } => {
+                assert_eq!(finger, 3);
+                assert_eq!(position, Vec2::new(40.0, 90.0));
+            }
+            other => panic!("expected TouchMoved, got {other:?}"),
+        }
+        match map_window_event(&touch(winit::event::TouchPhase::Ended)).unwrap() {
+            Event::TouchEnded { finger } => assert_eq!(finger, 3),
+            other => panic!("expected TouchEnded, got {other:?}"),
+        }
     }
 }

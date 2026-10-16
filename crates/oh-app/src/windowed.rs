@@ -158,6 +158,33 @@ impl AudioSink for NoopAudio {
     fn stop_all(&self) {}
 }
 
+/// issue 25b SG5: the engine's `Renderer` seam over the window's
+/// down-finger positions (the C++ `getFingerDownPositions` data path —
+/// the C++'s window IS the position source; the port's windowed client
+/// owns both sides: the window's touch events update the shared slot
+/// array (the C++'s 0..`FINGER_COUNT` order; LOGICAL coordinates — the
+/// window's physical→logical scale, its `RunHandler`'s `mapPixelToCoords`
+/// equivalent), the engine's `updateInput_UpdateTouchControls` reads it
+/// through this renderer every update tick). Desktop: `WindowEvent::
+/// Touch` never arrives — every slot stays `None`, the engine sees the
+/// exact no-renderer behavior (behavior-identical, the 25b constraint).
+struct WindowTouchRenderer {
+    positions: std::sync::Arc<
+        std::sync::RwLock<[Option<oh_math::ssvs::Vec2>; oh_render::input::FINGER_COUNT]>,
+    >,
+}
+
+impl oh_game::renderer::Renderer for WindowTouchRenderer {
+    fn finger_down_positions(&self) -> Vec<oh_math::ssvs::Vec2> {
+        self.positions
+            .read()
+            .expect("touch sink poisoned")
+            .iter()
+            .filter_map(|slot| *slot)
+            .collect()
+    }
+}
+
 /// `MenuConfig` over the REAL `oh_config::Config` (the C++ menu reads
 /// `hg::Config` directly; the port's seam is the same object the engine
 /// composition uses — one `Config`, shared by `Arc<RwLock<...>>`).
@@ -1613,7 +1640,7 @@ impl WindowedClient {
     /// pass a headless `Window` so no display / GL / event loop is
     /// touched — the spec's "real windowed run = MANUAL").
     pub fn build(
-        window: Window,
+        mut window: Window,
         config: Arc<RwLock<Config>>,
         assets: Arc<oh_assets::Assets>,
         base_dir: &Path,
@@ -1641,6 +1668,22 @@ impl WindowedClient {
         // process-global `hg::Config` (menu writes reach the engine —
         // e.g. the debug toggle the `Tid::Pause` body reads,
         // HexagonGame.cpp:421-441).
+        // issue 25b SG5: the engine's `Renderer` seam (the C++
+        // `getFingerDownPositions` data path) — the shared touch sink
+        // the window's touch events update (the windowed client owns
+        // both sides; module note on `WindowTouchRenderer`). Desktop:
+        // `WindowEvent::Touch` never arrives — the sink stays empty and
+        // the engine sees the no-renderer behavior (behavior-identical).
+        let touch_sink: std::sync::Arc<
+            std::sync::RwLock<[Option<oh_math::ssvs::Vec2>; oh_render::input::FINGER_COUNT]>,
+        > = std::sync::Arc::new(std::sync::RwLock::new(
+            [None; oh_render::input::FINGER_COUNT],
+        ));
+        window.set_touch_position_sink(touch_sink.clone());
+        let renderer: Option<std::sync::Arc<dyn oh_game::renderer::Renderer + 'static>> =
+            Some(std::sync::Arc::new(WindowTouchRenderer {
+                positions: touch_sink,
+            }));
         // C++ main.cpp:264-269 — `discordManager.emplace()` (only when NOT
         // headless; the windowed path is always non-headless).
         let discord = discord.unwrap_or_else(|| {
@@ -1657,6 +1700,7 @@ impl WindowedClient {
             config.clone(),
             steam.clone(),
             Some(discord.clone()),
+            renderer,
         );
 
         // The C++ `initText` fonts (HexagonGame.cpp:289-290:

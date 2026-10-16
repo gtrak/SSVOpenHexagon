@@ -63,6 +63,7 @@ use oh_data::{MusicData, PackData, StyleData};
 use oh_discord::Discord;
 use oh_game::hexagon_game::HexagonGame;
 use oh_game::lua_state::{GameApi, ReentrantMutex};
+use oh_game::renderer::Renderer;
 use oh_game::seams::{
     NoJoystick, NullReplayStore, PcgCosmeticRng, Profiles, ScriptError, ScriptHost, SteamSink,
 };
@@ -474,6 +475,7 @@ pub fn compose_with(
         Arc::new(RwLock::new(Config::default())),
         steam,
         discord,
+        None, // the headless composition's renderer (the C++'s `nullptr`)
     )
 }
 
@@ -482,6 +484,12 @@ pub fn compose_with(
 /// game and the menu; the windowed composition passes its shared
 /// `Arc<RwLock<Config>>` so the menu's config writes — e.g. the debug
 /// toggle the `Tid::Pause` trigger body reads — reach the engine).
+///
+/// `renderer` — the engine's `Renderer` seam (the C++ `HexagonGame`
+/// ctor's renderer argument): the windowed composition passes the
+/// window's touch sink (issue 25b SG5 — the `getFingerDownPositions`
+/// data path); the headless composition passes `None` (the C++'s
+/// headless `renderer == nullptr`).
 #[allow(clippy::too_many_arguments)]
 #[must_use]
 pub fn compose_with_config(
@@ -492,6 +500,7 @@ pub fn compose_with_config(
     config: Arc<RwLock<Config>>,
     steam: Arc<dyn SteamSink + 'static>,
     discord: Option<Arc<dyn Discord + 'static>>,
+    renderer: Option<Arc<dyn Renderer + 'static>>,
 ) -> Composed {
     // Heap-pinned before the `SharedLua` capture (see the `lua` field docs
     // on `Composed`): the host's `SharedLua` points at this box's slot.
@@ -510,8 +519,8 @@ pub fn compose_with_config(
         Arc::new(NoJoystick),
         Arc::new(PcgCosmeticRng::new()),
         window,
-        None,    // C++ headless tests: no renderer
-        discord, // C++ `discordManager` (main.cpp:264-269,416) — `None` headless
+        renderer, // issue 25b SG5 (the window's touch sink) / the C++ headless `nullptr`
+        discord,  // C++ `discordManager` (main.cpp:264-269,416) — `None` headless
     );
 
     // Phase 2: the shared state with the engine itself as backend.

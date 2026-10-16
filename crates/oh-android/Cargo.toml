@@ -1,0 +1,80 @@
+[package]
+name = "oh-android"
+description = "The Android (aarch64) entry crate (issue 25b, D-026): the android_main native-activity entry + the cargo-apk packaging metadata — the thin target-gated glue over the shared oh-app windowed pipeline"
+version.workspace = true
+edition.workspace = true
+
+# Issue 25b SG6 — the cargo-apk (0.10) packaging metadata: the APK identity
+# + the `_RELEASE` content as APK assets + the fullscreen landscape
+# NativeActivity (the D-026 native-activity route — cargo-apk writes the
+# `android.app.lib_name` meta-data (this lib name) + the MAIN/LAUNCHER
+# intent-filter + the target-31 `exported` itself). The build is
+# `cargo apk build --release` (tools/package-android.sh — the SG6 script):
+# `lib/arm64-v8a/liboh_android.so` + `assets/` (the `_RELEASE` tree, the
+# cargo-apk `assets` = the folder's ENTRIES at the APK assets root — the
+# SG4 extraction walks that tree into the app's internal data dir).
+# The APK's versionName/versionCode are DERIVED by cargo-apk from the
+# package version (0.1.0 — the port's workspace version; the C++'s game
+# 2.1.7 identity lives in the label / the window title, not the APK
+# identity: cargo-apk 0.10 forbids TOML overrides of both).
+[package.metadata.android]
+package = "info.vittorioromeo.openhexagon"
+# The APK file name (default: the package name).
+apk_name = "open-hexagon"
+# The ABI (the 25b spec: arm64-v8a only — no 32-bit armv7 / x86 halves).
+build_targets = ["aarch64-linux-android"]
+# The `_RELEASE` game content as APK assets (the SG4 extraction source —
+# the folder's entries land at the APK assets root: assets/Packs/..., the
+# internal-data-dir extraction's `Packs/...` target, issue 25b SG4).
+assets = "../../_RELEASE"
+
+# SDK range: minSdk 28 / target 34 — the NDK's API-28 clang target
+# (.cargo/config.toml) + the installed platform-34 build-tools; every
+# API-28+ device guarantees the GLES 3.0 context (the SG2 assessment).
+[package.metadata.android.sdk]
+min_sdk_version = 28
+target_sdk_version = 34
+
+[package.metadata.android.application]
+label = "Open Hexagon"
+# The fullscreen game theme (no action bar / status chrome — the C++
+# Android build's `NoActionBar.Fullscreen` equivalent).
+theme = "@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
+
+[package.metadata.android.application.activity]
+# `android.app.NativeActivity` (the D-026 route — cargo-apk's default;
+# spelled here for the report's manifest review) loading
+# `liboh_android.so` (the `android.app.lib_name` cargo-apk writes).
+name = "android.app.NativeActivity"
+# The game is landscape (the config default's 800x600 logical window —
+# the C++ Android build's landscape); `sensorLandscape` keeps it
+# landscape on both sensor orientations (no portrait mode).
+orientation = "sensorLandscape"
+# The activity handles its own config changes (the winit android
+# activity's callback re-dispatch — the C++'s native-activity model):
+# a recreation would drop the game state (the `android_main` re-entry
+# is a fresh boot), so the platform must NOT recreate it on rotation /
+# keyboard / display-density changes.
+config_changes = "orientation|keyboardHidden|keyboard|screenSize|screenLayout|smallestScreenSize|uiMode"
+exported = true
+
+[lib]
+# The cdylib the APK loads (`liboh_android.so` in `lib/arm64-v8a/`); the
+# `android.app.lib_name` meta-data cargo-apk writes is this lib name.
+name = "oh_android"
+crate-type = ["cdylib"]
+
+# The entry only exists on the Android target (the `android_main` symbol +
+# the winit android event-loop module are `target_os = "android"`-gated); on
+# every other target this package builds to an empty cdylib so the desktop
+# gate (`cargo build/clippy/test --workspace`) stays green.
+[target.'cfg(target_os = "android")'.dependencies]
+oh-app = { path = "../oh-app" }
+# The winit 0.30 android surface (the D-026 native-activity route): the
+# `android_main(app: AndroidApp)` entry takes the android-activity 0.6
+# `AndroidApp` through Winit's re-export (`winit::platform::android::
+# activity`) — winit's documented way to avoid an android-activity version
+# clash (it hard-depends on exactly one glue crate, and only on the android
+# target). Same `0.30` + `android-native-activity` feature the workspace
+# already unifies through oh-render (no lockfile change).
+winit = { version = "0.30", features = ["android-native-activity"] }

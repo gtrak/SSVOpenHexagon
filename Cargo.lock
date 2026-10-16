@@ -1872,6 +1872,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "oh-android"
+version = "0.1.0"
+dependencies = [
+ "oh-app",
+ "winit",
+]
+
+[[package]]
 name = "oh-app"
 version = "0.1.0"
 dependencies = [
@@ -1879,6 +1887,7 @@ dependencies = [
  "egui-winit",
  "egui_glow",
  "glow 0.17.0",
+ "ndk",
  "oh-assets",
  "oh-config",
  "oh-data",

@@ -15,8 +15,11 @@
 //! when no display/GPU is available). The fragment-shader-binding surface
 //! (`RenderStates::shader`) stays at the description level: executing the
 //! pack's fixed-function-style fragment shaders (SFML's shader model with
-//! `gl_Color`/`gl_TexCoord`) is a later issue.
-//!
+//! `gl_Color`/`gl_TexCoord`) is a later issue — BUT the two INTERNAL
+//! pass-through sources of this uploader run through the issue-25b-SG3
+//! GLES translation ([`crate::shader::translate_for_gles`], gated on the
+//! context being GLES) so the program compiles on the android EGL context.
+//!//!
 //! `TODO(issue-009-wiring)`: the `Window`-backed `DrawTarget` (full frame
 //! pipeline: sprites, texts, rectangle shapes) wires into this uploader once
 //! the glyph-atlas / sprite-quad pipeline lands.
@@ -72,12 +75,40 @@ fn glow_error() -> RenderError {
 impl GlBatchUploader {
     /// Build the VAO / VBO / pass-through program.
     ///
+    /// GLES (issue 25b SG3): when the context is a GLES one (queried via
+    /// [`crate::shader::is_gles_context`] — the "when the created context
+    /// is GLES" gate, so a desktop-GL context gets the sources verbatim
+    /// and the desktop path stays behavior-identical), the two internal
+    /// sources run through [`crate::shader::translate_for_gles`] — the
+    /// pass-through vertex source is already ES 1.00-syntax (it gains the
+    /// explicit `#version 100` line) and the fragment source gains the
+    /// `precision mediump float;` declaration that GLSL ES 1.00 fragment
+    /// shaders require (no default float precision — without it the
+    /// compile fails on every GLES context).
+    ///
     /// # Errors
     /// [`RenderError::InvalidData`] if a shader fails to compile/link on
     /// this context (or a GL object cannot be allocated).
     pub fn new(gl: &Context) -> Result<Self, RenderError> {
-        let vs = compile_shader(gl, glow::VERTEX_SHADER, VERTEX_SHADER_SOURCE)?;
-        let fs = compile_shader(gl, glow::FRAGMENT_SHADER, FRAGMENT_SHADER_SOURCE)?;
+        let is_gles = crate::shader::is_gles_context(gl);
+        let vs_source = if is_gles {
+            crate::shader::translate_for_gles(
+                VERTEX_SHADER_SOURCE,
+                crate::shader::ShaderType::Vertex,
+            )
+        } else {
+            VERTEX_SHADER_SOURCE.to_string()
+        };
+        let fs_source = if is_gles {
+            crate::shader::translate_for_gles(
+                FRAGMENT_SHADER_SOURCE,
+                crate::shader::ShaderType::Fragment,
+            )
+        } else {
+            FRAGMENT_SHADER_SOURCE.to_string()
+        };
+        let vs = compile_shader(gl, glow::VERTEX_SHADER, &vs_source)?;
+        let fs = compile_shader(gl, glow::FRAGMENT_SHADER, &fs_source)?;
 
         let program = unsafe { gl.create_program() }.map_err(|_| glow_error())?;
         unsafe {

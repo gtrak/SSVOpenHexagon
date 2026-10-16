@@ -25,6 +25,48 @@
 //! The real `save_screenshot` readback (glReadPixels, rows BOTTOM-UP, row
 //! flip, PNG encode — the C++ `GameWindow::saveScreenshot`, D-004 SFML
 //! entry) lands with the issue-015c-tail screenshot work.
+//!
+//! # Android (issue 25b SG2)
+//!
+//! `create_android_parts` bootstraps the GL backend over the activity's
+//! window on the first `resumed` (the `ANativeWindow` only exists between
+//! `InitWindow` and `TerminateWindow` — `Window::ensure_android_gl` calls
+//! it from `RunHandler::resumed`; the desktop `create` keeps its own
+//! pre-`run` bootstrap, unchanged). The differences, exactly:
+//!
+//! * **API** — `DisplayApiPreference::Egl` over the android display handle
+//!   (glutin's `EGL_PLATFORM_ANDROID` display — `EGL_KHR_platform_android`);
+//! * **context** — `ContextApi::Gles(3.0)` explicitly requested (the D-026
+//!   target). The minSdk is 28 (the cargo-apk metadata, issue 25b SG6), and
+//!   every API-28+ device guarantees OpenGL ES 3.0, so the request cannot
+//!   fail on a supported device. **GLES 2.0 fallback assessment**: a
+//!   `Gles(2.0)` retry would additionally need VAOs through the
+//!   `OES_vertex_array_object` extension (ES 2.0 has no core VAOs — the
+//!   [`crate::batching::GlBatchUploader`] uses them unconditionally) and
+//!   the SG3 `#version 100` translation (already ES-1.00-targeted) —
+//!   feasible but never exercised at minSdk 28, so the retry is NOT
+//!   implemented (a `create_context` failure degrades to the headless
+//!   frames, `Window::ensure_android_gl`'s documented path);
+//! * **glow** — the SAME `glow 0.18` `Context::from_loader_function_cstr`
+//!   loader as desktop: it loads the GL-4.6 desktop function table by name;
+//!   on a GLES context the desktop-only / fixed-function names (e.g.
+//!   `glBegin`, `glMatrixMode`) resolve to NULL and stay null. The port
+//!   calls ONLY functions present in ES 3.0 core (`glClear*`,
+//!   `glReadPixels`, the program/shader/VAO/VBO/uniform/draw calls of
+//!   `GlParts` + `GlBatchUploader`, `glGetString(GL_VERSION)`,
+//!   `glGetParameter(NUM_EXTENSIONS/EXTENSIONS/MAX_LABEL_LENGTH)`), so the
+//!   nulls are never dereferenced — the ES 3.0 core ⊇ every call made.
+//!   (The pack's `gl_Color`/`gl_TexCoord` fixed-function builtins are a
+//!   SHADER-language gap, not a loader gap — the SG3 assessment.)
+//! * **surface size** — the activity window is screen-sized (winit's
+//!   android `create_window` ignores the attributes — its documented
+//!   FIXME); `GlParts.width/height` come from the native window, so the
+//!   framebuffer readbacks + the `GlDrawTarget`'s view see the real size.
+//! * **egui console** — desktop-only (D-026 plan): its `glow 0.17` +
+//!   `#version 330`-era shaders are the desktop GL surface; on the GLES
+//!   context `IlcConsole::new` (oh-app) fails gracefully and the overlay
+//!   stays off (the C++ Android build has no ImGui — `#ifndef
+//!   SSVOH_ANDROID` in Imgui.cpp).
 
 use std::num::NonZero;
 use std::panic::AssertUnwindSafe;
@@ -33,10 +75,19 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 use glow::HasContext;
 use glutin::config::ConfigTemplateBuilder;
-use glutin::context::{ContextAttributesBuilder, NotCurrentGlContext, PossiblyCurrentContext};
+#[cfg(target_os = "android")]
+use glutin::context::ContextApi;
+use glutin::context::PossiblyCurrentContext;
+#[cfg(target_os = "android")]
+use glutin::context::Version;
+use glutin::context::{ContextAttributes, ContextAttributesBuilder, NotCurrentGlContext};
 use glutin::display::{Display, DisplayApiPreference, GlDisplay};
 use glutin::surface::{Surface, SurfaceAttributesBuilder, WindowSurface};
+#[cfg(target_os = "android")]
+use winit::event_loop::ActiveEventLoop;
 use winit::event_loop::EventLoop;
+#[cfg(target_os = "android")]
+use winit::platform::android::ActiveEventLoopExtAndroid;
 use winit::window::{Window as WinitWindow, WindowAttributes};
 
 /// The keep-alive GL pieces (held by `Window::gl`).
@@ -79,7 +130,7 @@ impl GlBackend {
             .with_inner_size(winit::dpi::PhysicalSize::new(width.get(), height.get()));
 
         #[cfg(windows)]
-        let (display, window, window_handle) = {
+        let (display, window) = {
             // WGL needs the window's handle at display-creation time.
             let window = event_loop.create_window(attrs).ok()?;
             let window_handle = window.window_handle().ok()?.as_raw();
@@ -87,11 +138,11 @@ impl GlBackend {
             let display =
                 unsafe { Display::new(event_loop.display_handle().ok()?.as_raw(), preference) }
                     .ok()?;
-            (display, window, window_handle)
+            (display, window)
         };
 
         #[cfg(not(windows))]
-        let (display, window, window_handle) = {
+        let (display, window) = {
             let preference = {
                 #[cfg(target_os = "macos")]
                 {
@@ -106,36 +157,105 @@ impl GlBackend {
                 unsafe { Display::new(event_loop.display_handle().ok()?.as_raw(), preference) }
                     .ok()?;
             let window = event_loop.create_window(attrs).ok()?;
-            let window_handle = window.window_handle().ok()?.as_raw();
-            (display, window, window_handle)
+            (display, window)
         };
 
-        let config = unsafe { display.find_configs(ConfigTemplateBuilder::new().build()) }
-            .ok()?
-            .next()?;
-        let surface_attrs =
-            SurfaceAttributesBuilder::<WindowSurface>::new().build(window_handle, width, height);
-        let surface = unsafe { display.create_window_surface(&config, &surface_attrs) }.ok()?;
+        // The desktop context: no explicit API request (`ContextAttributes`
+        // `api == None` — the EGL/CGl config's API decides: desktop GL on
+        // desktop EGL, the Cgl context on macOS, WGL on Windows). The
+        // shared tail is `finish_gl` (the android path, below, passes the
+        // GLES 3.0 request through the same tail).
         let ctx_attrs = ContextAttributesBuilder::new().build(None);
-        let not_current = unsafe { display.create_context(&config, &ctx_attrs) }.ok()?;
-        let context = not_current.make_current(&surface).ok()?;
-        let gl = unsafe {
-            glow::Context::from_loader_function_cstr(|name| display.get_proc_address(name))
-        };
+        let parts = finish_gl(display, window, width.get(), height.get(), &ctx_attrs)?;
 
-        Some(Self {
-            event_loop,
-            parts: GlParts {
-                gl,
-                width: width.get(),
-                height: height.get(),
-                _context: context,
-                _surface: surface,
-                _window: window,
-                _display: display,
-            },
-        })
+        Some(Self { event_loop, parts })
     }
+}
+
+/// The shared GL bootstrap tail (desktop `create` + the android
+/// `create_android_parts`, issue 25b SG2): pick the first config, build the
+/// window surface on the winit window's raw handle, create + make current
+/// the context with the given attributes, load the `glow` API, and wrap
+/// everything in the keep-alive `GlParts` (drop order: glow context →
+/// glutin context → surface → window → display last). `window` MOVES into
+/// the `GlParts` (winit's `Window` is not `Clone` — the handle is read
+/// first).
+///
+/// `width`/`height` are the SURFACE (framebuffer) size: the desktop's
+/// requested physical window size (clamped to 1, the `create`'s `NonZero`
+/// semantics), the android native window's screen size.
+fn finish_gl(
+    display: Display,
+    window: WinitWindow,
+    width: u32,
+    height: u32,
+    ctx_attrs: &ContextAttributes,
+) -> Option<GlParts> {
+    let window_handle = window.window_handle().ok()?.as_raw();
+    let width = NonZero::new(width).unwrap_or(NonZero::new(1).unwrap());
+    let height = NonZero::new(height).unwrap_or(NonZero::new(1).unwrap());
+    let config = unsafe { display.find_configs(ConfigTemplateBuilder::new().build()) }
+        .ok()?
+        .next()?;
+    let surface_attrs =
+        SurfaceAttributesBuilder::<WindowSurface>::new().build(window_handle, width, height);
+    let surface = unsafe { display.create_window_surface(&config, &surface_attrs) }.ok()?;
+    let not_current = unsafe { display.create_context(&config, ctx_attrs) }.ok()?;
+    let context = not_current.make_current(&surface).ok()?;
+    let gl =
+        unsafe { glow::Context::from_loader_function_cstr(|name| display.get_proc_address(name)) };
+
+    Some(GlParts {
+        gl,
+        width: width.get(),
+        height: height.get(),
+        _context: context,
+        _surface: surface,
+        _window: window,
+        _display: display,
+    })
+}
+
+/// Android (issue 25b SG2): the GL backend over the activity's window —
+/// the module-docs' Android section is the full assessment (the EGL
+/// `EGL_PLATFORM_ANDROID` display, the explicit `Gles(3.0)` context
+/// request, the glow-on-GLES loader safety, the screen-sized surface).
+///
+/// `el` is the loop's `ActiveEventLoop` at the FIRST `resumed` (the
+/// `ANativeWindow` exists from `InitWindow` — winit's android
+/// `create_window` wraps it; calling earlier is the winit-documented
+/// null-window panic). Returns `None` on any failure (the `Window::
+/// ensure_android_gl` degradation: headless frames, once).
+#[cfg(target_os = "android")]
+#[allow(deprecated)] // `WindowAttributes::new` (winit 0.30's superseded ctor) — the android platform ignores the attributes anyway (screen-sized activity window)
+pub fn create_android_parts(el: &ActiveEventLoop) -> Option<GlParts> {
+    // The screen size (the C++ render window's physical size — the
+    // `GameWindow::run`'s framebuffer; `GlParts.width/height` drive the
+    // `GlDrawTarget`'s view + the `read_framebuffer`/screenshot readback).
+    let (width, height) = el.android_app().native_window().map_or((1, 1), |nw| {
+        (nw.width().max(1) as u32, nw.height().max(1) as u32)
+    });
+    let attrs =
+        WindowAttributes::new().with_inner_size(winit::dpi::PhysicalSize::new(width, height));
+    // The activity's window (winit's android `create_window` — attributes
+    // ignored, the platform window is the `ANativeWindow`'s).
+    let window = el.create_window(attrs).ok()?;
+    // The EGL display (glutin's `RawDisplayHandle::Android` →
+    // `eglGetPlatformDisplay(EGL_PLATFORM_ANDROID_KHR, …)` — the
+    // `EGL_KHR_platform_android` extension, module docs).
+    let display = unsafe {
+        Display::new(
+            el.display_handle().ok()?.as_raw(),
+            DisplayApiPreference::Egl,
+        )
+    }
+    .ok()?;
+    // The D-026 GLES 3.0 request (module docs: the minSdk-28 guarantee +
+    // the GLES 2.0 fallback assessment).
+    let ctx_attrs = ContextAttributesBuilder::new()
+        .with_context_api(ContextApi::Gles(Some(Version::new(3, 0))))
+        .build(None);
+    finish_gl(display, window, width, height, &ctx_attrs)
 }
 
 impl GlParts {
