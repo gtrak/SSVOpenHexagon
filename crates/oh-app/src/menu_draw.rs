@@ -1396,6 +1396,7 @@ mod tests {
             None,
             None,
             None,
+            None, // `ignore_inputs` — the 010b seam; not exercised by these draw tests
             Rc::new(oh_menu::layout::LinearFontHeight),
         ));
         let f = font();
