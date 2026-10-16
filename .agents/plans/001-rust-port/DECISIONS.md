@@ -799,3 +799,25 @@ started yet, so nothing lives only in conversation:
    (issue 27's guard): `mapping/sfml-android-fork.md` exists; the
    `TextEntered`-derivation divergence and the touch/zone reference need
    rows in `mapping/rendering-menu.md` too.
+
+## D-034 — Input/window deviations are FIXES, not accepted gaps
+
+Operator ruling (2026-10-16): the Tier-1/Tier-2 deviations found by the
+orchestrator's sweep have **no good reason to exist** and are queued as
+fixes, not accepted. The register is therefore a FIX LIST, and the audit is
+extended from marker-grep to real code coverage (issue 29).
+
+Queued fixes, in dispatch order (each lands with its register row in the
+same commit — issue 28's standing rule):
+
+| Order | Lane | Deviation | Notes |
+|---|---|---|---|
+| 1 | 025f | 9-zone touch grid | IN FLIGHT |
+| 2 | 029j | **Gamepad/gamepad dispatch** — `gilrs` 0.11 poller feeding the already-ported `oh-config` joystick state machine + the 11 `Joystick::risingEdge` handlers (MenuGame.cpp:2737-2782) + the HexagonGame joystick sites | biggest real gap: a controller currently does nothing |
+| 3 | 029m | **Menu mouse hover** (`mouseHovering`, 4 C++ sites) — gates left/right actions | mouse UX |
+| 4 | 029w | **Window (re)creation** (`mustRecreate`→`recreateWindow`, GameWindow.hpp:123,179-190) for fullscreen/size/AA/vsync changes | options-menu visible |
+| 5 | 029f | **Favorites UI** (drawer + toggle, MenuGame.cpp:4972,5198) | feature completeness |
+| 6 | 029t | `GameTimer::refresh` audit (who sets `nextImpl`) | correctness |
+| 7 | 028c… | the remaining FIX list from the triaged register | risk-ranked |
+
+Operator directive also: after the fixes, **finish the wasm branch**.
