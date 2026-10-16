@@ -17,8 +17,8 @@ use crate::lifecycle::{create_folder_if_non_existant, load_and_reapply, ConfigSa
 /// C++ `mainClient(headless, args, cliLevelName, cliLevelPack)`
 /// (main.cpp:244-597), the ported pieces in the C++ order:
 ///
-/// (Steam issue 20 / Discord issue 21 absent — the C++ Discord manager
-/// exists only when `!headless`) → folders (`:275-276`) → config load +
+/// Steam (`:251-258` — the manager + the initialized-gated ticket/stats/
+/// callbacks calls; issue 020) → folders (`:275-276`) → config load +
 /// reapply (`:279-283`) → [config-save scope guard `:285-291`] → assets
 /// (`:380`) → [pSaveAll guard: issue 17] → (audio: absent — issue 17 owns
 /// the port; the engine null-guards every C++ `audio->` call site) →
@@ -57,6 +57,21 @@ pub fn main_client(
     cli_level_pack: Option<&str>,
     base_dir: &Path,
 ) -> i32 {
+    // --------------------------------------------------------------------
+    // C++ main.cpp:251-258 — Steam integration: the manager (construct +
+    // `SteamAPI_Init`) and, iff initialized, the encrypted-app-ticket
+    // request (the no-`SecretSteamKey.hpp` build — gap 2 in
+    // `.agents/skills/lib-steamworks.md`: logs + false, no flags set),
+    // the stats/achievements request, and the first callback pump.
+    // Held until the end of `mainClient` (the C++'s scope), shared with
+    // the engine + the menu composition.
+    let steam = crate::steam::steam_manager();
+    if steam.is_initialized() {
+        steam.request_encrypted_app_ticket();
+        steam.request_stats_and_achievements();
+        steam.run_callbacks();
+    }
+
     // Create game folders if needed (C++ main.cpp:275-276).
     create_folder_if_non_existant(base_dir, "Profiles/");
     create_folder_if_non_existant(base_dir, "Replays/");
@@ -117,6 +132,7 @@ pub fn main_client(
             config.clone(),
             assets,
             base_dir,
+            steam.clone(),
         ) {
             Ok(client) => {
                 // C++ main.cpp:334-350 — the SIGINT handler (the safe
@@ -143,13 +159,16 @@ pub fn main_client(
             }
         }
     } else {
-        // Initialize hexagon game (C++ main.cpp:413-421: null steam/discord/
-        // audio/window/client; the step-(b) engine is window-less).
+        // Initialize hexagon game (C++ main.cpp:413-421: the C++ passes
+        // `&steamManager` first — the port's `steam` composition object,
+        // issue 020; null discord/audio/window/client; the step-(b)
+        // engine is window-less).
         let composed = compose_with(
             assets,
             base_dir.to_path_buf(),
             false, /* window */
             Arc::new(NullProfiles),
+            steam,
         );
 
         // (C++ main.cpp:426-463: MenuGame + the fnHG* links — windowed

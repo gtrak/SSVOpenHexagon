@@ -1891,7 +1891,7 @@ mod tests {
 
     use crate::hexagon_game::HexagonGame;
     use crate::lua_state::ReentrantMutex;
-    use crate::seams::{NoJoystick, NullProfiles, NullReplayStore, PcgCosmeticRng};
+    use crate::seams::{NoJoystick, NoneSteamSink, NullProfiles, NullReplayStore, PcgCosmeticRng};
 
     /// A bare headless engine (no Lua host: `NoScriptHost` stands in the
     /// C++ engine's always-present `Lua::LuaContext`).
@@ -1904,6 +1904,7 @@ mod tests {
         )
         .expect("_RELEASE tree");
         let game = HexagonGame::new(
+            Arc::new(NoneSteamSink),
             config,
             Arc::new(assets),
             None,

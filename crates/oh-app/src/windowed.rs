@@ -78,8 +78,10 @@
 //!   (SSVStart input manager) is unported with the input management above;
 //!   the wired closure documents the no-op.
 //! * **fnHGUpdateRichPresenceCallbacks** — C++ `main.cpp:451-454`
-//!   (`hg.updateRichPresenceCallbacks()`): Steam (issue 20) is absent; the
-//!   wired closure documents the no-op.
+//!   (`hg.updateRichPresenceCallbacks()`): the wired closure pumps the
+//!   engine's `steam_manager` seam (the C++'s Steam half + the
+//!   `steamAttempt`/`steamHung` counter now in the manager — issue 020);
+//!   the Discord half is issue 21 (absent).
 //! * **MenuGame `draw`** — C++ `MenuGame.cpp:259`
 //!   (`game.onDraw += [this] { draw(); }`): wired to
 //!   `crate::menu_draw::draw` (the issue-013b bridge — the full C++
@@ -966,6 +968,11 @@ struct GameSlotAdapter {
     game: Rc<HexagonGame<GameApiState>>,
     menu: Rc<MenuGame>,
     app_draw: Rc<RefCell<AppDraw>>,
+    /// The C++ `steamManager` (main.cpp:251) — the `fnGoToMenu`
+    /// consumption's `MenuGame::init`-lifecycle Steam calls
+    /// (MenuGame.cpp:793-794; `oh-menu` is extend-only, so the
+    /// composition makes them here, issue 020).
+    steam: Arc<oh_steam::SteamManager>,
     /// The C++ `fnGoToMenu` signal (0 = none, 1 = no-error, 2 = error):
     /// set by the engine's stored callback, consumed at the start of the
     /// next tick (module docs: fnGoToMenu timing).
@@ -990,6 +997,11 @@ impl GameState for GameSlotAdapter {
             v => {
                 self.return_to_menu.store(0, Ordering::SeqCst);
                 let error = v == 2;
+                // C++ `MenuGame::init`'s Steam lines (MenuGame.cpp:793-794)
+                // — `oh-menu` is extend-only, so the composition makes
+                // them at the same lifecycle point (issue 020).
+                self.steam.set_rich_presence_in_menu();
+                self.steam.update_hardcoded_achievements();
                 // C++ main.cpp:458-461.
                 self.menu.return_to_level_selection();
                 self.menu.init(error);
@@ -1539,6 +1551,12 @@ pub struct WindowedClient {
     pub menu: Rc<MenuGame>,
     /// C++ `hg` (main.cpp:414-421) — the composition's engine handle.
     pub game: Rc<HexagonGame<GameApiState>>,
+    /// C++ `steamManager` (main.cpp:251) — the composition's Steam manager
+    /// (issue 020): shared with the engine (the `steam_manager` seam) and
+    /// driving the menu's `MenuGame::init`-lifecycle calls
+    /// (MenuGame.cpp:793-794 — `oh-menu` is extend-only, so the
+    /// composition makes them at the same lifecycle point).
+    pub steam: Arc<oh_steam::SteamManager>,
     /// The C++ post-construction state-switch slot (main.cpp:442-462):
     /// the `fnHGNewGame` closure and the `GameSlotAdapter`'s `fnGoToMenu`
     /// consumption both resolve `window->setGameState(...)` through it —
@@ -1572,6 +1590,7 @@ impl WindowedClient {
         config: Arc<RwLock<Config>>,
         assets: Arc<oh_assets::Assets>,
         base_dir: &Path,
+        steam: Arc<oh_steam::SteamManager>,
     ) -> Result<Self, String> {
         // ------------------------------------------------------------------
         // C++ main.cpp:330-332 — `window->setTimer<ssvs::TimerStatic>(
@@ -1586,18 +1605,21 @@ impl WindowedClient {
         let timer = TimerStatic::new(TIME_STEP, TIME_SLICE, 50.0);
 
         // ------------------------------------------------------------------
-        // C++ main.cpp:413-421 — the engine (`window` = true). The profile
-        // editor surface is issue 17 (`NullProfiles`), the audio / client
-        // / steam / discord null equivalents are the composition's. The
-        // shared `Config` is the C++'s single process-global `hg::Config`
-        // (menu writes reach the engine — e.g. the debug toggle the
-        // `Tid::Pause` body reads, HexagonGame.cpp:421-441).
+        // C++ main.cpp:413-421 — the engine (`window` = true): the C++
+        // passes `&steamManager` first (issue 020 — the composition's
+        // shared manager); the profile editor surface is issue 17
+        // (`NullProfiles`), the audio / discord null equivalents are the
+        // composition's. The shared `Config` is the C++'s single
+        // process-global `hg::Config` (menu writes reach the engine —
+        // e.g. the debug toggle the `Tid::Pause` body reads,
+        // HexagonGame.cpp:421-441).
         let composed = compose_with_config(
             assets.clone(),
             base_dir.to_path_buf(),
             true, /* window */
             Arc::new(NullProfiles),
             config.clone(),
+            steam.clone(),
         );
 
         // The C++ `initText` fonts (HexagonGame.cpp:289-290:
@@ -1687,11 +1709,16 @@ impl WindowedClient {
         };
 
         // C++ main.cpp:451-454 — `fnHGUpdateRichPresenceCallbacks`:
-        // `hg.updateRichPresenceCallbacks()` is Steam (issue 20, absent) —
-        // the wired closure documents the no-op.
-        let rich_presence_cb: Option<RichPresenceCallback> = Some(Box::new(|| {
-            // TODO(issue-20): C++ main.cpp:453 `hg.updateRichPresenceCallbacks`
-        }));
+        // `hg.updateRichPresenceCallbacks()` (main.cpp:453) — the Steam
+        // half is the engine's `steam_manager` seam (the hung counter
+        // lives in the manager, issue 020); the Discord half is issue 21
+        // (absent).
+        let rich_presence_cb: Option<RichPresenceCallback> = {
+            let steam = steam.clone();
+            Some(Box::new(move || {
+                steam.update_rich_presence_callbacks();
+            }))
+        };
 
         // C++ `MenuGame::refreshBinds()`' input-manager half (the options'
         // "RESET CONFIG" / "reset binds" items, menu.rs:145,219 →
@@ -1762,6 +1789,7 @@ impl WindowedClient {
             game: game.clone(),
             menu: menu.clone(),
             app_draw: app_draw.clone(),
+            steam: steam.clone(),
             return_to_menu: return_to_menu.clone(),
             engine_slot: engine_slot.clone(),
             input_manager: game_manager.clone(),
@@ -1789,6 +1817,7 @@ impl WindowedClient {
             timer,
             menu,
             game,
+            steam,
             engine_slot,
             interrupt: Arc::new(AtomicBool::new(false)),
             _app_draw: app_draw,
@@ -1806,6 +1835,10 @@ impl WindowedClient {
     ) {
         // C++ main.cpp:476-480 — `gotoMenu`.
         let goto_menu = || {
+            // C++ `MenuGame::init`'s Steam lines (MenuGame.cpp:793-794) —
+            // the composition's lifecycle-point equivalent (issue 020).
+            self.steam.set_rich_presence_in_menu();
+            self.steam.update_hardcoded_achievements();
             self.menu.init(false); // C++ `mg->init(false /* mError */)`
             self.engine.set_game_state(GameSlot::Menu); // `window->setGameState(mg->getGame())`
         };
@@ -1841,7 +1874,12 @@ impl WindowedClient {
             None => {
                 if let (Some(pack), Some(level)) = (cli_level_pack, cli_level_name) {
                     // C++ main.cpp:509-510 — `mg->init(false, *cliLevelPack,
-                    // *cliLevelName)`.
+                    // *cliLevelName)` — its `init(false)` half carries the
+                    // `MenuGame::init` Steam lines (MenuGame.cpp:793-794;
+                    // the composition's lifecycle-point equivalent,
+                    // issue 020).
+                    self.steam.set_rich_presence_in_menu();
+                    self.steam.update_hardcoded_achievements();
                     self.menu.init_command_line_level(false, pack, level);
                     // DOCUMENTED DEVIATION (module docs): the C++ sets no
                     // state here either (null `gameState` → first-frame
@@ -1919,13 +1957,17 @@ impl WindowedClient {
     /// C++ `main.cpp:588-592` — `window->run()`: drive the winit loop, one
     /// frame per [`Self::tick_fields`]. Consumes the client (the `Window`
     /// is moved into the loop, as the C++'s `GameWindow::run` owns its
-    /// loop); drop order is preserved (`composed` — the `LuaContext` —
-    /// is declared FIRST in the destructuring, so it drops LAST, after the
+    /// loop); drop order is preserved (`steam` — the C++'s first
+    /// construction, main.cpp:251 — drops LAST, as the C++'s scope
+    /// teardown does; `composed` — the `LuaContext` — drops after the
     /// states' `Rc<HexagonGame>` clones).
     pub fn run(self) {
-        // Declaration order = reverse drop order: `composed` first ⇒
-        // dropped last (the `SharedLua` contract, compose.rs).
+        // Declaration order = reverse drop order: `steam` first ⇒
+        // dropped last (the C++'s teardown — the manager's `Drop` is the
+        // `SteamAPI_Shutdown`); `composed` next ⇒ after the engine/menu
+        // (the `SharedLua` contract, compose.rs).
         let WindowedClient {
+            steam: _steam,
             composed,
             window,
             engine,

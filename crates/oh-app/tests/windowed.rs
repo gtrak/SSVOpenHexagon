@@ -214,6 +214,7 @@ fn windowed_client() -> WindowedClient {
         config,
         assets,
         &common::release_dir(),
+        Arc::new(oh_steam::SteamManager::new(Box::new(oh_steam::NoSteam))),
     )
     .expect("windowed build")
 }
@@ -252,6 +253,7 @@ fn live_compressed_replay_path(assets: &Arc<oh_assets::Assets>) -> String {
         common::release_dir(),
         false, /* window */
         Arc::new(oh_game::seams::NullProfiles),
+        Arc::new(oh_game::seams::NoneSteamSink),
     );
     c.game.set_always_spin_right(true);
     c.game.new_game(
@@ -480,6 +482,7 @@ fn scripted_pause_key_toggles_debug_pause() {
         config,
         assets,
         &common::release_dir(),
+        Arc::new(oh_steam::SteamManager::new(Box::new(oh_steam::NoSteam))),
     )
     .expect("windowed build");
     client.boot(Some("cube"), Some("apeirogon"), None);

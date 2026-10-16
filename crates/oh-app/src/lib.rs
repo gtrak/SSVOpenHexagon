@@ -43,4 +43,5 @@ pub mod game_state;
 pub mod lifecycle;
 pub mod menu_draw;
 pub mod print_lua_docs;
+pub mod steam;
 pub mod windowed;

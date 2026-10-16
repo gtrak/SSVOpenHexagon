@@ -58,7 +58,7 @@ use oh_data::{MusicData, PackData, StyleData};
 use oh_game::hexagon_game::HexagonGame;
 use oh_game::lua_state::{GameApi, ReentrantMutex};
 use oh_game::seams::{
-    NoJoystick, NullReplayStore, PcgCosmeticRng, Profiles, ScriptError, ScriptHost,
+    NoJoystick, NoneSteamSink, NullReplayStore, PcgCosmeticRng, Profiles, ScriptError, ScriptHost,
 };
 use oh_game::{HexagonGameStatus, LevelStatus};
 use oh_lua::api::callbacks;
@@ -480,6 +480,7 @@ pub fn compose(assets: Arc<oh_assets::Assets>, root: PathBuf, window: bool) -> C
 
     // Phase 1: the engine, with the (state-less) host.
     let game = HexagonGame::<GameApiState>::new(
+        Arc::new(NoneSteamSink),
         config.clone(),
         assets.clone(),
         None, // C++ `audio == nullptr`

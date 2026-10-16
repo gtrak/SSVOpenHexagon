@@ -1,0 +1,31 @@
+[package]
+name = "oh-steam"
+description = "The Steam integration (issue 20): the 1:1 port of Core/Steam.cpp's steam_manager over the steamworks binding (the `steam` feature) with the no-SDK NoSteam backend as the default"
+version.workspace = true
+edition.workspace = true
+
+[features]
+# The real Steam backend (the C++'s `#ifndef SSVOH_ANDROID` build): links
+# the official loader stub via steamworks-sys and degrades at RUNTIME when
+# no Steam client is running (the C++'s `SteamAPI_Init()`-fails behavior).
+# OFF by default = the C++'s `SSVOH_ANDROID` no-SDK build (all manager
+# methods false/nullopt) — the no-Steam path the gate proves (CI has no
+# Steam, and a linked binary cannot even start without the loader stub).
+# See .agents/skills/lib-steamworks.md §4.
+steam = ["dep:steamworks", "dep:steamworks-sys"]
+
+[dependencies]
+# The engine's Steam surface (`oh_game::seams::SteamSink` — the C++
+# `steam_manager*` the `HexagonGame`/`MenuGame` composition points take,
+# main.cpp:415,434; the `impl` in `lib.rs`).
+oh-game = { path = "../oh-game" }
+oh-net = { path = "../oh-net" }
+serde_json = { workspace = true }
+steamworks = { workspace = true, optional = true }
+# The sys crate only behind the `steam` feature (its loader-stub link only
+# happens when it is built — see .agents/skills/lib-steamworks.md §4).
+steamworks-sys = { version = "0.13", optional = true }
+
+[dev-dependencies]
+# Test-only: the `workshopCache.json` scenarios need an isolated CWD.
+tempfile = { workspace = true }

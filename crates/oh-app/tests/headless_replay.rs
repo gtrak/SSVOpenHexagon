@@ -107,6 +107,7 @@ fn live_run_to_death() -> (f64, oh_replay::ReplayFile) {
         release_dir(),
         false, /* window */
         Arc::new(oh_game::seams::NullProfiles),
+        Arc::new(oh_game::seams::NoneSteamSink),
     );
     // C++ test: `hg.alwaysSpinRight = true;` (the fixed policy that removes
     // the only timing risk — determinism.rs module docs).

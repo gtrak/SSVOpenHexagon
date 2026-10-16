@@ -54,7 +54,13 @@ impl Profiles for TestProfiles {
 #[allow(dead_code)]
 #[must_use]
 pub fn compose(assets: Arc<oh_assets::Assets>, root: PathBuf, window: bool) -> Composed {
-    compose_with(assets, root, window, Arc::new(TestProfiles))
+    compose_with(
+        assets,
+        root,
+        window,
+        Arc::new(TestProfiles),
+        Arc::new(oh_game::seams::NoneSteamSink),
+    )
 }
 
 /// The `_RELEASE` root (the process-CWD equivalent; the same idiom as

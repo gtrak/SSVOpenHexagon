@@ -53,12 +53,14 @@ pub fn print_lua_docs(root: &Path, out: &mut dyn Write) -> std::io::Result<i32> 
     };
 
     // The C++ constructs the full `HexagonGame` (null audio/window/client/
-    // discord) — the composition builds exactly that, window-less.
+    // discord; `nullptr /* steamManager */` — the port's
+    // `NoneSteamSink`, the C++'s null-manager equivalent).
     let game = compose_with(
         assets,
         root.to_path_buf(),
         false, /* window */
         Arc::new(NullProfiles),
+        Arc::new(oh_game::seams::NoneSteamSink),
     );
 
     // C++ `std::cout << "\n\n\n\n\n";` — exactly FIVE newlines (a

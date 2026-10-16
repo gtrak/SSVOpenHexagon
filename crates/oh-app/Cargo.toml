@@ -46,7 +46,19 @@ oh-rng = { path = "../oh-rng" }
 # `HexagonServer` + the `Database`/`ReplayExecutor` composition.
 oh-net = { path = "../oh-net" }
 
+# Issue 020 — the Steam manager the `mainClient` composition shares with
+# the engine (`HexagonGame`'s `steam_manager` seam) and the menu
+# (the `MenuGame::init`-lifecycle calls); `src/steam.rs` picks the
+# backend (feature `steam` = the real SDK, default = `NoSteam`).
+oh-steam = { path = "../oh-steam" }
+
 [features]
+# Issue 020: the real Steam backend (the C++'s `#ifndef SSVOH_ANDROID`
+# build — links the official loader stub via `steamworks-sys`; degrades
+# at runtime when no Steam client is running). OFF by default = the
+# C++'s no-SDK branch (CI has no Steam; see `.agents/skills/
+# lib-steamworks.md` §4 + `src/steam.rs`).
+steam = ["oh-steam/steam"]
 # D-023/D-024: forward onto oh-lua so the `open-hexagon` binary's
 # `-printLuaDocs` (and any composition in this package) sees the flag-ON
 # metadata store when the workspace is built with the feature (the C++

@@ -115,9 +115,9 @@ impl<S: SharedStore> HexagonGame<S> {
         m_ft *= timescale;
 
         // --------------------------------------------------------------------
-        // Update Discord and Steam "rich presence" (window-gated; both
-        // managers are null in this port — the accounting is still the
-        // C++ one, verbatim).
+        // Update Discord and Steam "rich presence" (window-gated; the
+        // Discord manager is issue 21 (absent) — the Steam half is the
+        // engine's `steam_manager` seam, issue 020).
         if self.0.window {
             let (name_str, diff_str, time_str) = {
                 let g = self.st();
@@ -127,16 +127,19 @@ impl<S: SharedStore> HexagonGame<S> {
                     self.time_format(g.status.get_time_seconds() as f32),
                 )
             };
-            // C++ `set_rich_presence_in_game(nameStr, diffStr, timeStr)` —
-            // steamManager == nullptr.
-            let _ = (name_str, diff_str, time_str);
 
             {
                 let mut e = self.est();
                 e.time_until_rich_presence_update -= get_ft_to_seconds(m_ft);
 
                 if e.time_until_rich_presence_update <= 0.0_f32 {
-                    // steamManager null.
+                    // C++ `steamManager->set_rich_presence_in_game(nameStr,
+                    // diffStr, timeStr)` (HGUpdate.cpp:147-149) — the C++'s
+                    // `steamManager != nullptr` gate is the sink's
+                    // null-equivalent (`NoneSteamSink`).
+                    self.0
+                        .steam_manager
+                        .set_rich_presence_in_game(&name_str, &diff_str, &time_str);
                     e.time_until_rich_presence_update = 5.0_f32;
                 }
             }
@@ -574,7 +577,9 @@ impl<S: SharedStore> HexagonGame<S> {
             if just_swapped {
                 self.perform_player_kill();
 
-                // steamManager == nullptr in this port.
+                // C++ `steamManager->unlock_achievement("a22_swapdeath")`
+                // (HGUpdate.cpp:449-452).
+                self.0.steam_manager.unlock_achievement("a22_swapdeath");
             } else if pushed_out {
                 self.perform_player_kill();
             }
@@ -598,7 +603,9 @@ impl<S: SharedStore> HexagonGame<S> {
             }
 
             if self.est().player.get_just_swapped() {
-                // steamManager == nullptr in this port.
+                // C++ `steamManager->unlock_achievement("a22_swapdeath")`
+                // (HGUpdate.cpp:479-483).
+                self.0.steam_manager.unlock_achievement("a22_swapdeath");
             }
 
             self.perform_player_kill();
@@ -621,7 +628,9 @@ impl<S: SharedStore> HexagonGame<S> {
             self.perform_player_kill();
 
             if self.est().player.get_just_swapped() {
-                // steamManager == nullptr in this port.
+                // C++ `steamManager->unlock_achievement("a22_swapdeath")`
+                // (HGUpdate.cpp:497-500).
+                self.0.steam_manager.unlock_achievement("a22_swapdeath");
             }
         }
     }
@@ -1479,11 +1488,14 @@ impl<S: SharedStore> HexagonGame<S> {
         self.est().status_text = os;
     }
 
-    /// C++ `updateRichPresenceCallbacks()` — window-gated AND both the
-    /// steam and discord managers are null in this port, so this is the C++
-    /// headless no-op (the call order in `update` is preserved).
+    /// C++ `updateRichPresenceCallbacks()` (HexagonGame.cpp:477-506) — the
+    /// Steam half (the C++'s `steamManager->run_callbacks()` + the
+    /// `steamAttempt`/`steamHung` hung counter, HexagonGame.hpp:90-92)
+    /// is the engine's `steam_manager` seam (the counter lives in the
+    /// `oh_steam::SteamManager` in the port — issue 020); the Discord half
+    /// is issue 21 (absent).
     fn update_rich_presence_callbacks(&self) {
-        // (no-op: window gate + null managers, verbatim C++ behavior)
+        self.0.steam_manager.update_rich_presence_callbacks();
     }
 
     /// The `particles` vector (test access; the C++ member).

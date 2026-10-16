@@ -49,7 +49,7 @@ use oh_rng::{uniform_int, Pcg32Fast, RandomNumberGenerator, Seed};
 use crate::camera::Camera;
 use crate::lua_state::{ReentrantMutex, ReentrantMutexGuard, SharedState, SharedStore};
 use crate::renderer::Renderer;
-use crate::seams::{Audio, CosmeticRng, Joystick, Profiles, ReplayStore, ScriptHost};
+use crate::seams::{Audio, CosmeticRng, Joystick, Profiles, ReplayStore, ScriptHost, SteamSink};
 use crate::{
     CPlayer, CWall, FastVertexVectorTris, HexagonGameStatus, LevelStatus, SpeedData, StateChange,
     Timeline2, Timeline2Runner,
@@ -374,6 +374,10 @@ impl<S: SharedStore> Clone for HexagonGame<S> {
 }
 
 pub(crate) struct Inner<S: SharedStore> {
+    // C++ `hg::Steam::steam_manager* steamManager` (the C++'s FIRST
+    // constructor argument, main.cpp:415) — the engine's Steam surface
+    // (issue 020; [`SteamSink`] / [`NoneSteamSink`]).
+    pub(crate) steam_manager: Arc<dyn SteamSink + 'static>,
     // The shared engine/Lua store (D-013). Attached after construction
     // because the composition's `GameApiState` needs `Arc<dyn GameApi>` =
     // this engine, which needs to exist first (two-phase, see
@@ -458,9 +462,12 @@ enum SaveScoreIfNeededResult {
 
 impl<S: SharedStore> HexagonGame<S> {
     /// C++ `HexagonGame(steamManager, discordManager, assets, audio,
-    /// mGameWindow, hexagonClient)` — the steam/discord/client managers
-    /// have no Rust backing in this issue (their call sites are null-gated
-    /// and therefore inert).
+    /// mGameWindow, hexagonClient)` — the discord/client managers have no
+    /// Rust backing yet (their call sites stay null-gated and therefore
+    /// inert; issues 17/21); `steam_manager` is the C++'s first argument
+    /// (issue 020: the `oh_steam::SteamManager` the composition hands the
+    /// engine, or the null-manager equivalent [`crate::seams::
+    /// NoneSteamSink`]).
     ///
     /// When `window` is true the constructor emplaces the two cameras
     /// exactly like the C++ (background: center (0,0), size
@@ -472,6 +479,7 @@ impl<S: SharedStore> HexagonGame<S> {
     /// the store with `Arc<dyn GameApi>` = a clone of this engine).
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        steam_manager: Arc<dyn SteamSink + 'static>,
         config: Arc<RwLock<Config>>,
         assets: Arc<oh_assets::Assets>,
         audio: Option<Arc<dyn Audio + 'static>>,
@@ -584,6 +592,7 @@ impl<S: SharedStore> HexagonGame<S> {
         };
 
         Self(Arc::new(Inner {
+            steam_manager,
             state: std::sync::OnceLock::new(),
             assets,
             config,
@@ -2644,9 +2653,9 @@ impl<S: SharedStore> crate::GameApi for HexagonGame<S> {
         HexagonGame::in_replay(self)
     }
 
-    fn unlock_achievement(&self, _achievement_id: &str) {
-        // C++ `steamManager->unlock_achievement(...)` — steamManager is
-        // always null in this port.
+    fn unlock_achievement(&self, achievement_id: &str) {
+        // C++ `steamManager->unlock_achievement(id)` (HGScripting.cpp:850).
+        self.0.steam_manager.unlock_achievement(achievement_id);
     }
 
     // -- error exit ----------------------------------------------------------

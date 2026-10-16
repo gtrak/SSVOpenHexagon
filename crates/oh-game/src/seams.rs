@@ -422,3 +422,57 @@ impl CosmeticRng for PcgCosmeticRng {
         uniform_int(&mut self.rng.lock(), min, max - 1)
     }
 }
+
+/// C++ `hg::Steam::steam_manager* steamManager` — the C++ `HexagonGame`'s
+/// FIRST constructor argument (main.cpp:415) / `MenuGame`'s value argument
+/// (main.cpp:434); the composition's Steam surface.
+///
+/// The composition wires `oh_steam::SteamManager` in here (issue 020):
+/// the `steam` cargo feature selects the real-SDK backend, and without it
+/// (or without a Steam client) the manager's `NoSteam` backend makes every
+/// call a logged no-op — the C++'s graceful-degradation model
+/// (`steamAttempt`/`steamHung` on `HexagonGame`, HexagonGame.hpp:90-92;
+/// the hung counter lives in the manager in the port, so the sink's
+/// `update_rich_presence_callbacks` carries it). The C++'s
+/// `steamManager == nullptr` null-equivalent (every call site is
+/// `steamManager != nullptr`-gated, e.g. HGUpdate.cpp:148,450,480,498)
+/// is [`NoneSteamSink`].
+///
+/// The methods are exactly the C++ call sites the composition drives:
+/// the engine's three (below, via the engine's `steam_manager` field) and
+/// the menu's two (`oh-menu` is extend-only — the composition calls them
+/// at the `MenuGame::init` lifecycle point, MenuGame.cpp:793-794).
+pub trait SteamSink: Send + Sync + 'static {
+    /// C++ `steamManager->set_rich_presence_in_game(nameStr, diffStr,
+    /// timeStr)` (HGUpdate.cpp:147-149).
+    fn set_rich_presence_in_game(&self, level_name: &str, difficulty_mult: &str, time: &str);
+    /// C++ `HexagonGame::updateRichPresenceCallbacks()`'s Steam half
+    /// (HexagonGame.cpp:477-495 — the C++'s `steamManager->
+    /// run_callbacks()` + `steamAttempt`/`steamHung` accounting).
+    fn update_rich_presence_callbacks(&self);
+    /// C++ `steamManager->unlock_achievement(id)` (HGUpdate.cpp:450/480/
+    /// 498 — `a22_swapdeath`; HexagonGame.cpp:1063 — `a24_onlinescore`,
+    /// online-client-only, inert in this port; HGScripting.cpp:850 — the
+    /// Lua `unlockAchievement` API, via the `GameApi` backend).
+    fn unlock_achievement(&self, achievement_id: &str);
+    /// C++ `steamManager.set_rich_presence_in_menu()` — called at the
+    /// `MenuGame::init` lifecycle point (MenuGame.cpp:793).
+    fn set_rich_presence_in_menu(&self);
+    /// C++ `steamManager.update_hardcoded_achievements()` — called at the
+    /// `MenuGame::init` lifecycle point (MenuGame.cpp:794).
+    fn update_hardcoded_achievements(&self);
+}
+
+/// C++ `steamManager == nullptr` — the engine's null-manager equivalent
+/// (every call site is a no-op; the C++ gates them with
+/// `steamManager != nullptr`).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoneSteamSink;
+
+impl SteamSink for NoneSteamSink {
+    fn set_rich_presence_in_game(&self, _level_name: &str, _difficulty_mult: &str, _time: &str) {}
+    fn update_rich_presence_callbacks(&self) {}
+    fn unlock_achievement(&self, _achievement_id: &str) {}
+    fn set_rich_presence_in_menu(&self) {}
+    fn update_hardcoded_achievements(&self) {}
+}

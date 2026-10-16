@@ -63,7 +63,7 @@ use oh_data::{MusicData, PackData, StyleData};
 use oh_game::hexagon_game::HexagonGame;
 use oh_game::lua_state::{GameApi, ReentrantMutex};
 use oh_game::seams::{
-    NoJoystick, NullReplayStore, PcgCosmeticRng, Profiles, ScriptError, ScriptHost,
+    NoJoystick, NullReplayStore, PcgCosmeticRng, Profiles, ScriptError, ScriptHost, SteamSink,
 };
 use oh_game::{HexagonGameStatus, LevelStatus};
 use oh_lua::api::callbacks;
@@ -451,7 +451,10 @@ impl Composed {
 /// `profiles` is the engine's `Profiles` seam (the binary passes
 /// `NullProfiles` — the C++ `HGAssets` profile surface's mutation API is
 /// not ported yet, issue 17; the step-(a) tests pass their
-/// `testProfile` stand-in).
+/// `testProfile` stand-in); `steam` is the engine's Steam seam (issue
+/// 020 — `mainClient` passes the composition's `oh_steam::SteamManager`;
+/// `mainPrintLuaDocs`'s `nullptr /* steamManager */` is
+/// `NoneSteamSink`).
 #[allow(clippy::too_many_arguments)]
 #[must_use]
 pub fn compose_with(
@@ -459,6 +462,7 @@ pub fn compose_with(
     root: PathBuf,
     window: bool,
     profiles: Arc<dyn Profiles + 'static>,
+    steam: Arc<dyn SteamSink + 'static>,
 ) -> Composed {
     compose_with_config(
         assets,
@@ -466,6 +470,7 @@ pub fn compose_with(
         window,
         profiles,
         Arc::new(RwLock::new(Config::default())),
+        steam,
     )
 }
 
@@ -482,6 +487,7 @@ pub fn compose_with_config(
     window: bool,
     profiles: Arc<dyn Profiles + 'static>,
     config: Arc<RwLock<Config>>,
+    steam: Arc<dyn SteamSink + 'static>,
 ) -> Composed {
     // Heap-pinned before the `SharedLua` capture (see the `lua` field docs
     // on `Composed`): the host's `SharedLua` points at this box's slot.
@@ -490,6 +496,7 @@ pub fn compose_with_config(
 
     // Phase 1: the engine, with the (state-less) host.
     let game = HexagonGame::<GameApiState>::new(
+        steam,
         config.clone(),
         assets.clone(),
         None, // C++ `audio == nullptr` (the step-(b) tree has no Audio port)

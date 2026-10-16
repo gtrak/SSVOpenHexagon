@@ -16,6 +16,7 @@ members = [
     "crates/oh-net",
     "crates/oh-server-control",
     "crates/oh-workshop-uploader",
+    "crates/oh-steam",
 ]
 # Later issues add workspace members as they land (PLAN.md architecture
 # table): oh-timeline, oh-replay, oh-data, oh-config, oh-assets, oh-lua,
@@ -54,6 +55,14 @@ sodiumoxide = "0.2.7"
 rusqlite = { version = "0.31", features = ["bundled"] }
 # tempfile — test-only (issue 17's DB tests need isolated on-disk DB files).
 tempfile = "3"
+# steamworks (0.13.1) is the issue-20 binding (20-steam.md): it wraps the
+# same Steam SDK the C++ links (the loader stubs ship inside
+# steamworks-sys) and covers every ACTIVE Core/Steam.cpp call — init /
+# user stats / friends / UGC + the callback pump. Documented gaps +
+# fallbacks (hand-written `RequestCurrentStats` FFI; the encrypted-app-
+# ticket `#if`-branch is inactive in this tree — see the skill):
+# .agents/skills/lib-steamworks.md.
+steamworks = "0.13"
 
 # Profile tuning is finalized by issue 22 (builds/CI). opt-level is the
 # default; recorded here so later issues have a place to change it.
