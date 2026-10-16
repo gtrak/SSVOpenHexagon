@@ -491,10 +491,23 @@ impl Window {
         self.mouse_cursor_visible
     }
 
-    /// `setIcon` (accepts an `Image`; stores the fact an icon was set — the
-    /// native icon upload happens on a live window).
-    pub fn set_icon(&mut self, _image: &crate::Image) {
+    /// `setIcon` (C++ main.cpp:322-323: `renderWindow.setIcon(size,
+    /// icon.getPixelsPtr())`): record that an icon was set; on a live winit
+    /// window the RGBA8 pixels are uploaded to the platform window (the
+    /// C++'s `sf::RenderWindow::setIcon` upload) via `GlParts::set_icon`.
+    /// Headless (no GL): the set is recorded only (the `icon_is_set`
+    /// surface stays honest in both modes).
+    pub fn set_icon(&mut self, image: &crate::Image) {
         self.icon_set = true;
+        if let Some(gl) = self.gl.as_ref() {
+            let icon = winit::window::Icon::from_rgba(
+                image.get_pixels().to_vec(),
+                image.get_width(),
+                image.get_height(),
+            )
+            .expect("RGBA8 buffer matches the image size (Image invariant)");
+            gl.set_icon(icon);
+        }
     }
 
     #[must_use]
@@ -591,13 +604,17 @@ impl Window {
         60.0
     }
 
-    /// `ssvs::GameWindow::saveScreenshot(path)` — writes the current framebuffer
-    /// to a PNG. Returns `true` on success. Headless (no GL) returns `false`.
-    ///
-    /// (The PNG encode is delegated to the OS/asset layer when a context is
-    /// present; here we only surface the readback buffer.)
-    pub fn save_screenshot(&self, _path: &str) -> bool {
-        self.gl().is_some_and(|g| g.version_string().is_some())
+    /// `ssvs::GameWindow::saveScreenshot(path)` (GameWindow.hpp:167-174) —
+    /// writes the current framebuffer to a PNG. The GL readback runs
+    /// AFTER the frame's draws (the C++ calls it from `draw()`,
+    /// HGGraphics.cpp:305-313, before the swap), rows bottom-up;
+    /// [`crate::gl::flip_rows`] puts them top-down before the PNG encode
+    /// (the C++'s `copyToImage` row reversal). Returns `true` on success;
+    /// the C++ ignores the result (the `DrawTarget` consumer mirrors that).
+    /// Headless (no GL) returns `false` — the C++'s `window != nullptr`
+    /// guard (HGGraphics.cpp:307) is the port's `NullDrawTarget` no-op.
+    pub fn save_screenshot(&self, path: &str) -> bool {
+        self.gl().is_some_and(|g| g.save_screenshot(path))
     }
 
     // ---- the game loop ----------------------------------------------------

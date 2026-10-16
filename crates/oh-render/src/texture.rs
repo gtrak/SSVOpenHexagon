@@ -7,10 +7,14 @@
 //!
 //! File I/O (`Texture::loadFromFile`, `Image::saveToFile`) is deliberately
 //! NOT here: pack/asset discovery and codec handling belong to `oh-assets`
-//! (which already owns `_RELEASE/Packs/*/` scanning). `oh-render` exposes the
-//! GPU-backed texture surface fed by a decoded RGBA buffer
-//! (`Texture::from_rgba` / `from_image`), and `copy_to_image` for the
-//! screenshot path (`GameWindow::saveScreenshot`).
+//! (which already owns `_RELEASE/Packs/*/` scanning). The one exception is
+//! the WINDOW LAYER's own PNG surface — in the C++ it lives inside SFML
+//! (the window layer's dependency: `ImageLoader.cpp`'s stb_image decode /
+//! encode, D-004 SFML entry) — so `Image::load_png` (the icon decode,
+//! C++ main.cpp:312-328) and the screenshot PNG encode (`gl.rs`,
+//! GameWindow.hpp:167-174) use the same `png` crate. Everything else
+//! (the GPU-backed texture surface fed by a decoded RGBA buffer —
+//! `Texture::from_rgba` / `from_image` — and `copy_to_image`) stays here.
 
 use oh_math::ssvs::vector2::Vec2;
 
@@ -110,6 +114,67 @@ impl Image {
         self.data[i + 1] = color.g;
         self.data[i + 2] = color.b;
         self.data[i + 3] = color.a;
+    }
+
+    /// Decode a PNG file into an RGBA8 [`Image`] — the port's
+    /// `sf::Image::loadFromFile` half of the C++'s window icon load
+    /// (main.cpp:315-316: `icon.loadFromFile("Assets/icon.png")`). The C++
+    /// decodes through SFML's stb_image (`ImageLoader.cpp`, D-004 SFML
+    /// entry); the port uses the `png` crate (the screenshot encode's
+    /// dependency). `sf::Image` is always RGBA8 — the decode normalizes to
+    /// color-8 (`png::Transformations::normalize_to_color8` = the pre-0.17
+    /// default: `EXPAND | STRIP_16`) and expands a 3-channel result to
+    /// RGBA8 (opaque), exactly as the C++'s `sf::Image` does for any input
+    /// PNG.
+    pub fn load_png(path: &std::path::Path) -> Result<Self, String> {
+        let file =
+            std::fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+        let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
+        decoder.set_transformations(png::Transformations::normalize_to_color8());
+        let mut reader = decoder
+            .read_info()
+            .map_err(|e| format!("png read {}: {e}", path.display()))?;
+        let mut buf = vec![0u8; reader.output_buffer_size().expect("info read")];
+        let out = reader
+            .next_frame(&mut buf)
+            .map_err(|e| format!("png frame {}: {e}", path.display()))?;
+        let buf = buf[..out.buffer_size()].to_vec();
+        // `sf::Image` is always RGBA8: the C++'s stb-based loader forces a
+        // 4-channel output for ANY input PNG. `normalize_to_color8`
+        // (EXPAND | STRIP_16) leaves the channels as the input had them
+        // (Rgba / Rgb / Grayscale / GrayscaleAlpha, 8-bit each), so expand
+        // to RGBA8 the way the C++'s `loadFromFile` does.
+        let samples = out.color_type.samples();
+        if samples > 4 {
+            return Err(format!(
+                "png {} decoded to an unsupported colour type {out:?} (expected ≤ 4 channels)",
+                path.display()
+            ));
+        }
+        let mut rgba = Vec::with_capacity(buf.len() / samples * 4);
+        for px in buf.chunks_exact(samples) {
+            match out.color_type {
+                png::ColorType::Rgba => {
+                    rgba.extend_from_slice(px);
+                }
+                png::ColorType::Rgb => {
+                    rgba.extend_from_slice(px);
+                    rgba.push(255);
+                }
+                png::ColorType::Grayscale => {
+                    let v = px[0];
+                    rgba.extend_from_slice(&[v, v, v, 255]);
+                }
+                png::ColorType::GrayscaleAlpha => {
+                    let v = px[0];
+                    rgba.extend_from_slice(&[v, v, v, px[1]]);
+                }
+                _ => {
+                    unreachable!("samples() ≤ 4 covers the Rgb/Rgba/Grayscale/GrayscaleAlpha arms")
+                }
+            }
+        }
+        Ok(Self::from_rgba(out.width, out.height, rgba))
     }
 }
 

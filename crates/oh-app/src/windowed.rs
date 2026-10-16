@@ -33,13 +33,33 @@
 //! # Documented gaps (each a C++ line, none silently faked)
 //!
 //! * **Icon** — C++ `main.cpp:312-328` loads `Assets/icon.png` via
-//!   `sf::Image` and sets the window icon (re-applied on recreation).
-//!   `oh-assets` does not decode PNGs yet, so the icon stays the platform
-//!   default. `TODO(issue-15c-icon)`.
-//! * **SIGINT** — C++ `main.cpp:334-357` installs a `SIGINT` handler that
-//!   stops the engine. EXCLUDED from this issue's scope (no signal
-//!   handling); the window's `Closed` event and the menu's EXIT item still
-//!   end the loop (below).
+//!   `sf::Image` and sets the window icon (re-applied on window
+//!   recreation, `onRecreation`). Ported (issue 015c-tail): the PNG
+//!   decode is the screenshot's `png` dependency (`Image::load_png` — the
+//!   C++'s stb-based `loadFromFile` always yields RGBA8, which is what the
+//!   winit `window::Icon` takes), and `create_window` sets it on the window
+//!   (`Window::set_icon` → `GlParts::set_icon` → winit
+//!   `set_window_icon`; headless: recorded only). The C++'s
+//!   `onRecreation` re-apply (main.cpp:326) has NO port hook: the port's
+//!   winit window is created once and never recreated at runtime (module
+//!   docs: the `pixel_mult` note — the C++'s `mustRecreate`/`recreateWindow`
+//!   deferral, GameWindow.hpp:89-93, has no port equivalent), so the icon
+//!   is set exactly once, at creation. The C++'s load-failure log
+//!   ("Failed to load icon image", main.cpp:318) is ported too.
+//! * **SIGINT** — C++ `main.cpp:340-349` (block `334-350`) installs a
+//!   `SIGINT` handler that stops the engine; its own `TODO (P2): UB`
+//!   comment (main.cpp:339) marks the non-atomic stop IN the signal
+//!   context. Ported safe (issue 015c-tail): `signal-hook`'s
+//!   `flag::register` sets the client's `interrupt` `Arc<AtomicBool>` on
+//!   SIGINT (the signal context does ONE atomic store); the loop head
+//!   (`tick_fields`, the C++'s `while(isRunning())` position,
+//!   GameWindow.hpp:121) performs the SAME actions — the handler's three
+//!   log lines (main.cpp:343-348) in the C++'s order around the deferred
+//!   `globalWindow.stop()` (main.cpp:347) — then closes the window, which
+//!   ends the port's winit loop (the C++'s loop condition is the engine's
+//!   `isRunning()`; the port's winit loop ends on the window's close,
+//!   below). `install_sigint` is called by `main_client` before the boot
+//!   dispatch (the C++'s placement, before `window->run()`, main.cpp:588).
 //! * **Input management** — the C++ per-frame `refreshInput` +
 //!   per-tick `updateInput` run the SSVStart `InputManager`
 //!   (GameEngine.hpp:84; GameState.hpp:49-57), which maps the keyboard
@@ -89,14 +109,17 @@
 //! * **GL surface** — the [`GlDrawTarget`] clears the real framebuffer and
 //!   uploads the scene vertex batches (walls / player) through
 //!   [`oh_render::batching::GlBatchUploader`]; the sprite / text /
-//!   rectangle passes and the screenshot save are documented no-ops (the
-//!   texture/font GL uploads are issue 10's surface; screenshots are
-//!   outside this issue).
+//!   rectangle passes are documented no-ops (the texture/font GL uploads
+//!   are issue 10's surface), and the screenshot save is the REAL GL
+//!   readback → PNG (the C++ `GameWindow::saveScreenshot`,
+//!   GameWindow.hpp:167-174 — `GlParts::save_screenshot`:
+//!   `glReadPixels` bottom-up → row flip → `png`-crate encode; D-004 SFML
+//!   entry).
 
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, RwLock};
 
 use oh_config::{Config, Key, Tid, Trigger, TIME_SLICE, TIME_STEP};
@@ -908,9 +931,15 @@ impl DrawTarget for GlDrawTarget<'_> {
         // surface's remainder.
     }
 
-    fn save_screenshot(&mut self, _path: &str) {
-        // C++ `window->saveScreenshot` — screenshots are outside this
-        // issue's scope (hard exclusion: no screenshot/PNG).
+    fn save_screenshot(&mut self, path: &str) {
+        // C++ `window->saveScreenshot("screenshot.png")` (HGGraphics.cpp:
+        // 305-313, the `mustTakeScreenshot` gate; `saveScreenshot` itself
+        // is GameWindow.hpp:167-174): read the default framebuffer —
+        // AFTER the frame's draws (this runs inside `draw_frame`'s step 12,
+        // before the swap) — flip bottom-up→top-down, write the PNG.
+        // The C++ ignores the `saveToFile` result; mirror that (no return
+        // on the `DrawTarget` surface).
+        self.parts.save_screenshot(path);
     }
 }
 
@@ -1517,6 +1546,14 @@ pub struct WindowedClient {
     /// C++'s raw `window` pointer exists for the whole scope; the port
     /// fills the slot before any callback can fire — `boot` runs first).
     engine_slot: Rc<RefCell<Option<Rc<GameEngine>>>>,
+    /// C++ `globalWindow`'s SIGINT stop (main.cpp:334-350) — the safe
+    /// port's `Arc<AtomicBool>`: `install_sigint`'s `signal-hook` closure
+    /// stores `true` on SIGINT (the ONLY signal-context work — the C++'s
+    /// `TODO (P2): UB` fixed), and the loop head (`tick_fields`, the C++
+    /// `while(isRunning())` position) performs the handler's actions
+    /// around the deferred `globalWindow.stop()` (module docs: the SIGINT
+    /// bullet).
+    pub interrupt: Arc<AtomicBool>,
     // Held for drop order (the adapters live in `engine`; the `AppDraw`
     // holds the fonts — both must drop before `composed`).
     _app_draw: Rc<RefCell<AppDraw>>,
@@ -1541,9 +1578,11 @@ impl WindowedClient {
         // hg::Config::TIME_STEP, hg::Config::TIME_SLICE);` ("240 ticks per
         // second"). The C++ template's `maxLoops` argument defaults to
         // 50.f (TimerStatic.hpp:24).
-        // (The C++ SIGINT handler at :334-357 is EXCLUDED from this issue's
-        // scope — no signal handling; the loop still ends on the window's
-        // `Closed` event and the menu's EXIT item.)
+        //
+        // The C++ SIGINT handler (main.cpp:334-350) is installed over the
+        // client AFTER `build` (the C++'s placement — after the window +
+        // timer, before the boot dispatch): `WindowedClient::install_sigint`
+        // (`main_client` calls it); the flag it sets is created here.
         let timer = TimerStatic::new(TIME_STEP, TIME_SLICE, 50.0);
 
         // ------------------------------------------------------------------
@@ -1751,6 +1790,7 @@ impl WindowedClient {
             menu,
             game,
             engine_slot,
+            interrupt: Arc::new(AtomicBool::new(false)),
             _app_draw: app_draw,
             composed,
         })
@@ -1830,6 +1870,52 @@ impl WindowedClient {
         }
     }
 
+    /// C++ `main.cpp:340-349` — `std::signal(SIGINT, ...)`: the SAFE
+    /// install (the C++'s `TODO (P2): UB` comment, main.cpp:339 — the C++
+    /// handler ran `globalWindow.stop()`, a non-atomic engine mutation,
+    /// INSIDE the signal context; the port keeps the signal context to
+    /// ONE atomic store). `signal_hook::flag::register` sets
+    /// [`Self::interrupt`] on SIGINT; the loop head (`tick_fields`) then
+    /// performs the handler's actions — [`Self::sigint_stop`]. The
+    /// ported `main_client` calls this once per process (a second call
+    /// replaces the handler);
+    /// on registration failure the default SIGINT (terminate) stays in
+    /// force — the pre-port behavior (the C++'s `std::signal` would return
+    /// `SIG_ERR` likewise).
+    pub fn install_sigint(&self) {
+        let _ = signal_hook::flag::register(
+            signal_hook::consts::signal::SIGINT,
+            self.interrupt.clone(),
+        );
+    }
+
+    /// C++ `main.cpp:341-348` — the SIGINT handler's actions, performed at
+    /// the loop head (the C++'s `while(isRunning())` position,
+    /// GameWindow.hpp:121 — the C++ ran them in the signal context, the UB
+    /// its comment marks): the three log lines (main.cpp:343-348) in the
+    /// C++'s order around the deferred `globalWindow.stop()`
+    /// (main.cpp:347 → `gameEngine->stop()`, GameEngine.hpp:75-78), then
+    /// the window close that ends the port's winit loop (the C++'s loop
+    /// condition is the engine's `isRunning()`; the port's winit loop ends
+    /// on the window's close — module docs: the loop-exit translation).
+    /// `sig` is the C++ handler's `int s` (main.cpp:343-344, SIGINT);
+    /// `log` is the injected sink (production: stdout; tests assert the
+    /// exact C++ lines).
+    pub fn sigint_stop(
+        sig: i32,
+        window: &mut Window,
+        engine: &Rc<GameEngine>,
+        log: &mut dyn FnMut(&str),
+    ) {
+        log(&format!(
+            "[::main] Caught signal '{sig}' with game window open"
+        ));
+        log("[::main] Stopping game window...");
+        engine.stop(); // the deferred C++ `globalWindow.stop()` (main.cpp:347)
+        log("[::main] Done stopping game window");
+        window.close(); // end the winit loop (the port's loop-exit condition)
+    }
+
     /// C++ `main.cpp:588-592` — `window->run()`: drive the winit loop, one
     /// frame per [`Self::tick_fields`]. Consumes the client (the `Window`
     /// is moved into the loop, as the C++'s `GameWindow::run` owns its
@@ -1847,11 +1933,12 @@ impl WindowedClient {
             menu,
             game: _game,
             engine_slot: _engine_slot,
+            interrupt,
             _app_draw,
         } = self;
         let _ = &composed; // keep it alive until the end of the scope
         let mut timer = timer;
-        window.run(|window| Self::tick_fields(window, &mut timer, &engine, &menu));
+        window.run(|window| Self::tick_fields(window, &mut timer, &engine, &menu, &interrupt));
         // C++ main.cpp:594-595 — the `main_client` caller prints the
         // "Finished" line (the ported `main_client` does, after this
         // returns).
@@ -1860,7 +1947,7 @@ impl WindowedClient {
     /// One frame — the C++ `GameWindow::run` body (GameWindow.hpp:117-150)
     /// with the port's target + exit translation (module docs).
     pub fn tick(&self, window: &mut Window, timer: &mut TimerStatic) {
-        Self::tick_fields(window, timer, &self.engine, &self.menu)
+        Self::tick_fields(window, timer, &self.engine, &self.menu, &self.interrupt)
     }
 
     /// A [`Self::tick`] driven by the client's own window + timer — the
@@ -1868,7 +1955,13 @@ impl WindowedClient {
     /// borrows them from the client instead — no `&self`/`&mut self`
     /// conflict on the same field).
     pub fn tick_self(&mut self) {
-        Self::tick_fields(&mut self.window, &mut self.timer, &self.engine, &self.menu)
+        Self::tick_fields(
+            &mut self.window,
+            &mut self.timer,
+            &self.engine,
+            &self.menu,
+            &self.interrupt,
+        )
     }
 
     /// The frame body over the client's pieces (the `tick` wrapper is the
@@ -1878,7 +1971,27 @@ impl WindowedClient {
         timer: &mut TimerStatic,
         engine: &Rc<GameEngine>,
         menu: &Rc<MenuGame>,
+        interrupt: &AtomicBool,
     ) {
+        // C++ `while(gameEngine->isRunning())` loop head (GameWindow.hpp:
+        // 121) — the SIGINT flag (the safe port of the C++ handler, main
+        // .cpp:340-349; module docs: the SIGINT bullet): the handler's
+        // three log lines (main.cpp:343-348) around the deferred
+        // `globalWindow.stop()` (main.cpp:347) + the window close that
+        // ends the port's winit loop (the C++'s loop condition is the
+        // engine's `isRunning()`; the port's is `window.open`). Observed
+        // here, the C++'s `isRunning()` condition reads the handler's
+        // `running = false` at the same loop-head position.
+        if interrupt.load(Ordering::SeqCst) {
+            let mut out = |line: &str| println!("{line}");
+            Self::sigint_stop(
+                signal_hook::consts::signal::SIGINT,
+                window,
+                engine,
+                &mut out,
+            );
+            return;
+        }
         // C++ `if(mustRecreate) recreateWindow();` (GameWindow.hpp:123) —
         // the port creates the window once (no runtime recreation; module
         // docs).
@@ -1944,7 +2057,9 @@ impl WindowedClient {
 /// C++ `main.cpp:297-332` — the window (the C++ creates it in
 /// `mainClient`, BEFORE the assets at :381; the order is behaviorally
 /// irrelevant — neither reads the other — so the ported shared-assets load
-/// in `main_client` stays where it is).
+/// in `main_client` stays where it is). `base_dir` is the C++'s CWD
+/// (the binary passes `std::env::current_dir()` — the C++'s CWD-relative
+/// paths, incl. `Assets/icon.png` below, resolve against it).
 ///
 /// `Window::create` degrades to a headless window (`gl() == None`) when no
 /// display / GPU is available; the windowed loop then runs its frames on
@@ -1952,7 +2067,7 @@ impl WindowedClient {
 /// [`WindowedClient::build`]; tests pass a `Window::headless` instead (the
 /// spec's "real windowed run = MANUAL").
 #[must_use]
-pub fn create_window(config: &Config) -> Window {
+pub fn create_window(config: &Config, base_dir: &Path) -> Window {
     let logical_w = config.get_width() as f32;
     let logical_h = config.get_height() as f32;
     let pixel_mult = config.get_pixel_multiplier() as f32;
@@ -1977,9 +2092,21 @@ pub fn create_window(config: &Config) -> Window {
     window.set_fps_limited(config.get_limit_fps());
     window.set_max_fps(config.get_max_fps() as f32);
 
-    // TODO(issue-15c-icon): C++ main.cpp:312-328 — `Assets/icon.png` via
-    // `sf::Image` + `setIcon` (re-applied on `onRecreation`). `oh-assets`
-    // does not decode PNGs yet; the icon stays the platform default.
+    // C++ main.cpp:312-328 — `Assets/icon.png` via `sf::Image` +
+    // `setIcon` (re-applied on `onRecreation` — no port hook: the port's
+    // window is never recreated at runtime, module docs: the Icon bullet).
+    // The decode is the screenshot's `png` dependency (`Image::load_png`
+    // — the C++'s stb-based `loadFromFile`, always RGBA8).
+    let icon_path = base_dir.join("Assets/icon.png");
+    match oh_render::Image::load_png(&icon_path) {
+        Ok(icon) => {
+            window.set_icon(&icon);
+        }
+        Err(_) => {
+            // C++ main.cpp:318 (the C++'s `::main` channel).
+            println!("[::main] Failed to load icon image");
+        }
+    }
 
     window
 }

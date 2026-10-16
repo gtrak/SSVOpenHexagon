@@ -11,11 +11,19 @@
 //! (rotation flags, screenshot, force-restart, pause), and the
 //! replay no-leak invariant (the live manager sets the flags, but the
 //! replay's recorded input drives the movement).
+//!
+//! Issue 015c-tail: the SIGINT handler's safe port (C++ main.cpp:334-350)
+//! — the flag the signal sets is injected by the tests (the spec's
+//! "signal closure"); the loop head performs the C++ handler's actions
+//! (the three log lines + the deferred `globalWindow.stop()`); and the
+//! window icon (C++ main.cpp:312-328) — `Assets/icon.png` decoded via the
+//! screenshot's `png` dependency + set on the window (headless: recorded).
 
 mod common;
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
 use oh_app::game_state::{GameEngine, GameSlot, GameState};
@@ -546,4 +554,128 @@ fn replay_run_ignores_live_input_for_movement() {
         "the movement stays the replay's (alwaysSpinRight → right), NOT the live kA"
     );
     set_key(&mut client, Key::A, false);
+}
+
+// ---------------------------------------------------------------------
+// SIGINT (C++ main.cpp:334-350 — the safe port, issue 015c-tail)
+// ---------------------------------------------------------------------
+
+/// C++ main.cpp:341-348 — the SIGINT handler's actions as the safe port
+/// performs them at the loop head: the three C++ log lines (main.cpp:343-348)
+/// in the C++'s order around the deferred `globalWindow.stop()`
+/// (main.cpp:347), + the window close that ends the port's winit loop. The
+/// test injects the log sink (the spec's "signal closure" seam) and asserts
+/// the exact C++ lines + the stop.
+#[test]
+fn sigint_stop_runs_the_cpp_lines_and_stops_the_engine() {
+    let mut client = windowed_client();
+    client.boot(None, None, None);
+    assert!(client.engine.is_running());
+    assert!(client.window.is_open());
+
+    let mut lines = Vec::new();
+    WindowedClient::sigint_stop(
+        2, /* the C++ handler's `int s` (main.cpp:343) — SIGINT */
+        &mut client.window,
+        &client.engine,
+        &mut |line| lines.push(line.to_string()),
+    );
+
+    assert_eq!(
+        lines,
+        vec![
+            "[::main] Caught signal '2' with game window open".to_string(),
+            "[::main] Stopping game window...".to_string(),
+            "[::main] Done stopping game window".to_string(),
+        ],
+        "the three C++ log lines in the C++ order (main.cpp:343-348)"
+    );
+    assert!(
+        !client.engine.is_running(),
+        "the deferred globalWindow.stop() (main.cpp:347 → GameEngine.hpp:75-78)"
+    );
+    assert!(
+        !client.window.is_open(),
+        "the winit loop's exit condition (module docs: the loop-exit translation)"
+    );
+}
+
+/// C++ main.cpp:340-349 — the loop head (GameWindow.hpp:121): the flag —
+/// set from a closure (the spec's injected "signal closure"; the SAME
+/// atomic store `install_sigint`'s `signal-hook` flag handler performs on a
+/// real SIGINT) — ends the run: the frame performs the deferred stop (the
+/// log lines print to the test process's stdout) and closes the window, so
+/// `Window::run` (headless: exactly one frame) returns with the engine
+/// stopped — the C++'s `while(isRunning())` ending after `globalWindow.stop()`.
+#[test]
+fn sigint_flag_at_the_loop_head_stops_the_run() {
+    let client = windowed_client();
+    client.boot(None, None, None);
+    let engine = client.engine.clone();
+    // Set the flag from a closure — the signal-hook handler's equivalent:
+    let set_flag = || client.interrupt.store(true, Ordering::SeqCst);
+    set_flag();
+    client.run(); // headless: one frame; the loop head observes the flag
+    assert!(
+        !engine.is_running(),
+        "the run ended with the engine stopped (the C++'s isRunning() == false)"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Window icon (C++ main.cpp:312-328 — issue 015c-tail)
+// ---------------------------------------------------------------------
+
+/// C++ main.cpp:312-328 — `Assets/icon.png` via `sf::Image` + `setIcon`:
+/// the port decodes the PNG (the screenshot's `png` dependency — the
+/// C++'s stb-based `loadFromFile`) and sets it on the window. Headless
+/// (no display): the set is recorded (`icon_is_set`); on a live winit
+/// window the RGBA8 pixels are uploaded to the platform window.
+#[test]
+fn create_window_sets_the_icon_from_release_assets() {
+    let window = oh_app::windowed::create_window(&Config::default(), &common::release_dir());
+    assert!(
+        window.icon_is_set(),
+        "_RELEASE/Assets/icon.png decodes + is set (the C++'s resetIcon)"
+    );
+}
+
+/// The C++'s load-failure path (main.cpp:316-319): no `Assets/icon.png`
+/// under the base dir → the icon stays the platform default (the C++ logs
+/// "Failed to load icon image" — the port's line goes to the test's
+/// stdout).
+#[test]
+fn create_window_without_an_icon_file_keeps_the_platform_default() {
+    let missing = std::env::temp_dir().join(format!(
+        "oh-app-no-icon-{}-{}",
+        std::process::id(),
+        std::thread::current()
+            .name()
+            .unwrap_or("t")
+            .replace('-', "_")
+    ));
+    std::fs::create_dir_all(&missing).expect("sandbox dir");
+    let window = oh_app::windowed::create_window(&Config::default(), &missing);
+    assert!(
+        !window.icon_is_set(),
+        "no Assets/icon.png → the C++'s 'Failed to load icon image' path"
+    );
+    let _ = std::fs::remove_dir_all(&missing);
+}
+
+/// The icon decode itself: the REAL `_RELEASE/Assets/icon.png` (256×256
+/// RGBA, `file(1)`-verified) decodes through `Image::load_png` to a
+/// 256×256 RGBA8 image with non-trivial content; a missing file is a clean
+/// `Err` (the C++'s `loadFromFile` false, main.cpp:316).
+#[test]
+fn icon_png_decode_is_rgba8_and_reports_errors() {
+    let icon = oh_render::Image::load_png(&common::release_dir().join("Assets/icon.png"))
+        .expect("the shipped icon decodes");
+    assert_eq!((icon.get_width(), icon.get_height()), (256, 256));
+    assert_eq!(icon.get_pixels().len(), 256 * 256 * 4);
+    // Non-trivial content: SOME pixel is opaque (the icon is not blank).
+    assert!(icon.get_pixels().chunks_exact(4).any(|px| px[3] != 0));
+
+    let missing = std::env::temp_dir().join("oh-app-no-such-icon.png");
+    assert!(oh_render::Image::load_png(&missing).is_err());
 }

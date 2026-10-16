@@ -26,5 +26,17 @@ glow = "0.18"
 fontdue = "0.9"
 # Audio device surface (play/stop/pitch/volume/playing-offset).
 rodio = "0.23"
+# PNG encode + decode — the window layer's own image surface (D-004 SFML
+# entry): the real `GameWindow::saveScreenshot` (GameWindow.hpp:167-174)
+# PNG-encodes the `glReadPixels` readback, and the window-icon load
+# (C++ main.cpp:312-328) PNG-decodes `Assets/icon.png`. In the C++ the PNG
+# codec lives INSIDE SFML (the window layer's own dependency —
+# `ImageLoader.cpp:262` `stbi_write_png`, stb_image_write v1.16); the
+# `png` crate is its sound Rust analogue: pure Rust, no C deps, exactly
+# the encode + decode this layer needs. `image` was rejected (it pulls a
+# whole format zoo + optional rayon/num deps this layer does not use),
+# and a hand-rolled PNG encoder/decoder is rejected on the same bar as the
+# D-004 SFML entry's hand-rolled rasterizer: smallest SOUND dependency.
+png = "0.18"
 
 [dev-dependencies]

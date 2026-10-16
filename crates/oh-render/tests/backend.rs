@@ -489,4 +489,42 @@ fn gpu_smoke() {
     eprintln!("GPU smoke: {version}, centre pixel = {px:?}");
     assert_eq!(px[2], 255, "blue channel must be the cleared colour");
     assert!(px[0] < 16 && px[1] < 16, "cleared colour is pure blue");
+
+    // The screenshot path (the C++ `GameWindow::saveScreenshot`,
+    // GameWindow.hpp:167-174): whole-frame `glReadPixels` (bottom-up) →
+    // row flip → PNG encode → file. Decode the file back and assert the
+    // size + the cleared colour (a uniform clear pins the readback; the
+    // row ORDER is pinned by the in-crate `flip_rows` tests).
+    let shot = std::env::temp_dir().join(format!(
+        "oh-render-gpu-smoke-shot-{}-{}.png",
+        std::process::id(),
+        std::thread::current()
+            .name()
+            .unwrap_or("t")
+            .replace('-', "_")
+    ));
+    assert!(
+        parts.save_screenshot(shot.to_str().expect("temp path")),
+        "save_screenshot writes the PNG"
+    );
+    {
+        let file = std::fs::File::open(&shot).expect("screenshot file exists");
+        let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
+        decoder.set_transformations(png::Transformations::normalize_to_color8());
+        let mut reader = decoder.read_info().expect("screenshot is a valid PNG");
+        let mut buf = vec![0u8; reader.output_buffer_size().expect("output size")];
+        let out = reader.next_frame(&mut buf).expect("screenshot frame");
+        assert_eq!(
+            (out.width, out.height),
+            (64, 64),
+            "the screenshot is the full window"
+        );
+        assert_eq!(out.color_type, png::ColorType::Rgba);
+        let rgba = &buf[..out.buffer_size()];
+        // centre pixel = the cleared blue (top-down row 32, column 32).
+        let i = (32 * 64 + 32) * 4;
+        assert_eq!(rgba[i + 2], 255, "the decoded screenshot's centre is blue");
+        assert!(rgba[i] < 16 && rgba[i + 1] < 16);
+    }
+    let _ = std::fs::remove_file(&shot);
 }

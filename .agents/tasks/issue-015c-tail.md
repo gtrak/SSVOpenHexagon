@@ -8,23 +8,29 @@ This closes issue 15's last three TODOs (small lane).
 Repo `/home/gary/dev/SSVOpenHexagon`, base = master tip. `crates/oh-render/src/window.rs:573`
 `save_screenshot` is a `_path` stub; `create_window`
 (`crates/oh-app/src/windowed.rs`) has `TODO(issue-15c-icon)`; the C++ SIGINT
-handler (`main.cpp:347-357`) is unported (a `TODO` marks it).
+handler (`main.cpp:340-349`) is unported (a `TODO` marks it).
 
 ## C++ oracle (cite what you read)
 
-1. `extlibs/SSVStart/include/SSVStart/GameSystem/GameWindow.hpp:167-172` —
+1. `extlibs/SSVStart/include/SSVStart/GameSystem/GameWindow.hpp:167-174` —
    `saveScreenshot` = `sf::Texture::create(size)`, `t.update(renderWindow)`,
    `t.copyToImage()`, `img.saveToFile(path)`. SFML's `Texture::update(Window)`
-   reads the bottom-left framebuffer region (glReadPixels, rows BOTTOM-UP —
-   flip); `Image::saveToFile` writes PNG (stb_image_write in the vendored
-   extlibs — find it and cite, e.g. `extlibs/libsfml.../stb` or the SFML
-   fork's `ImageLoader.cpp`).
-2. `main.cpp:347-357` — the SIGINT handler: log the signal, log stopping,
-   `globalWindow.stop()`, log done. Note the C++ `TODO (P2): UB` comment —
+   copies the back buffer with `glCopyTexSubImage2D` into a BOTTOM-UP-flipped
+   texture (`m_pixelsFlipped = true`; SFML fork `src/SFML/Graphics/Texture.cpp:628-656`,
+   local checkout `/tmp/sfml-fork`) and `copyToImage` reverses the rows on the
+   way back (`Texture.cpp:413-424`) — net effect: the framebuffer (GL origin
+   bottom-left, rows BOTTOM-UP) becomes a TOP-DOWN image (the port reads the
+   default framebuffer directly with `glReadPixels` and does the same row
+   flip); `Image::saveToFile` writes PNG (SFML fork
+   `src/SFML/Graphics/ImageLoader.cpp:262` `stbi_write_png` — stb_image_write
+   v1.16, `extlibs/headers/stb_image/stb_image_write.h`).
+2. `main.cpp:340-349` (block `334-350`) — the SIGINT handler: log the
+   signal, log stopping, `globalWindow.stop()`, log done. Note the C++
+   `TODO (P2): UB` comment (main.cpp:339) —
    the port must do the SAME actions via SAFE means (an
    `Arc<AtomicBool>`/atomic flag the loop checks, not signal-handler
    mutation of non-atomic state; document the equivalence).
-3. `main.cpp:311-326` — the icon: load `Assets/icon.png` via `sf::Image`,
+3. `main.cpp:312-328` — the icon: load `Assets/icon.png` via `sf::Image`,
    `window->setIcon`, AND re-run on window recreation (`onRecreation`).
 
 ## Scope

@@ -32,6 +32,13 @@ oh-data = { path = "../oh-data" }
 oh-lua = { path = "../oh-lua" }
 oh-assets = { path = "../oh-assets" }
 oh-menu = { path = "../oh-menu" }
+# C++ main.cpp:340-349 — the SIGINT handler, the SAFE port (the C++'s
+# `TODO (P2): UB`, main.cpp:339: the C++ handler called
+# `globalWindow.stop()` — non-atomic engine state — inside the signal
+# context). `signal-hook`'s `flag::register` keeps the signal context to
+# a single atomic store on the `WindowedClient`'s interrupt flag; the
+# loop head (the C++'s `while(isRunning())` position) performs the stop.
+signal-hook = "0.3"
 oh-replay = { path = "../oh-replay" }
 oh-rng = { path = "../oh-rng" }
 

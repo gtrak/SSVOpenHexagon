@@ -113,12 +113,17 @@ pub fn main_client(
         // `cli_level_pack` / `cli_level_name` feed the C++ `mg->init`
         // (`main.cpp:507-511`).
         match crate::windowed::WindowedClient::build(
-            crate::windowed::create_window(&config.read().expect("config poisoned")),
+            crate::windowed::create_window(&config.read().expect("config poisoned"), base_dir),
             config.clone(),
             assets,
             base_dir,
         ) {
             Ok(client) => {
+                // C++ main.cpp:334-350 — the SIGINT handler (the safe
+                // port: `signal-hook`'s flag register over the client's
+                // `interrupt` flag; the loop head performs the handler's
+                // actions — `windowed.rs` module docs, the SIGINT bullet).
+                client.install_sigint();
                 client.boot(
                     cli_level_pack,
                     cli_level_name,
