@@ -666,3 +666,36 @@ console's `?fn` command and `!help`'s doc lookup are inert as shipped.
 - **Shader risk flagged**: pack `.frag` files have no `#version` (desktop
   defaults, `gl_FragColor`) — GLES 3.0 needs a translation preamble; the
   render lane must assess (SFML did this internally on Android).
+
+## D-027 — windows-testing integration (2026-10-16)
+
+The `windows-testing` branch (upstream, two commits by Gary Trakhman,
+verified on a live NVIDIA GL 3.3 display) was cherry-picked onto master
+with authorship preserved (`8e461c90`, `3bf42b7d`) and reconciled with
+master's own on-device fixes:
+
+- **Same defects found twice** (independent discovery, kept once):
+  the never-wired back-buffer swap (windows: `Window::swap_buffers`
+  delegating to master's `GlParts::present`; one implementation), the
+  never-set `ControlFlow` (master's Poll + windows' WaitUntil FPS pacing),
+  and the 12-byte `sf::Vertex` VAO layout (25c lane's SG5 audit — the
+  windows branch's `403b76e5` carries the same fix).
+- **Taken from windows-testing** (master lacked them): the WGL
+  `build(Some(window_handle))` context-creation fix (the desktop window
+  never appeared on Windows), the NDC-y negation (the whole scene was
+  vertically mirrored), the menu camera centering (`w/2,h/2` — the C++
+  `sf::View{FloatRect}` semantics), the chdir-to-executable CWD
+  resolution, and `gl_text.rs` (the display-verified text pipeline on
+  `GlParts`).
+- Reconciliation with the in-flight 25c lane (its own text/atlas
+  implementation) is decided at 25c's landing: one text pipeline wins,
+  the other is retired with its tests.
+
+## D-028 — wasm/web investigation opened (issue 26)
+
+`26-wasm-web.md` is the investigation record. Decision requests for the
+user: (1) Luau instead of LuaJIT on web only (behavioral compat — LuaJIT
+does not run on wasm); (2) miniz_oxide replay deflate on web only (the
+D-006 zlib pin is system-zlib, libz-sys does not build on wasm);
+(3) v1 scope without net/steam/discord/audio. The main refactor is an
+`oh-vfs` trait (fetch-into-memory VFS on web) routing oh-assets/oh-config.
