@@ -133,6 +133,110 @@ WebGL2 path (direct `WebGl2RenderingContext`) **and** the `winit` 0.30 web
 windowing layer (`EventLoopExtWebSys::spawn_app` + a `Window` bound to the page
 canvas via `WindowAttributesExtWebSys::with_canvas`). P0.3 is complete.
 
+## 26c.1 — Emscripten target (verified)
+
+**Issue 26c.1 spike = PASS** (supervisor-verified live in Chromium via
+`agent-browser`, 2026-10-16): a **`wasm32-unknown-emscripten`** module boots in a
+real browser, creates a **WebGL2** context, constructs a working **`glow`**
+context, runs a `request_animation_frame` loop, and exposes a callable
+`#[wasm_bindgen]` export. Browser console:
+
+```
+emscripten: webgl2 create handle=1 make_context_current->0 (0=ok)
+(a) raw webgl2: clear blue (0.1,0.4,0.8) OK
+(b) glow: clear orange (204,102,26) OK -> status()=glow-ok
+render loop started (request_animation_frame)
+status glow-ok
+```
+
+Screenshot: the 640x480 canvas renders orange. Artifacts:
+`oh_web_emscripten_spike.js` (266 KB) + `.wasm` (7.5 MB debug).
+
+**Architecture decision (D-029):** the web build targets
+`wasm32-unknown-emscripten` for the WHOLE app (Lua + engine + `web-sys` +
+`glow` in ONE module), so the Lua VM and the engine share a module with direct
+calls (no cross-module bridge). **`winit` is dropped on the web path** — see
+the winit exclusion below and DECISIONS.md D-029.
+
+**Evidence (hard):**
+- `winit 0.30.13` cannot build for emscripten: `build.rs:11` gates
+  `web_platform = { all(target_family = "wasm", target_os = "unknown") }`;
+  emscripten is `target_os="emscripten"` →
+  `compile_error!("The platform you're compiling for is not supported by
+  winit")`. (So winit-web is **`wasm32-unknown-unknown`-only**.)
+- `wasm-bindgen` NOW supports `wasm32-unknown-emscripten` (current docs; the
+  old sunset-domain page said "no plans" and is STALE) — it must be a **`bin`
+  crate** (a `cdylib` links as an Emscripten *side module* with no JS loader →
+  undefined `__wbindgen_*`) plus **`-Clink-arg=-sWASM_BINDGEN`**; `emcc` then
+  runs the `wasm-bindgen` CLI itself over the linked wasm. Requires Emscripten
+  ≥ 6.0.10.
+- `glow 0.18` on emscripten compiles its **`native`** module (not `web_sys`),
+  so `Context::from_webgl2_context` is unavailable; the working route is
+  `glow::Context::from_loader_function_cstr(|n: &CStr|
+  emscripten_webgl_get_proc_address(n.as_ptr()))` after creating + making
+  current an emscripten WebGL2 context.
+- `mlua`-Luau requires emscripten (26b PASS).
+
+**Exact 26c.1 build recipe (verbatim).** Crate is a **binary** (`src/main.rs`,
+no `[lib]`) with `rust-toolchain.toml` pinning `channel = "1.97.1"`.
+`.cargo/config.toml`:
+
+```toml
+[build]
+target = "wasm32-unknown-emscripten"
+
+[target.wasm32-unknown-emscripten]
+# emsdk 6.0.x ships emcc.exe (no emcc.bat); point the linker at it explicitly.
+linker = "emcc.exe"
+rustflags = [
+  "-Cpanic=abort",
+  "-Cllvm-args=-enable-emscripten-cxx-exceptions=0",
+  "-Crelocation-model=static",
+  "-Clink-arg=-sWASM_BINDGEN",
+  "-Clink-arg=-Wno-experimental",
+  "-Clink-arg=-sMODULARIZE",
+  "-Clink-arg=-sEXPORT_ES6",
+  "-Clink-arg=-sMAX_WEBGL_VERSION=2",
+  "-Clink-arg=-sMIN_WEBGL_VERSION=2",
+]
+```
+
+Deps: `wasm-bindgen = "0.2.129"`, `js-sys = "0.3.106"`,
+`web-sys = { version = "0.3.106", features = ["Window","Document","Element",
+"HtmlElement","HtmlCanvasElement","WebGl2RenderingContext","console",
+"Performance"] }`, `glow = "0.18"`.
+
+**Two gotchas that cost iterations (record them):**
+1. `-sMAX_WEBGL_VERSION=2` (and `-sMIN_WEBGL_VERSION=2`) are REQUIRED — without
+   them emscripten logs `WebGL 2 requested but only WebGL 1 is supported` and
+   `emscripten_webgl_create_context` returns 0.
+2. `emscripten_webgl_create_context` takes a **CSS selector**, not a bare
+   element id: `"#c"` works, `"c"` returns 0 (it does `querySelector("c")`).
+
+Also: the WebGL2 context must be created via the emscripten C API
+(`emscripten_webgl_init_context_attributes` with `major_version=2` →
+`emscripten_webgl_create_context` → `emscripten_webgl_make_context_current`)
+BEFORE `emscripten_webgl_get_proc_address` resolves (it dispatches off
+emscripten's current `GLctx`).
+
+**emsdk env (every build):** `EMSDK=<emsdk>`, `EM_CONFIG=<emsdk>\.emscripten`,
+`CC/CXX/AR_wasm32_unknown_emscripten` = `emcc.exe`/`em++.exe`/`llvm-ar.exe`,
+and `PATH` must include emsdk's `upstream\emscripten`, `upstream\bin`, and
+`~/.cargo/bin` (for the `wasm-bindgen` CLI). emsdk 6.0.12 / node 24.19.0.
+
+**Implications (not blockers):**
+- Emscripten provides a **libc + in-memory FS**, so `std::fs`/`std::time`/
+  `std::env` actually WORK on this target (content could be preloaded into
+  MEMFS). The plan's fetch→`MemoryVfs` remains the intended content path, but
+  `RealFs` is not automatically excluded on emscripten.
+- **Open risk to verify in 26c.3:** the wasm-bindgen recipe's
+  `-Cllvm-args=-enable-emscripten-cxx-exceptions=0` (needed for Rust
+  `panic=abort`) may CONFLICT with Luau's C++ exceptions
+  (`CXXFLAGS_wasm32_unknown_emscripten=-fwasm-exceptions`, mandatory per 26b)
+  when both are linked into ONE module — must be tested, not assumed.
+- Minor spike artifact: `main` ran twice in the spike (two context handles) —
+  to resolve when structuring `oh-web`.
+
 ## Phase 0 status (2026-10-16)
 
 - **P0.1 (replay compression interchange): PASS** — miniz_oxide ↔ zlib

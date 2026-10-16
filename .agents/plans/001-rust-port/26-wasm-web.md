@@ -139,15 +139,72 @@ stale JS-EH objects resurface as link errors).
 
 Skill: `.agents/skills/lib-mlua.md` §WASM.
 
+## 26c.1 — emscripten web boot: PASS
+
+**Issue 26c.1 spike = PASS** (supervisor-verified live in Chromium via
+`agent-browser`, 2026-10-16): a **`wasm32-unknown-emscripten`** module boots in
+a real browser, creates a **WebGL2** context, constructs a working **`glow`**
+context, runs a `request_animation_frame` loop, and exposes a callable
+`#[wasm_bindgen]` export. Browser console:
+
+```
+emscripten: webgl2 create handle=1 make_context_current->0 (0=ok)
+(a) raw webgl2: clear blue (0.1,0.4,0.8) OK
+(b) glow: clear orange (204,102,26) OK -> status()=glow-ok
+render loop started (request_animation_frame)
+status glow-ok
+```
+
+Screenshot: the 640x480 canvas renders orange. Artifacts:
+`oh_web_emscripten_spike.js` (266 KB) + `.wasm` (7.5 MB debug).
+
+This closes 26b's "browser execution still unproven (26c)" open item: the
+emscripten target (the one Luau requires) is now proven to boot **in a real
+browser**, not just under node — and it is the same target the whole web app
+will use.
+
+**Architecture decision (D-029):** the web build targets
+`wasm32-unknown-emscripten` for the WHOLE app (Lua + engine + `web-sys` +
+`glow` in ONE module), so the Lua VM and the engine share a module with direct
+calls (no cross-module bridge). **`winit` is dropped on the web path** (see the
+corrected "Build/ship shape" + "What already works in our favor" below, and
+DECISIONS.md D-029).
+
+The exact build recipe + the two gotchas + the glow loader route are recorded
+verbatim in `.agents/skills/lib-web-stack.md` §"26c.1 — Emscripten target
+(verified)".
+
+**Two facts (implications, not blockers):**
+- Emscripten provides a **libc + in-memory FS**, so `std::fs`/`std::time`/
+  `std::env` actually WORK on this target (content could be preloaded into
+  MEMFS). The fetch→`MemoryVfs` remains the intended content path, but `RealFs`
+  is not automatically excluded on emscripten.
+- **Open risk to verify in 26c.3:** the wasm-bindgen recipe's
+  `-Cllvm-args=-enable-emscripten-cxx-exceptions=0` (needed for Rust
+  `panic=abort`) may CONFLICT with Luau's C++ exceptions
+  (`CXXFLAGS_wasm32_unknown_emscripten=-fwasm-exceptions`, mandatory per 26b)
+  when both are linked into ONE module — must be tested, not assumed.
+- Minor spike artifact: `main` ran twice in the spike (two context handles) —
+  to resolve when structuring `oh-web`.
+
 ## What already works in our favor
 
-- **winit 0.30 has a wasm32 backend** (`web-sys`/`EventLoopExtWebSys`) — the
-  event-loop shape we ported (25b's `ApplicationHandler`) is the same.
-- **glow supports WebGL2** (the same `glow::Context` API over
-  `WebGl2RenderingContext`). Our renderer is glow-only — no glutin on the
-  web path (glutin does NOT support wasm; the 25c GLES work is a preview:
-  WebGL2 ≈ GLES 3.0, the shader translation (`translate_for_gles`, issue
-  25b SG3) is likely reusable verbatim).
+- **CORRECTED (D-029, 2026-10-16): `winit` is DROPPED on the web path.** The
+  earlier claim "winit 0.30 has a wasm32 backend" is true ONLY for
+  `wasm32-unknown-unknown` — `winit 0.30.13`'s `build.rs:11` gates
+  `web_platform = { all(target_family = "wasm", target_os = "unknown") }`, and
+  emscripten is `target_os="emscripten"`, so it `compile_error!`s there. Since
+  the whole web app is `wasm32-unknown-emscripten` (D-029), there is no winit on
+  web; the event loop is a plain `request_animation_frame` (verified in 26c.1).
+- **glow supports WebGL2** (the same `glow::Context` API). On the emscripten
+  target glow compiles its **`native`** module (not `web_sys`), so
+  `Context::from_webgl2_context` is unavailable — the working route is
+  `glow::Context::from_loader_function_cstr(|n: &CStr|
+  emscripten_webgl_get_proc_address(n.as_ptr()))` after creating + making
+  current an emscripten WebGL2 context (26c.1). Our renderer is glow-only — no
+  glutin on the web path (glutin does NOT support wasm; the 25c GLES work is a
+  preview: WebGL2 ≈ GLES 3.0, the shader translation (`translate_for_gles`,
+  issue 25b SG3) is likely reusable verbatim).
 - **fontdue** (pure Rust) — the text pipeline cross-compiles.
 - **The game core is platform-clean**: oh-game/oh-data/oh-config/oh-menu*
   have no platform deps (proven by the headless tests); the android work
@@ -230,12 +287,24 @@ Skill: `.agents/skills/lib-mlua.md` §WASM.
 
 ## Build/ship shape
 
-- Target: `wasm32-unknown-unknown`, `wasm-bindgen` + `web-sys`; serve with
-  `trunk` (or wasm-pack) — a static site (`index.html` + the wasm + the
-  packed content). No emscripten (winit/glow need no emsdk; emscripten
-  would only be for the (2b) Lua-C route).
-- CI: a web build job is `cargo check --target wasm32-unknown-unknown -p
-  oh-web` (compile-green) + optionally a playwright smoke later.
+**CORRECTED (D-029, 2026-10-16):** the web build targets
+**`wasm32-unknown-emscripten`** for the WHOLE app (Lua + engine + `web-sys` +
+`glow` in ONE module) — NOT `wasm32-unknown-unknown`. The earlier "No
+emscripten / winit+glow need no emsdk" assumption is **wrong**: `winit` cannot
+build for emscripten (it is `wasm32-unknown-unknown`-only), and Luau requires
+emscripten (26b) — so emscripten is the single target and **`winit` is dropped
+on the web path**. `wasm-bindgen` must be a `bin` crate with
+`-Clink-arg=-sWASM_BINDGEN`; `glow` is built via the
+`emscripten_webgl_get_proc_address` loader (its `native` module, not
+`web_sys`). See §"26c.1 — emscripten web boot: PASS" and
+`.agents/skills/lib-web-stack.md` §"26c.1 — Emscripten target (verified)".
+
+- Target: `wasm32-unknown-emscripten`, `wasm-bindgen` + `js-sys` + `web-sys`
+  + `glow`; a static site (`index.html` + the wasm + the packed content),
+  served with a plain static server (the emscripten/`wasm-bindgen` output is a
+  self-contained JS module — no `trunk`/wasm-pack required).
+- CI: a web build job is `cargo build --target wasm32-unknown-emscripten -p
+  oh-web` (compile-green) + optionally a playwright/browser smoke later.
 
 ## Proposed sub-lanes (issue 26, if green-lit)
 
