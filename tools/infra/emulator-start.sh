@@ -31,7 +31,20 @@ pkill -f "qemu-system.*-avd $AVD" 2>/dev/null && sleep 3 || true
 
 # sg kvm: the group membership applies to new sessions only (usermod -aG
 # without re-login); systemd-run --user --scope keeps the cgroup bound.
+# GPU POLICY (2026-10-16): SOFTWARE ONLY — `-gpu swiftshader_indirect` is
+# mandatory and there is deliberately NO override: a raw/default (`-gpu
+# auto`) launch takes the host-GPU path whose CUDA/Vulkan interop
+# allocations collide with the OTHER workloads on this box (the sglang
+# server)​. NEVER launch the emulator without this flag; this script is
+# the only sanctioned way.
 nohup sg kvm -c "systemd-run --user --scope -p MemoryMax=$MAX_MEM -p MemorySwapMax=$MAX_SWAP $ANDROID_HOME/emulator/emulator -avd $AVD -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -memory $MEM -no-snapshot > /tmp/emulator-oh.log 2>&1" >/dev/null 2>&1 &
+
+# GPU guard (post-launch): if OUR emulator put any NEW process on the
+# NVIDIA GPU (it must not — software rendering), kill it immediately
+# before it can disturb the other workloads. The baseline is captured
+# AFTER the launch — any python/qemu entry that is not the sglang set is
+# ours. Checked once boot completes (the GL backend initializes then).
+GPU_GUARD_CHECK="${OH_EMU_GPU_GUARD:-1}"
 
 echo "waiting for the emulator to boot (bounded at MemoryMax=$MAX_MEM)..."
 for i in $(seq 1 60); do
@@ -39,6 +52,13 @@ for i in $(seq 1 60); do
     BOOT="$($ADB shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
     if [ "$BOOT" = "1" ]; then
         echo "booted: $($ADB devices | grep emulator | head -1)"
+        if [ "$GPU_GUARD_CHECK" = "1" ] && command -v nvidia-smi >/dev/null 2>&1; then
+            if nvidia-smi --query-compute-apps=pid,process_name --format=csv,noheader 2>/dev/null | grep -qiE "qemu|emulator"; then
+                echo "GPU GUARD TRIP: the emulator appears on the NVIDIA GPU (must be software-only) — killing it" >&2
+                pkill -f "qemu-system.*-avd $AVD" || true
+                exit 2
+            fi
+        fi
         exit 0
     fi
 done
