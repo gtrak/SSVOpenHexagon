@@ -142,7 +142,8 @@ fn default_config_values() {
     // no config.json in base_dir -> null root -> all compile-time defaults
     let dir = temp_dir("defaults");
     let mut cfg = Config::default();
-    cfg.load_config(&oh_vfs::RealFs::new(&dir), &[] as &[&str]).unwrap();
+    cfg.load_config(&oh_vfs::RealFs::new(&dir), &[] as &[&str])
+        .unwrap();
 
     assert!(cfg.get_official());
     assert!(!cfg.get_no_pulse());

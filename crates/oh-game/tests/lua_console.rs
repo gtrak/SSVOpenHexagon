@@ -27,7 +27,10 @@ use oh_game::lua_console::PREFIX_HEADERS;
 use oh_game::seams::ScriptHost;
 
 fn load_release() -> Arc<oh_assets::Assets> {
-    Arc::new(oh_assets::Assets::new(Arc::new(oh_vfs::RealFs::new(release_dir())), true, false).expect("_RELEASE loads headless"))
+    Arc::new(
+        oh_assets::Assets::new(Arc::new(oh_vfs::RealFs::new(release_dir())), true, false)
+            .expect("_RELEASE loads headless"),
+    )
 }
 
 /// Walks the output over the 11 category headers, in order (panics on the

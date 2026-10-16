@@ -187,7 +187,8 @@ fn pack_infos_are_priority_ordered() {
 
 #[test]
 fn headless_false_loads_assets_json_and_shaders() {
-    let a = Assets::new(Arc::new(RealFs::new(release_dir())), false, false).expect("_RELEASE loads full");
+    let a = Assets::new(Arc::new(RealFs::new(release_dir())), false, false)
+        .expect("_RELEASE loads full");
     let li = a.get_load_results();
     // 4 shaders + 24 music json + 33 style json.
     assert_eq!(li.assets, 61);
@@ -310,7 +311,8 @@ fn unparseable_level_accumulates_a_formatted_error_and_null_id_level() {
     // level still loads with all defaults (id = "nullId").
     std::fs::write(root.join("Packs/p/Levels/bad.json"), r#"{"id":"x","#).unwrap();
 
-    let a = Assets::new(Arc::new(RealFs::new(&root)), true, false).expect("parse error is non-fatal");
+    let a =
+        Assets::new(Arc::new(RealFs::new(&root)), true, false).expect("parse error is non-fatal");
     let _ = std::fs::remove_dir_all(&root);
 
     let li = a.get_load_results();

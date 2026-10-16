@@ -132,7 +132,10 @@ fn run_replay_until_death(
 #[test]
 fn level_runs_live_properties() {
     let doc = read_corpus(corpus_path("level_runs.json"));
-    let assets = Arc::new(oh_assets::Assets::new(Arc::new(oh_vfs::RealFs::new(release_dir())), true, false).expect("load"));
+    let assets = Arc::new(
+        oh_assets::Assets::new(Arc::new(oh_vfs::RealFs::new(release_dir())), true, false)
+            .expect("load"),
+    );
     for entry in doc["runs"].as_array().expect("runs") {
         let run = Run::from(entry);
         // (a)+(b) — the live run's properties (the outcome itself varies
@@ -175,7 +178,10 @@ fn level_runs_live_properties() {
 #[test]
 fn seeded_replay_runs_match_corpus() {
     let doc = read_corpus(corpus_path("level_runs.json"));
-    let assets = Arc::new(oh_assets::Assets::new(Arc::new(oh_vfs::RealFs::new(release_dir())), true, false).expect("load"));
+    let assets = Arc::new(
+        oh_assets::Assets::new(Arc::new(oh_vfs::RealFs::new(release_dir())), true, false)
+            .expect("load"),
+    );
     for entry in doc["runs"].as_array().expect("runs") {
         let run = Run::from(entry);
         // (i) the exact seeded-replay outcome (the C++-derived corpus).
@@ -285,7 +291,10 @@ fn level_runs_reference_the_cpp_derived_envelope_fixtures() {
 #[test]
 fn deliberately_wrong_pin_discriminates() {
     let doc = read_corpus(corpus_path("level_runs.json"));
-    let assets = Arc::new(oh_assets::Assets::new(Arc::new(oh_vfs::RealFs::new(release_dir())), true, false).expect("load"));
+    let assets = Arc::new(
+        oh_assets::Assets::new(Arc::new(oh_vfs::RealFs::new(release_dir())), true, false)
+            .expect("load"),
+    );
     // Use the fastest pair (orthoplex_1_bipolarity: 358 frames).
     let entry = doc["runs"][3].clone();
     let run = Run::from(&entry);

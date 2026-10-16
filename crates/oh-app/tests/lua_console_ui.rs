@@ -22,7 +22,12 @@ use oh_render::window::Window;
 /// gate, HGUpdate.cpp:1295-1300, lifted — the 010b toggle goes through).
 fn debug_composed() -> (oh_app::compose::Composed, Arc<RwLock<Config>>) {
     let assets = Arc::new(
-        oh_assets::Assets::new(Arc::new(oh_vfs::RealFs::new(common::release_dir())), false, false).expect("_RELEASE loads"),
+        oh_assets::Assets::new(
+            Arc::new(oh_vfs::RealFs::new(common::release_dir())),
+            false,
+            false,
+        )
+        .expect("_RELEASE loads"),
     );
     let config = Arc::new(RwLock::new({
         let mut c = Config::default();

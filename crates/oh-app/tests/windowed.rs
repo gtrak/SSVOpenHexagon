@@ -196,7 +196,12 @@ fn real_timer_drives_switched_states_in_the_cpp_frame_order() {
 
 fn windowed_client() -> WindowedClient {
     let assets = Arc::new(
-        oh_assets::Assets::new(Arc::new(oh_vfs::RealFs::new(common::release_dir())), false, false).expect("_RELEASE loads"),
+        oh_assets::Assets::new(
+            Arc::new(oh_vfs::RealFs::new(common::release_dir())),
+            false,
+            false,
+        )
+        .expect("_RELEASE loads"),
     );
     // A returning player's config (C++ `first_time_playing = false`):
     // the boot's first-time-tips dialogs (MenuGame.cpp:847-870) are what
@@ -294,7 +299,12 @@ fn live_compressed_replay_path(assets: &Arc<oh_assets::Assets>) -> String {
 fn boot_with_a_compressed_replay_loads_it_into_the_game_slot() {
     let client = windowed_client();
     let replay = live_compressed_replay_path(&Arc::new(
-        oh_assets::Assets::new(Arc::new(oh_vfs::RealFs::new(common::release_dir())), false, false).expect("_RELEASE loads"),
+        oh_assets::Assets::new(
+            Arc::new(oh_vfs::RealFs::new(common::release_dir())),
+            false,
+            false,
+        )
+        .expect("_RELEASE loads"),
     ));
 
     client.boot(None, None, Some(&replay));
@@ -470,7 +480,12 @@ fn scripted_force_restart_key_returns_to_the_menu() {
 #[test]
 fn scripted_pause_key_toggles_debug_pause() {
     let assets = Arc::new(
-        oh_assets::Assets::new(Arc::new(oh_vfs::RealFs::new(common::release_dir())), false, false).expect("_RELEASE loads"),
+        oh_assets::Assets::new(
+            Arc::new(oh_vfs::RealFs::new(common::release_dir())),
+            false,
+            false,
+        )
+        .expect("_RELEASE loads"),
     );
     let config = Arc::new(RwLock::new({
         let mut c = Config::default();
@@ -538,7 +553,12 @@ fn scripted_down_key_navigates_the_level_selection() {
 fn replay_run_ignores_live_input_for_movement() {
     let mut client = windowed_client();
     let assets = Arc::new(
-        oh_assets::Assets::new(Arc::new(oh_vfs::RealFs::new(common::release_dir())), false, false).expect("_RELEASE loads"),
+        oh_assets::Assets::new(
+            Arc::new(oh_vfs::RealFs::new(common::release_dir())),
+            false,
+            false,
+        )
+        .expect("_RELEASE loads"),
     );
     let replay = live_compressed_replay_path(&assets);
     client.boot(None, None, Some(&replay));

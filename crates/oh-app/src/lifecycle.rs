@@ -203,7 +203,12 @@ mod tests {
         assert_eq!(config.get_windowed_width(), 640, "named override applied");
 
         let mut config = Config::default();
-        load_and_reapply(&mut config, &oh_vfs::RealFs::new(dir.as_path()), &["open-hexagon".to_string()]).expect("load");
+        load_and_reapply(
+            &mut config,
+            &oh_vfs::RealFs::new(dir.as_path()),
+            &["open-hexagon".to_string()],
+        )
+        .expect("load");
         assert_eq!(
             config.get_windowed_width(),
             800,
@@ -224,7 +229,8 @@ mod tests {
         let shared = Arc::new(RwLock::new(config));
         let path = dir.join("config.json");
         {
-            let _guard = ConfigSaveGuard::new(shared.clone(), Arc::new(oh_vfs::RealFs::new(dir.as_path())));
+            let _guard =
+                ConfigSaveGuard::new(shared.clone(), Arc::new(oh_vfs::RealFs::new(dir.as_path())));
             // (C++ `return` — the guard fires here, at scope end.)
         }
         assert!(path.is_file(), "config.json saved by the guard");

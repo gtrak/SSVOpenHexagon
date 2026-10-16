@@ -159,8 +159,7 @@ fn memory_vfs_drives_assets_and_config_off_disk() {
     // A non-existent override id is ignored: `max_fps` stays the
     // `config.json` value (100), not the override's 999.
     let mut cfg2 = oh_config::Config::default();
-    cfg2
-        .load_config(&vfs, &["doesnotexist"])
+    cfg2.load_config(&vfs, &["doesnotexist"])
         .expect("in-memory config loads with an unknown override id");
     assert_eq!(cfg2.get_max_fps(), 100, "unknown override id ignored");
 }

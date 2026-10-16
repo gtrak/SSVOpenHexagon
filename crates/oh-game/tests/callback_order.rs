@@ -95,8 +95,10 @@ fn callback_firing_order_matches_cpp_call_sites() {
     std::fs::create_dir_all(&dir).unwrap();
     write_synthetic_pack(&dir);
 
-    let assets =
-        Arc::new(oh_assets::Assets::new(Arc::new(oh_vfs::RealFs::new(&dir)), true, false).expect("synthetic pack loads headless"));
+    let assets = Arc::new(
+        oh_assets::Assets::new(Arc::new(oh_vfs::RealFs::new(&dir)), true, false)
+            .expect("synthetic pack loads headless"),
+    );
     let c = common::compose(assets, dir.clone(), false);
 
     // No walls in the synthetic level — the `e_kill` event is the death.

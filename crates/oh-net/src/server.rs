@@ -2219,8 +2219,10 @@ mod tests {
         executor: Box<dyn ReplayExecutor>,
     ) -> HexagonServer {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_RELEASE");
-        let assets =
-            Arc::new(oh_assets::Assets::new(Arc::new(oh_vfs::RealFs::new(&root)), true, false).expect("_RELEASE loads headless"));
+        let assets = Arc::new(
+            oh_assets::Assets::new(Arc::new(oh_vfs::RealFs::new(&root)), true, false)
+                .expect("_RELEASE loads headless"),
+        );
         let db = Database::open(&dir.path().join("ohdb.sqlite")).expect("temp db");
         HexagonServer::new(
             assets,

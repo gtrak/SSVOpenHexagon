@@ -80,7 +80,10 @@ const LEVELS: [&str; 2] = [
 
 fn load_release() -> Arc<oh_assets::Assets> {
     // C++: `hg::HGAssets assets{nullptr, true /* headless */};`
-    Arc::new(oh_assets::Assets::new(Arc::new(oh_vfs::RealFs::new(release_dir())), true, false).expect("_RELEASE loads headless"))
+    Arc::new(
+        oh_assets::Assets::new(Arc::new(oh_vfs::RealFs::new(release_dir())), true, false)
+            .expect("_RELEASE loads headless"),
+    )
 }
 
 /// C++-derived pins on the live run's replay file + its status (module docs
