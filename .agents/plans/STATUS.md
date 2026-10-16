@@ -40,6 +40,7 @@ Decisions log: `.agents/plans/001-rust-port/DECISIONS.md`
 | 25 | Android NDK port (`aarch64-linux-android`) | all | LANDED (25a+25b+25c+25d; real-device verified end-to-end) | 101f920f, 11cf50e1, c3e39c15, 23d68ee3 | env set up (NDK r27c API 28; `tools/android-env.sh` + `.cargo` linker config, D-026); oh-game/oh-lua (LuaJIT 210.5.12) already `cargo check` green on aarch64; oh-render blocked on the android-activity feature choice (native-activity chosen); GLES shader-translation risk flagged; spec `25-android.md` |
 | 26 | WASM/Web port — investigation + decision surface | 15,25 | SPECD (investigation) | this commit | `26-wasm-web.md`: winit/glow port, blockers = LuaJIT-on-wasm (Luau? D-028), libz-sys (miniz re-pin?), no-fs (oh-vfs trait), net/steam/discord gated off; sub-lanes 26a-d proposed; user decisions requested |
 | 27 | Plan-to-issue coverage audit (the missed-subsystem guard) | 25 | OPEN (audit done, checker TODO) | this commit | `27-coverage-audit.md`: the `oh-audio` hole (planned crate, no issue) + the guard: every PLAN crate maps to a landed row or a decision; mapping docs cover every in-scope TU; TODO/Noop sweep; misleading-comment rule. Known holes table with tracking |
+| 25e | `oh-audio`: the missed subsystem (Core/Audio + MusicData) | 25 | LANDED | 04ace03b | new `crates/oh-audio` (566 lines): all 11 `Audio` trait methods over rodio; wired into the live composition (NoopAudio retired); `getMusicDMSyncFactor` = `pow(difficultyMult, 0.12)` proven PURE (no wall clock into sim — determinism intact); on-device: AAudio started + OGG decoded + audible; `mapping/audio.md` written (the missing mapping row, issue 27's first repair) |
 
 States: OPEN → SPECD → in-flight → LANDED (commit) → (blocked/parked with reason).
 
@@ -50,6 +51,7 @@ States: OPEN → SPECD → in-flight → LANDED (commit) → (blocked/parked wit
 | `mapping/oracle-vectors.md` | 274 | LANDED (RNG incl. wrapper shift + f32/f64 bits; replay HEX/CZHEX/PHEX; SFML Packet BE encoding; key/button enums; string formatting) |
 | `mapping/gameplay.md` | 4455 | LANDED (walls, player, custom walls, status, RNG, tickers, timelines, HGUpdate, HexagonGame) |
 | `mapping/data-json.md` | 1580 | LANDED (SSVUtilsJson, Data/*, Assets, Config, LevelValidator, Joystick, BindControl, _RELEASE layout) |
+| `mapping/audio.md` | ~60 | LANDED (issue 025e — Core/Audio.cpp + Data/MusicData.cpp; the missing mapping row that let the subsystem be missed)
 | `mapping/rendering-menu.md` | — | in-flight |
 | `mapping/lua-api.md` | — | OPEN |
 | `mapping/networking.md` | 299 | LANDED (Shared.* structs/encode/decode + extractors + error-string model, Sodium.* map, contract corrections, verification) |
