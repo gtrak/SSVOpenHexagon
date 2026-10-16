@@ -5,12 +5,14 @@
 //! program on a live `glow::Context` and performs the real GL submission that
 //! a `VertexBatch::draw_call` describes: upload the vertex stream, set the
 //! view uniforms, `glDrawArrays(TRIANGLES, 0, count)`. The view transform is
-//! the SFML view (see [`crate::view::View::map_coords_to_pixel`]), drawn
-//! into a target whose pixel origin is top-left (SFML `sf::RenderWindow`
-//! convention). Since GL NDC y grows upward while the pixel y grows
-//! downward, the y term is negated:
-//! `ndc = (2 · R(rotation) · (world − center).x / viewSize.x,
-//! −2 · R(rotation) · (world − center).y / viewSize.y)`.
+//! the SFML view (see [`crate::view::View::map_coords_to_pixel`]):
+//! `ndc = (2·R(rotation)·(world − center).x / viewSize.x,
+//! −2·R(rotation)·(world − center).y / viewSize.y)`, drawn into a
+//! target whose pixel origin is top-left (SFML `sf::RenderWindow`
+//! convention — the world's y-down against GL's NDC y-up: SFML's own
+//! RenderTarget inverts the y, the issue-025c SG5 correction — the
+//! pre-025c shader drew the scene vertically flipped, undiscovered:
+//! only vertically-symmetric content had been drawn).
 //!
 //! Only exercised on a live GL context — headless tests cannot run it
 //! (D-011; the `golden_frames` integration test skips with a printed reason
@@ -22,9 +24,11 @@
 //! GLES translation ([`crate::shader::translate_for_gles`], gated on the
 //! context being GLES) so the program compiles on the android EGL context.
 //!//!
-//! `TODO(issue-009-wiring)`: the `Window`-backed `DrawTarget` (full frame
-//! pipeline: sprites, texts, rectangle shapes) wires into this uploader once
-//! the glyph-atlas / sprite-quad pipeline lands.
+//! `TODO(issue-009-wiring)` NOTE (issue-025c): the full-frame pipeline has
+//! landed — the `GlDrawTarget`'s rectangle pass submits through this
+//! uploader (the solid-colour vertex stream), and the sprite / text passes
+//! run through the `crate::gl_passes` textured-quad pipeline (the
+//! glyph-atlas / sprite-quad work this note anticipated).
 
 use glow::{Context, HasContext};
 use oh_math::ssvs::vector2::Vec2;
@@ -68,8 +72,15 @@ pub struct GlBatchUploader {
     u_rotation: glow::UniformLocation,
 }
 
-/// `sf::Vertex` stride: `position` (2 f32) + `color` (4 u8) = 12 bytes.
+/// `sf::Vertex` layout: `position` (vec2 f32 @ 0) + `color` (u8×4 @ 8) =
+/// 12 bytes (`draw::Vertex`, no padding). The color is a BYTE quad — the
+/// GL attribute is `UNSIGNED_BYTE` + normalized (the driver's 1/255 scale
+/// is the sf::Color→vec4 conversion; the pre-025c setup pointed the colour
+/// attribute at a float vec4 at offset 48 with a 24-byte stride — the
+/// scene batches drew with garbage positions/colours, the on-device black
+/// screen's other half, the issue-025c SG5 finding).
 const VERTEX_STRIDE: usize = std::mem::size_of::<Vertex>();
+const COLOR_OFFSET: i32 = std::mem::size_of::<oh_math::ssvs::Vec2>() as i32;
 
 fn glow_error() -> RenderError {
     RenderError::InvalidData
@@ -122,6 +133,9 @@ impl GlBatchUploader {
             gl.link_program(program);
         }
         if !unsafe { gl.get_program_link_status(program) } {
+            // The link log (the one-shot creation failure's diagnostic).
+            let log = unsafe { gl.get_program_info_log(program) };
+            eprintln!("[GlBatchUploader] the pass-through program failed to link: {log}");
             return Err(glow_error());
         }
         unsafe {
@@ -143,7 +157,7 @@ impl GlBatchUploader {
                 glow::UNSIGNED_BYTE,
                 true,
                 VERTEX_STRIDE as i32,
-                std::mem::size_of::<Vec2>() as i32,
+                COLOR_OFFSET,
             );
             gl.bind_vertex_array(None);
             gl.bind_buffer(glow::ARRAY_BUFFER, None);
@@ -201,6 +215,10 @@ fn compile_shader(gl: &Context, kind: u32, source: &str) -> Result<glow::Shader,
         gl.compile_shader(shader);
     }
     if !unsafe { gl.get_shader_compile_status(shader) } {
+        // The shader info log (the one-shot creation failure's
+        // diagnostic).
+        let log = unsafe { gl.get_shader_info_log(shader) };
+        eprintln!("[GlBatchUploader] the pass-through shader failed to compile: {log}");
         return Err(glow_error());
     }
     Ok(shader)

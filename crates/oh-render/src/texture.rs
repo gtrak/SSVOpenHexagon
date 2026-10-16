@@ -3,7 +3,8 @@
 //! These are the SFML `sf::Image` / `sf::Texture` / `sf::Sprite` /
 //! `sf::RenderTexture` analogues. The pixel buffer and transform math live
 //! here (headless-testable); the actual GL upload / framebuffer attach
-//! happens on a live `glow` context (see `window.rs`).
+//! happens on a live `glow` context (`crate::gl_passes` — the issue-025c
+//! texture pool upload + the sprite/text/rectangle passes).
 //!
 //! File I/O (`Texture::loadFromFile`, `Image::saveToFile`) is deliberately
 //! NOT here: pack/asset discovery and codec handling belong to `oh-assets`
@@ -344,6 +345,20 @@ impl Sprite {
     #[must_use]
     pub fn get_texture(&self) -> &Texture {
         &self.texture
+    }
+
+    /// `getTextureRect()` — the texture sub-rect the sprite's quad samples
+    /// (the full texture after `setTexture`, issue-025c SG2 surface).
+    #[must_use]
+    pub fn get_texture_rect(&self) -> FloatRect {
+        self.rect
+    }
+
+    /// `setTextureRect()` — the C++ `sf::Sprite::setTextureRect` (the
+    /// sub-rect the quad's UV maps; the port's issue-025c GL sprite pass
+    /// reads it — `sprite_quad`'s UV pin).
+    pub fn set_texture_rect(&mut self, rect: FloatRect) {
+        self.rect = rect;
     }
 
     // transform

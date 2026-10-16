@@ -288,6 +288,46 @@ pub fn map_window_event(event: &WindowEvent) -> Option<Event> {
 type EventHook = dyn FnMut(&winit::window::Window, &winit::event::WindowEvent);
 
 // ---------------------------------------------------------------------------
+// Release edges (issue 025c — the C++ `checkCloseBootScreens` seam)
+// ---------------------------------------------------------------------------
+
+/// The RELEASE events since the last drain — one entry per
+/// `KeyReleased` / `MouseButtonReleased` / `TouchEnded` the event fold
+/// applied (the issue-025c on-device finding: the C++'s boot-screen
+/// handlers are `onEvent`-driven — MenuGame.cpp ctor :518 `KeyReleased`,
+/// :617 `MouseButtonReleased`, :674 `JoystickButtonReleased` — while a
+/// fast hardware key tap (press + release inside one frame, the `adb`
+/// `input keyevent` shape) leaves NO trace in the per-frame
+/// `InputState` snapshot (both bits land between two `get_input_state`
+/// reads, so a snapshot diff misses the release; a ~100 ms touch tap
+/// straddles the frame boundary and is caught). The window's event fold
+/// appends to the shared sink; the menu state's `refresh_input`
+/// (the once-per-frame pre-update hook) drains it.
+#[derive(Debug, Default)]
+pub struct ReleasedEdges {
+    pub keys: std::collections::HashSet<Key>,
+    pub buttons: std::collections::HashSet<Button>,
+    pub fingers: std::collections::HashSet<u32>,
+}
+
+impl ReleasedEdges {
+    /// No release events recorded since the last drain.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty() && self.buttons.is_empty() && self.fingers.is_empty()
+    }
+
+    /// Take the recorded edges out (the `refresh_input` drain).
+    pub fn take(&mut self) -> Option<ReleasedEdges> {
+        if self.is_empty() {
+            None
+        } else {
+            std::mem::take(self).into()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Window
 // ---------------------------------------------------------------------------
 
@@ -354,6 +394,11 @@ pub struct Window {
     // finger is up. The field `None` = no sink (headless / pre-install).
     touch_position_sink:
         Option<std::sync::Arc<std::sync::RwLock<[Option<Vec2>; crate::input::FINGER_COUNT]>>>,
+    // issue 025c: the SHARED release-edge sink the menu state's
+    // `refresh_input` drains (the `ReleasedEdges` docs — the C++
+    // `checkCloseBootScreens`'s event-driven seam; `None` = not
+    // installed, the pre-install frames).
+    released_edges_sink: Option<std::sync::Arc<std::sync::RwLock<ReleasedEdges>>>,
 }
 
 impl Window {
@@ -461,6 +506,7 @@ impl Window {
             ensure_android_gl_failed: false,
             finger_down_positions: std::collections::HashMap::new(),
             touch_position_sink: None,
+            released_edges_sink: None,
         }
     }
 
@@ -481,6 +527,25 @@ impl Window {
         if let Some(sink) = &self.touch_position_sink {
             f(&mut sink.write().expect("touch sink poisoned"));
         }
+    }
+
+    /// The release-edge sink's write half (the release-event appends —
+    /// `None` = no-op; the `apply_event` release arms call it).
+    fn with_released_sink(&self, f: impl FnOnce(&mut ReleasedEdges)) {
+        if let Some(sink) = &self.released_edges_sink {
+            f(&mut sink.write().expect("released sink poisoned"));
+        }
+    }
+
+    /// issue 025c: install the shared release-edge sink (the windowed
+    /// client installs it once before the loop — the `Window` itself is
+    /// not shareable: its winit `EventLoop` field is not `Send`, as the
+    /// touch sink above).
+    pub fn set_released_edges_sink(
+        &mut self,
+        sink: std::sync::Arc<std::sync::RwLock<ReleasedEdges>>,
+    ) {
+        self.released_edges_sink = Some(sink);
     }
 
     /// C++ `getFingerDownPositions()` (SSVStart GameWindow.hpp:299-309):
@@ -852,9 +917,19 @@ impl Window {
                 window.focus = false;
             }
             Event::KeyPressed { code, .. } => window.input.set_key_pressed(code, true),
-            Event::KeyReleased { code } => window.input.set_key_pressed(code, false),
+            Event::KeyReleased { code } => {
+                window.input.set_key_pressed(code, false);
+                window.with_released_sink(|edges| {
+                    edges.keys.insert(code);
+                });
+            }
             Event::MouseButtonPressed { button } => window.input.set_button_pressed(button, true),
-            Event::MouseButtonReleased { button } => window.input.set_button_pressed(button, false),
+            Event::MouseButtonReleased { button } => {
+                window.input.set_button_pressed(button, false);
+                window.with_released_sink(|edges| {
+                    edges.buttons.insert(button);
+                });
+            }
             Event::MouseMoved { position } => window.mouse_pixel = position,
             Event::Resized { width, height } => window.set_size(width, height),
             Event::TouchBegan { finger, position } => {
@@ -881,6 +956,12 @@ impl Window {
                     if (finger as usize) < slots.len() {
                         slots[finger as usize] = None;
                     }
+                });
+                // The Android touch seam (the SFML window layer turns a
+                // touch release into the C++'s `MouseButtonReleased`)
+                // — the boot-screen handler sees it the same way.
+                window.with_released_sink(|edges| {
+                    edges.fingers.insert(finger);
                 });
             }
             Event::MouseWheelScrolled { .. } | Event::TextEntered { .. } => {}

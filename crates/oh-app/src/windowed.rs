@@ -110,15 +110,20 @@
 //!   deviation: the C++'s null-state crash is not reproduced).
 //! * **GL surface** — the [`GlDrawTarget`] clears the real framebuffer and
 //!   uploads the scene vertex batches (walls / player) through
-//!   [`oh_render::batching::GlBatchUploader`]; the text pass submits the
-//!   glyph quads through the persistent `GlParts` pipeline
-//!   (`oh_render::gl_text::TextRenderer`, lazily built on the first
-//!   `draw_text`); the sprite / rectangle passes are documented no-ops (the
-//!   texture GL uploads are issue 10's surface), and the screenshot save is
-//!   the REAL GL readback → PNG (the C++ `GameWindow::saveScreenshot`,
-//!   GameWindow.hpp:167-174 — `GlParts::save_screenshot`:
-//!   `glReadPixels` bottom-up → row flip → `png`-crate encode; D-004 SFML
-//!   entry).
+//!   [`oh_render::batching::GlBatchUploader`]; the sprite / text / rectangle
+//!   passes are the issue-025c GL passes (the `oh_render::gl_passes`
+//!   textured-quad pipeline — the pool texture's on-demand RGBA8 upload
+//!   (straight alpha, the SFML match) + the textured quad shader for the
+//!   sprite's transform/rect and the font-atlas glyphs (the per-glyph SFML
+//!   `Text::draw` geometry, `oh_render::glyphs`), the batch uploader's
+//!   solid-colour stream for the `RectangleShape` fill + outline ring —
+//!   plus the per-draw-call SFML blend application, `GlParts::apply_blend`),
+//!   and the screenshot save is the REAL GL readback → PNG (the C++
+//!   `GameWindow::saveScreenshot`, GameWindow.hpp:167-174 —
+//!   `GlParts::save_screenshot`: `glReadPixels` bottom-up → row flip →
+//!   `png`-crate encode; D-004 SFML entry). The per-stage pack-shader
+//!   binding (`RenderStates::shader`) stays the documented issue-10 gap:
+//!   the internal passes run, the pack's fragment shaders do not execute.
 
 use std::cell::RefCell;
 use std::path::Path;
@@ -132,9 +137,10 @@ use oh_game::seams::NullProfiles;
 use oh_lua::api::state::GameApiState;
 use oh_menu::layout::LinearFontHeight;
 use oh_menu::seams::{NewGameCallback, RichPresenceCallback, TriggerRefreshCallback};
+use oh_menu::states::States;
 use oh_menu::{AudioSink, MenuConfig, MenuGame, NoopNetwork, RealMenuAssets};
 use oh_render::batching::GlBatchUploader;
-use oh_render::draw::{RenderStates, Vertex};
+use oh_render::draw::{BlendMode, RenderStates, Vertex};
 use oh_render::font::{Font, Text};
 use oh_render::graphics::DrawTarget;
 use oh_render::input::InputState;
@@ -884,27 +890,45 @@ impl MenuConfig for ConfigMenuAdapter {
 
 /// `DrawTarget` over a live [`GlParts`] context (the windowed loop's real
 /// target). `clear_black` is a real `glClear`; `draw_vertices` submits the
-/// scene batches through [`GlBatchUploader`]; `draw_text` submits the glyph
-/// quads through the persistent [`GlParts::draw_text`] pipeline; the sprite /
-/// rectangle passes and the screenshot save are documented no-ops (module
-/// docs: GL surface / issue 10). `'a` is the window's borrow (the `GlParts`
-/// lives inside the `WindowedClient`'s window for the whole loop).
+/// scene batches through [`GlBatchUploader`]; the sprite / text /
+/// rectangle passes are the issue-025c GL passes (the
+/// [`oh_render::gl_passes::GlPasses`] textured-quad pipeline for sprite +
+/// font-atlas text, the batch uploader's solid-colour stream for
+/// rectangles — the module docs' GL-surface bullet), and the screenshot
+/// save is the REAL GL readback → PNG (the C++ `GameWindow::
+/// saveScreenshot`, GameWindow.hpp:167-174 — `GlParts::save_screenshot`:
+/// `glReadPixels` bottom-up → row flip → `png`-crate encode; D-004 SFML
+/// entry). `'a` is the window's borrow (the `GlParts` lives inside the
+/// `WindowedClient`'s window for the whole loop).
+///
+/// # State hygiene (the C++ per-draw-call `RenderStates`)
+///
+/// Every draw call re-applies its blend mode first (SFML applies the
+/// render states' blend BEFORE the draw — the C++'s `window->draw(x,
+/// states)` per call; the game's stages all use the `Alpha` default,
+/// `gl.enable(BLEND)` + `SRC_ALPHA, ONE_MINUS_SRC_ALPHA` — the pre-025c
+/// vertex pass left GL blending at the driver default (off), which the
+/// C++ never does: the correction is behaviour-neutral for the opaque
+/// scene batches and enables the C++'s alpha-blended flash / 3D layers on
+/// every platform). The program / texture / VAO / uniform re-application
+/// is inside each pass (`oh_render::gl_passes`), per draw call — the C++
+/// frame order (the caller's draw sequence) is untouched.
 pub struct GlDrawTarget<'a> {
     parts: &'a GlParts,
-    uploader: Option<GlBatchUploader>,
-    uploader_failed: bool,
     view: View,
 }
 
 impl<'a> GlDrawTarget<'a> {
     /// `parts` must outlive the target (the `WindowedClient`'s window does
     /// — the target is a per-frame scratch built and dropped in `tick`).
+    /// The GL objects (the batch uploader, the texture cache, the textured
+    /// program, the font atlas) live in the `GlParts` — the target only
+    /// borrows them (the SG5 state-hygiene pin: nothing is re-created per
+    /// frame).
     #[must_use]
     pub fn new(parts: &'a GlParts) -> Self {
         Self {
             parts,
-            uploader: None,
-            uploader_failed: false,
             view: View::new(
                 oh_math::ssvs::Vec2::new(parts.width as f32 / 2.0, parts.height as f32 / 2.0),
                 oh_math::ssvs::Vec2::new(parts.width as f32, parts.height as f32),
@@ -923,46 +947,87 @@ impl DrawTarget for GlDrawTarget<'_> {
         self.view = view;
     }
 
-    fn draw_vertices(&mut self, vertices: &[Vertex], _states: RenderStates) {
+    fn draw_vertices(&mut self, vertices: &[Vertex], states: RenderStates) {
         if vertices.is_empty() {
             return;
         }
+        // The C++ per-draw-call render states' blend (the `GlParts::
+        // apply_blend` doc: the pre-025c pass left GL blending off — the
+        // correction); the per-stage shader binding is the issue-10 GL
+        // surface (the batch uploads with the default program).
+        self.parts.apply_blend(states.blend_mode);
         // The per-stage `RenderStates` (shaders) are the issue-10 GL
-        // surface; the batch uploads with the default program.
-        match &mut self.uploader {
+        // surface; the batch uploads with the default program. The
+        // uploader is the `GlParts`-shared one (the SG5 audit: the
+        // pre-025c per-frame re-creation leaked the GL objects).
+        let mut slot = self.parts.batch();
+        let failed = slot.failed;
+        match slot.uploader.as_mut() {
             Some(u) => u.draw(&self.parts.gl, vertices, self.view),
-            None if !self.uploader_failed => match GlBatchUploader::new(&self.parts.gl) {
-                Ok(u) => {
-                    let mut u = u;
+            None if !failed => match GlBatchUploader::new(&self.parts.gl) {
+                Ok(mut u) => {
                     u.draw(&self.parts.gl, vertices, self.view);
-                    self.uploader = Some(u);
+                    slot.uploader = Some(u);
                 }
                 Err(e) => {
                     // Documented: the scene batch is not submitted (the GL
                     // program could not be created on this context).
                     eprintln!("[GlDrawTarget] GL batch uploader unavailable: {e}");
-                    self.uploader_failed = true;
+                    slot.failed = true;
                 }
             },
             None => {}
         }
     }
 
-    fn draw_sprite(&mut self, _sprite: &Sprite) {
-        // TODO(issue-10): the key-icon / particle sprites need texture
-        // uploads + a textured draw pass — the GL surface's remainder.
+    fn draw_sprite(&mut self, sprite: &Sprite) {
+        // C++ `window->draw(sprite)` — the default render states (the Alpha
+        // blend; the textured-quad pass, issue-025c SG2 — the sprite's
+        // position/rotation/scale/origin + texture rect + the pool texture's
+        // on-demand upload, `oh_render::gl_passes`).
+        self.parts.apply_blend(BlendMode::Alpha);
+        let mut passes = self.parts.passes();
+        passes.draw_sprite(&self.parts.gl, sprite, self.view);
     }
 
-    fn draw_text(&mut self, text: &Text, _states: RenderStates) {
-        // C++ `window->draw(*text)` — the glyph pass through the persistent
-        // `GlParts` text pipeline (the `RenderStates` shader is ignored, as
-        // the other passes do).
-        self.parts.draw_text(text, self.view);
+    fn draw_text(&mut self, text: &Text, states: RenderStates) {
+        // C++ `window->draw(text, states)` — the font-atlas text pass
+        // (issue-025c SG3): the per-glyph quads (the SFML `Text::draw`
+        // geometry, `oh_render::glyphs`'s layout) through the textured quad
+        // with the shared atlas texture (the raster cache + the growth
+        // re-upload live in the `GlParts`-shared `GlPasses` — NOT the
+        // per-frame scratch, the frame order stays the C++'s).
+        self.parts.apply_blend(states.blend_mode);
+        let mut passes = self.parts.passes();
+        passes.draw_text(&self.parts.gl, text, self.view);
     }
 
-    fn draw_rectangle(&mut self, _rect: &RectangleShape, _states: RenderStates) {
-        // TODO(issue-10): the level-info rectangle pass is the GL
-        // surface's remainder.
+    fn draw_rectangle(&mut self, rect: &RectangleShape, states: RenderStates) {
+        // C++ `window->draw(rectangleShape, states)` — the solid-colour
+        // pass (issue-025c SG4): the shape's fill quad + the outline ring's
+        // four quads (`oh_render::gl_passes::rectangle_vertices`), through
+        // the batch uploader's vertex-colour program.
+        let vertices = oh_render::gl_passes::rectangle_vertices(rect);
+        if vertices.is_empty() {
+            return;
+        }
+        self.parts.apply_blend(states.blend_mode);
+        let mut slot = self.parts.batch();
+        let failed = slot.failed;
+        match slot.uploader.as_mut() {
+            Some(u) => u.draw(&self.parts.gl, &vertices, self.view),
+            None if !failed => match GlBatchUploader::new(&self.parts.gl) {
+                Ok(mut u) => {
+                    u.draw(&self.parts.gl, &vertices, self.view);
+                    slot.uploader = Some(u);
+                }
+                Err(e) => {
+                    eprintln!("[GlDrawTarget] GL batch uploader unavailable: {e}");
+                    slot.failed = true;
+                }
+            },
+            None => {}
+        }
     }
 
     fn save_screenshot(&mut self, path: &str) {
@@ -1101,6 +1166,10 @@ struct MenuSlotAdapter {
     /// fonts / sprites / quads; the C++'s `draw` mutates its members, so
     /// the bridge needs a `RefCell`, as the game state's `AppDraw`).
     menu_draw: RefCell<crate::menu_draw::MenuDraw>,
+    /// The window's release-edge sink (the `oh_render::window::
+    /// ReleasedEdges` docs — the C++ `checkCloseBootScreens`'s
+    /// event-driven seam; the `refresh_input` docs, below).
+    released_edges: std::sync::Arc<std::sync::RwLock<oh_render::window::ReleasedEdges>>,
 }
 
 impl GameState for MenuSlotAdapter {
@@ -1117,6 +1186,51 @@ impl GameState for MenuSlotAdapter {
     }
 
     fn refresh_input(&self, input: &InputState) {
+        // C++ `checkCloseBootScreens` (MenuGame.cpp:360-380) via the
+        // `onEvent` handlers (MenuGame.cpp:518-537 `KeyReleased`,
+        // :617-637 `MouseButtonReleased`, :674-694
+        // `JoystickButtonReleased`): any key / mouse / joypad RELEASE
+        // advances the boot screen — gated on `ignoreInputs != 0` (the
+        // boot screens hold it, `setIgnoreAllInputs(1)` at
+        // MenuGame.cpp:357) + the `LoadingScreen` / `EpilepsyWarning`
+        // state. The C++ fires it PER RELEASE EVENT during `runEvents`
+        // (before the frame's update); the port's equivalent fires here —
+        // `refresh_input` is the once-per-frame hook the frame body runs
+        // before the update burst — over the window's RELEASE-EDGE SINK
+        // (`oh_render::window::ReleasedEdges`): one entry per release
+        // event the fold applied. The sink is essential (not just more
+        // robust): a fast hardware key tap — press + release inside one
+        // frame, the `adb input keyevent` shape — leaves no trace in the
+        // per-frame `InputState` snapshot (both bits land between two
+        // `get_input_state` reads), so a snapshot diff would miss it
+        // (the issue-025c on-device finding: `input keyevent 66` never
+        // advanced the LoadingScreen). The Android touch seam: SFML's
+        // window layer converts a touch release into a mouse event (the
+        // C++'s `MouseButtonReleased`), so a finger release is the same
+        // event. One advance per frame: the C++'s per-event double-fire
+        // on two releases between two polls is an edge case the game's
+        // boot flow never exercises (the first release advances; the
+        // boot screen then re-arms its own gate).
+        // (The issue-025c on-device finding: the `MenuGame::
+        // advance_boot_screen` port existed but had no app-layer call
+        // site — the boot screens were uncloseable on the windowed
+        // path.)
+        if let Some(edges) = self
+            .released_edges
+            .write()
+            .expect("released sink poisoned")
+            .take()
+        {
+            if !edges.is_empty()
+                && self.menu.shared().borrow().ignore_inputs > 0
+                && matches!(
+                    self.menu.state(),
+                    States::LoadingScreen | States::EpilepsyWarning
+                )
+            {
+                self.menu.advance_boot_screen();
+            }
+        }
         self.input_manager.borrow_mut().refresh(input);
     }
 
@@ -1693,6 +1807,17 @@ impl WindowedClient {
             [None; oh_render::input::FINGER_COUNT],
         ));
         window.set_touch_position_sink(touch_sink.clone());
+        // issue 025c: the release-edge sink (the C++
+        // `checkCloseBootScreens` event-driven seam — the
+        // `oh_render::window::ReleasedEdges` docs): the window's event
+        // fold appends one entry per key / button / finger RELEASE;
+        // the menu state's `refresh_input` drains it (the boot screens
+        // advance on any release while `ignore_inputs` holds). Desktop
+        // and Android: the fold appends identically (the scripted-
+        // input tests' key events flow through it).
+        let released_sink: std::sync::Arc<std::sync::RwLock<oh_render::window::ReleasedEdges>> =
+            std::sync::Arc::new(std::sync::RwLock::new(Default::default()));
+        window.set_released_edges_sink(released_sink.clone());
         let renderer: Option<std::sync::Arc<dyn oh_game::renderer::Renderer + 'static>> =
             Some(std::sync::Arc::new(WindowTouchRenderer {
                 positions: touch_sink,
@@ -1878,6 +2003,7 @@ impl WindowedClient {
             menu: menu.clone(),
             input_manager: menu_manager.clone(),
             menu_draw,
+            released_edges: released_sink.clone(),
         });
         let game_adapter: Rc<dyn GameState> = Rc::new(GameSlotAdapter {
             game: game.clone(),
@@ -2393,4 +2519,84 @@ pub fn frame(
     // C++ `runFPS` (GameEngine.hpp:96-101).
     timer.run_frame_time();
     timer.run_fps();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oh_menu::seams::{FakeAssets, FakeConfig, NoopNetwork};
+    use oh_render::window::ReleasedEdges;
+    use std::sync::RwLock;
+
+    /// The issue-025c boot-screen wiring (the `MenuSlotAdapter::
+    /// refresh_input` docs): a key-RELEASE event while the boot screen
+    /// holds `ignore_inputs` advances LoadingScreen →
+    /// EpilepsyWarning → `play_locally()` (ETLPNewBoot — no profiles in
+    /// the fake assets), and no advance happens without a release event
+    /// (a held key is not a release). The events are driven through the
+    /// RELEASE-EDGE SINK — the event-level seam a same-frame
+    /// press+release (the `adb input keyevent` shape) reaches even
+    /// though the per-frame `InputState` snapshot never shows the key.
+    #[test]
+    fn release_edge_advances_the_boot_screens() {
+        let menu = Rc::new(MenuGame::new(
+            FakeAssets::new(),
+            FakeConfig::new(),
+            Rc::new(NoopNetwork),
+            oh_menu::RecordingAudio::new(),
+            None,
+            None,
+            None,
+            None,
+            Rc::new(oh_menu::layout::LinearFontHeight),
+        ));
+        let f = oh_render::font::Font::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../_RELEASE/Assets/OpenSquare-Regular.ttf"),
+        )
+        .expect("OpenSquare-Regular.ttf must load");
+        let released_edges = Arc::new(RwLock::new(ReleasedEdges::default()));
+        let adapter = MenuSlotAdapter {
+            menu: menu.clone(),
+            input_manager: Rc::new(RefCell::new(Manager::new())),
+            menu_draw: RefCell::new(crate::menu_draw::MenuDraw::new(&f, &f)),
+            released_edges: released_edges.clone(),
+        };
+
+        // The C++ ctor body holds the boot gate (MenuGame.cpp:357).
+        assert_eq!(adapter.menu.state(), States::LoadingScreen);
+        assert_eq!(adapter.menu.shared().borrow().ignore_inputs, 1);
+
+        // Enter HELD (no release event yet) — no advance.
+        let mut down = InputState::new();
+        down.set_key_pressed(Key::ENTER, true);
+        adapter.refresh_input(&down);
+        assert_eq!(adapter.menu.state(), States::LoadingScreen);
+
+        // Enter RELEASED (the `KeyReleased` event; the snapshot may have
+        // never shown the key pressed — a same-frame tap) —
+        // LoadingScreen → EpilepsyWarning; the gate re-arms (the C++
+        // `checkCloseBootScreens` `setIgnoreAllInputs(1)`).
+        released_edges
+            .write()
+            .expect("sink poisoned")
+            .keys
+            .insert(Key::ENTER);
+        adapter.refresh_input(&InputState::new());
+        assert_eq!(adapter.menu.state(), States::EpilepsyWarning);
+        assert_eq!(adapter.menu.shared().borrow().ignore_inputs, 1);
+
+        // A finger RELEASE (the Android touch seam — the SFML window
+        // layer's `MouseButtonReleased`) — EpilepsyWarning →
+        // `play_locally()` → ETLPNewBoot (the fake assets have no
+        // profiles); the gate clears.
+        released_edges
+            .write()
+            .expect("sink poisoned")
+            .fingers
+            .insert(0);
+        adapter.refresh_input(&InputState::new());
+        assert_eq!(adapter.menu.state(), States::ETLPNewBoot);
+        assert_eq!(adapter.menu.shared().borrow().ignore_inputs, 0);
+    }
 }

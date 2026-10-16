@@ -1,7 +1,8 @@
 //! `sf::Font` + `sf::Text` — TTF metrics, glyph rasterization, and text layout.
 //!
-//! Backed by `fontdue` 0.9 (pure-Rust TTF; glyph bitmaps become GL glyph
-//! atlases on a live context — see `window.rs`). The layout math (character
+//! Backed by `fontdue` 0.9 (pure-Rust TTF; glyph bitmaps become the GL
+//! glyph atlas on a live context — `crate::glyphs`'s layout +
+//! `crate::gl_passes`'s upload, issue-025c SG3). The layout math (character
 //! size, origin, scale, rotation, fill/outline colour + thickness, and the
 //! `getLocalBounds` / `getGlobalBounds` distinction the `drawText_*` code
 //! relies on) lives here and is headless-testable.
@@ -82,6 +83,10 @@ impl Font {
 }
 
 /// `sf::Text` — a string rendered with a font + transform + colours.
+///
+/// The GL text pass (issue-025c SG3, `crate::gl_passes`) consumes this
+/// through the `get_*` surface + [`Self::transform_point`] (the C++
+/// `sf::Text::draw`'s local-glyph geometry, `crate::glyphs`'s layout pin).
 #[derive(Clone, Debug)]
 pub struct Text {
     font: Font,
@@ -293,6 +298,14 @@ impl Text {
             scaled.x * sin + scaled.y * cos,
         );
         Vec2::new(position.x + rotated.x, position.y + rotated.y)
+    }
+
+    /// `getTransform().transformPoint(p)` — the C++ `sf::Transformable`
+    /// transform applied to a local point (the GL text pass's quad
+    /// corners, issue-025c SG3; the `Sprite::transform_point` analogue).
+    #[must_use]
+    pub fn transform_point(&self, p: Vec2) -> Vec2 {
+        Self::apply_transform(p, self.position, self.origin, self.scale, self.rotation)
     }
 }
 

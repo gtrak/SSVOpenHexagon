@@ -68,7 +68,7 @@
 //!   stays off (the C++ Android build has no ImGui — `#ifndef
 //!   SSVOH_ANDROID` in Imgui.cpp).
 
-use std::cell::{Cell, RefCell};
+use std::cell::{RefCell, RefMut};
 use std::num::NonZero;
 use std::panic::AssertUnwindSafe;
 
@@ -99,20 +99,33 @@ pub struct GlParts {
     pub gl: glow::Context,
     pub width: u32,
     pub height: u32,
-    /// The persistent text pipeline (lazily built on the first
-    /// [`Self::draw_text`] — the glyph textures / program are NOT rebuilt
-    /// per frame; interior-mutable because `GlParts` is shared by
-    /// reference for the window's lifetime).
-    text: RefCell<Option<crate::gl_text::TextRenderer>>,
-    /// The text pipeline's build failed (the `draw_text` failure report is
-    /// once, not per call).
-    text_failed: Cell<bool>,
+    /// The issue-025c draw passes (the texture cache, the textured-quad
+    /// program, the font atlas) — shared across frames (the per-frame
+    /// `GlDrawTarget` borrows it via [`Self::passes`]; the single-threaded
+    /// GL — the `GlParts` contract — needs no interior synchronization).
+    passes: RefCell<crate::gl_passes::GlPasses>,
+    /// The shared batch-uploader slot (the `GlBatchUploader`'s
+    /// program / VAO / VBO live for the window's life — the pre-025c
+    /// per-frame `GlDrawTarget` re-created them EVERY frame and never
+    /// deleted them: the GL object-name leak the issue-025c SG5 audit
+    /// found, the `GlDrawTarget` borrows it via [`Self::batch`]).
+    batch: RefCell<BatchSlot>,
+
     /// Keep-alives (drop order: glow context, glutin context, surface, window,
     /// display last — so the GL context drops before its surface/window).
     _context: PossiblyCurrentContext,
     _surface: Surface<WindowSurface>,
     _window: WinitWindow,
     _display: Display,
+}
+
+/// The `GlParts`-owned `GlBatchUploader` slot: lazily created on the first
+/// `draw_vertices` / `draw_rectangle`, re-created never (a creation failure
+/// is sticky for the window's life — the documented no-op batch).
+#[derive(Default)]
+pub struct BatchSlot {
+    pub uploader: Option<crate::batching::GlBatchUploader>,
+    pub failed: bool,
 }
 
 /// `GlBackend` = a winit `EventLoop` + the `GlParts` that keep its context live.
@@ -228,10 +241,8 @@ fn finish_gl(
         gl,
         width: width.get(),
         height: height.get(),
-        // The windows-testing text pipeline (lazy; built on the first
-        // draw_text — the fields' docs above).
-        text: RefCell::new(None),
-        text_failed: Cell::new(false),
+        passes: RefCell::new(crate::gl_passes::GlPasses::new()),
+        batch: RefCell::new(BatchSlot::default()),
         _context: context,
         _surface: surface,
         _window: window,
@@ -301,6 +312,53 @@ impl GlParts {
     #[must_use]
     pub fn proc_address(&self, name: &std::ffi::CStr) -> *const () {
         self._display.get_proc_address(name) as *const ()
+    }
+
+    /// The issue-025c draw passes (module docs) — the per-frame
+    /// `GlDrawTarget` borrows this for the texture cache (the sprite /
+    /// text / rectangle passes' uploads, the later 025c sub-goals); the
+    /// `RefMut` is the `RefCell`'s interior-mutability hand-off — the
+    /// single-threaded GL makes the borrow sound.
+    #[must_use]
+    pub fn passes(&self) -> RefMut<'_, crate::gl_passes::GlPasses> {
+        self.passes.borrow_mut()
+    }
+
+    /// The shared batch-uploader slot (the `GlParts` contract — the
+    /// single-threaded GL makes the `RefMut` borrow sound; the
+    /// `GlDrawTarget`'s vertex pass lazily creates the uploader here so
+    /// it survives across frames, the SG5 audit's leak fix).
+    #[must_use]
+    pub fn batch(&self) -> RefMut<'_, BatchSlot> {
+        self.batch.borrow_mut()
+    }
+
+    /// The SFML per-draw-call blend application (issue-025c SG2 — the C++
+    /// `RenderWindow` applies the render states' blend BEFORE every draw):
+    /// `BlendMode::Alpha` = `SRC_ALPHA, ONE_MINUS_SRC_ALPHA` (the C++'s
+    /// `sf::BlendFactor` pair for `sf::BlendMode::Alpha`), `Add` = `ONE,
+    /// ONE`, `None` = blending off. The `GlDrawTarget`'s draw calls all go
+    /// through this (the pre-025c vertex pass left GL blending at the
+    /// driver default (off), which the C++ never does — the correction is
+    /// behaviour-neutral for the opaque scene batches and enables the
+    /// C++'s alpha-blended flash / 3D layers on every platform).
+    pub fn apply_blend(&self, blend: crate::draw::BlendMode) {
+        let gl = &self.gl;
+        unsafe {
+            match blend {
+                crate::draw::BlendMode::Alpha => {
+                    gl.enable(glow::BLEND);
+                    gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
+                }
+                crate::draw::BlendMode::Add => {
+                    gl.enable(glow::BLEND);
+                    gl.blend_func(glow::ONE, glow::ONE);
+                }
+                crate::draw::BlendMode::None => {
+                    gl.disable(glow::BLEND);
+                }
+            }
+        }
     }
 
     /// The live `GL_VERSION` string (proves a real context is current).
@@ -414,30 +472,16 @@ impl GlParts {
             .expect("glutin Surface::swap_buffers failed");
     }
 
-    /// C++ `window->draw(text)` — the text pass (the `fontdue` glyph quads
-    /// through [`crate::gl_text::TextRenderer`]; the pipeline is lazily
-    /// built on the first call and kept for the window's lifetime). The
-    /// `DrawTarget` caller's `RenderStates` shader is ignored, as the other
-    /// passes do.
+    /// C++ `window->draw(text)` — the text pass, delegated to the
+    /// issue-025c pipeline ([`Self::passes`]: the font-atlas glyphs through
+    /// `gl_passes::GlPasses::draw_text`; the atlas/program live for the
+    /// window's lifetime). The `DrawTarget` caller's `RenderStates` shader
+    /// is ignored, as the other passes do. (Reconcile note, D-027: the
+    /// windows-testing `gl_text::TextRenderer` pipeline was retired in
+    /// favor of this one — on-device-verified on the arm64 phone, integrated
+    /// with the sprite/rectangle passes and the texture-cache hardening.)
     pub fn draw_text(&self, text: &Text, view: View) {
-        if text.is_empty() || self.text_failed.get() {
-            return;
-        }
-        let gl = &self.gl;
-        let mut cell = self.text.borrow_mut();
-        match cell.as_mut() {
-            Some(renderer) => renderer.draw(gl, text, view),
-            None => match crate::gl_text::TextRenderer::new(gl) {
-                Ok(mut renderer) => {
-                    renderer.draw(gl, text, view);
-                    *cell = Some(renderer);
-                }
-                Err(e) => {
-                    eprintln!("[GlParts] GL text renderer unavailable: {e}");
-                    self.text_failed.set(true);
-                }
-            },
-        }
+        self.passes().draw_text(&self.gl, text, view);
     }
 }
 

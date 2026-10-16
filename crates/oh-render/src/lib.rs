@@ -44,7 +44,8 @@ pub mod draw;
 pub mod error;
 pub mod font;
 pub mod gl;
-pub mod gl_text;
+pub mod gl_passes;
+pub mod glyphs;
 pub mod graphics;
 pub mod input;
 pub mod input_manager;
@@ -67,6 +68,11 @@ pub use draw::{BlendMode, DrawCall, PrimitiveType, RenderStates, Vertex, VertexB
 pub use error::RenderError;
 pub use font::{Font, Text};
 pub use gl::GlParts;
+pub use gl_passes::{rectangle_vertices, GlPasses};
+pub use glyphs::{
+    dilate_alpha, sprite_quad, text_quads, uv_rect, CellRect, FillEntry, GlyphAtlas, GlyphStore,
+    SpriteQuad, TextQuad,
+};
 pub use graphics::{
     death_flash_effect, draw_background, draw_background_menu, draw_frame, draw_key_icons,
     draw_level_info, draw_particles, draw_swap_particles, draw_trail_particles, init_flash_effect,

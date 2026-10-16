@@ -164,7 +164,13 @@ impl Shared {
         // C++ ctor default state is `LoadingScreen`.
         Self {
             state: States::LoadingScreen,
-            ignore_inputs: 0,
+            // C++ ctor BODY `setIgnoreAllInputs(1)` (MenuGame.cpp:357 —
+            // "To close the load results with any key"; the member-init
+            // `ignoreInputs{0}` at MenuGame.cpp:192 is overwritten by the
+            // ctor body before the `onEvent` boot-screen handlers register
+            // at :518/:617/:674). The boot screens hold this gate until
+            // `checkCloseBootScreens` decrements it back to 0.
+            ignore_inputs: 1,
             focus_held: false,
             was_focus_held: false,
             touch_delay: 0.0,

@@ -90,11 +90,11 @@
 //! (`titleBar.png`, `creditsBar1.png`, `creditsBar2.png`,
 //! `onlineIcon*.png`, `epilepsyWarning.png`) are not loaded by the port
 //! yet (the `oh-assets` texture table is the 15c gap); the bridge emits
-//! the full C++ layout either way, and issue 10's GL target renders
-//! sprites as documented no-ops until the texture table lands. The
-//! placeholder *size* (1 px) only shifts the `getGlobalBottom`-relative
+//! the full C++ layout either way, and issue-025c's GL sprite pass
+//! renders them (the 1×1 placeholder texture uploads as-is — the
+//! placeholder *size* still shifts the `getGlobalBottom`-relative
 //! transforms (the "CURRENT PROFILE" line, the credits bars) by the
-//! real-texture-size delta.
+//! real-texture-size delta until the texture table lands).
 
 use std::rc::Rc;
 

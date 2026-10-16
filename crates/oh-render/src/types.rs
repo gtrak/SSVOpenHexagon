@@ -206,6 +206,19 @@ impl RectangleShape {
         self.scale
     }
 
+    /// `setRotation(sf::degrees(deg))`.
+    pub fn set_rotation(&mut self, deg: f32) {
+        self.rotation = deg;
+    }
+
+    /// `getRotation().asDegrees()` — the C++ `sf::Transformable::getRotation`
+    /// (the issue-025c SG4 rectangle pass reads it — the `get_global_bounds`
+    /// corner loop's rotation was previously private-only).
+    #[must_use]
+    pub fn get_rotation(&self) -> f32 {
+        self.rotation
+    }
+
     /// `setScale`.
     pub fn set_scale(&mut self, scale: Vec2) {
         self.scale = scale;
