@@ -1216,6 +1216,29 @@ impl<F: FnMut(&mut Window)> ApplicationHandler<()> for RunHandler<'_, F> {
         } else {
             el.set_control_flow(ControlFlow::Poll);
         }
+        // winit-android (issue 025i): re-request a redraw after EVERY frame.
+        // The C++ `GameWindow::run` (GameWindow.hpp:117-150) draws
+        // UNCONDITIONALLY each iteration (`while (isRunning) { update; draw;
+        // display; }` — there is no "only redraw if a redraw was requested"
+        // gate; the SFML `setFramerateLimit` sleep is the only throttle). On
+        // desktop winit the `WaitUntil`/vsync already runs a frame per loop
+        // iteration, so this is a no-op there. On Android, however, winit's
+        // event loop (`poll_events_with_timeout`) SKIPS the frame AND the
+        // input read on a `PollEvent::Wake` that carries no pending redraw
+        // request (the early-return that `pending_redraw` gates); the native
+        // window's compositor wakes the app looper every frame once a level
+        // is actively compositing, so the loop then spins with no frames and
+        // no input consumed — the 103%-CPU ANR (hypothesis 1: frame pacing /
+        // the event loop). Re-requesting the redraw each frame keeps the
+        // C++'s unconditional per-iteration draw (and the per-iteration input
+        // read, `GameWindow::runEvents`) alive on Android. The C++ has no
+        // redraw-request concept (it always draws); this request only keeps
+        // the winit-android loop faithful to that — a documented deviation
+        // (register row, issue 28's rule).
+        #[cfg(target_os = "android")]
+        if let Some(gl) = self.window.gl.as_ref() {
+            gl.winit_window().request_redraw();
+        }
     }
 }
 
