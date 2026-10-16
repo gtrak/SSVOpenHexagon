@@ -60,6 +60,11 @@ pub struct HexagonDialogBox {
     input_box: bool,
     input_box_password: bool,
     input: String,
+    /// C++ `txtDialog`'s character size — `create` measures the line height
+    /// and width AT `charSize` (C++ `Utils::getFontHeight(txtDialog,
+    /// charSize)` sets the size on the text, HexagonDialogBox.cpp:44-47),
+    /// so the draw pass renders the lines at this size.
+    char_size: u32,
 }
 
 impl HexagonDialogBox {
@@ -80,7 +85,7 @@ impl HexagonDialogBox {
     pub fn create(
         &mut self,
         output: &str,
-        _char_size: u32,
+        char_size: u32,
         frame_size: f32,
         draw_mode: DBoxDraw,
         x_pos: f32,
@@ -99,6 +104,7 @@ impl HexagonDialogBox {
         self.input_box = input_box;
         self.input_box_password = false;
         self.input.clear();
+        self.char_size = char_size;
 
         // C++ splits `output` on '\n'.
         let mut dialog_text = Vec::new();
@@ -328,5 +334,51 @@ impl HexagonDialogBox {
     #[must_use]
     pub fn text_top_offset(&self) -> f32 {
         self.line_height * FONT_HEIGHT_DIFFERENTIAL
+    }
+
+    // ---- draw-pass accessors (slice 13b: the bridge's dialog text/quad
+    // pass reads these; C++ `HexagonDialogBox` members of the same names) ----
+
+    #[must_use]
+    pub fn draw_mode(&self) -> DBoxDraw {
+        self.draw_mode
+    }
+    #[must_use]
+    pub fn x_pos(&self) -> f32 {
+        self.x_pos
+    }
+    #[must_use]
+    pub fn y_pos(&self) -> f32 {
+        self.y_pos
+    }
+    #[must_use]
+    pub fn frame_size(&self) -> f32 {
+        self.frame_size
+    }
+    #[must_use]
+    pub fn double_frame_size(&self) -> f32 {
+        self.double_frame_size
+    }
+    #[must_use]
+    pub fn line_height(&self) -> f32 {
+        self.line_height
+    }
+    #[must_use]
+    pub fn dialog_width(&self) -> f32 {
+        self.dialog_width
+    }
+    /// C++ `txtDialog`'s character size (set by `create`, see the field).
+    #[must_use]
+    pub fn char_size(&self) -> u32 {
+        self.char_size
+    }
+    #[must_use]
+    pub fn input_box(&self) -> bool {
+        self.input_box
+    }
+    /// C++ `dialogText` (the `\n`-split lines).
+    #[must_use]
+    pub fn dialog_text(&self) -> &[String] {
+        &self.dialog_text
     }
 }

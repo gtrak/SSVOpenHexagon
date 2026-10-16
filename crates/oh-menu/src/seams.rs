@@ -48,9 +48,20 @@ pub struct LevelInfo {
     pub pack_id: String,
     pub name: String,
     pub author: String,
+    /// C++ `LevelData.description` (the level-selection left panel).
+    pub description: String,
     pub style_id: String,
     pub difficulty_mults: Vec<f32>,
     pub lua_script_path: String,
+    /// C++ `LevelData.unscored` (the leaderboard / RANKED gating).
+    pub unscored: bool,
+    /// C++ `LevelData.validators` / `validatorsWithoutPackId` — keyed by the
+    /// EXACT bit pattern of the difficulty mult (floats are not `Eq`/`Hash`
+    /// in Rust; the C++ hash likewise depends only on the bits, and every
+    /// lookup uses the very float that was inserted, so `to_bits()` keys
+    /// are faithful).
+    pub validators: std::collections::BTreeMap<u32, String>,
+    pub validators_without_pack_id: std::collections::BTreeMap<u32, String>,
     pub music_name: String,
     pub music_author: String,
     pub music_album: String,
@@ -68,6 +79,54 @@ impl LevelInfo {
         }
         self.difficulty_mults[index as usize]
     }
+
+    /// C++ `LevelData::getValidator(diffMult)` (`validators.at(diffMult)`
+    /// — the C++ asserts the key exists; the port `expect`s: the map is
+    /// built from the same `difficulty_mults` vector the lookup keys on).
+    #[must_use]
+    pub fn get_validator(&self, diff_mult: f32) -> &str {
+        self.validators
+            .get(&diff_mult.to_bits())
+            .expect("validator for an inserted difficulty mult")
+    }
+
+    /// C++ `LevelData::getValidatorWithoutPackId(diffMult)`.
+    #[must_use]
+    pub fn get_validator_without_pack_id(&self, diff_mult: f32) -> &str {
+        self.validators_without_pack_id
+            .get(&diff_mult.to_bits())
+            .expect("validator (without pack id) for an inserted difficulty mult")
+    }
+}
+
+/// C++ `hg::PackData` fields the menu draw reads (`name` / `author` /
+/// `version` — the level-selection left panel's "PACK" block).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PackDataInfo {
+    pub name: String,
+    pub author: String,
+    pub version: i32,
+}
+
+/// The `StyleData` fields `MenuGame::draw`'s background pass reads
+/// (`MenuGame.cpp:5774-5787`; the C++ reads them from its `styleData`
+/// member, which `setIndex` copied from the current level's style,
+/// `MenuGame.cpp:2957-2958`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StyleBackground {
+    /// C++ `styleData.getColors()` (after `computeColors`).
+    pub colors: Vec<Color>,
+    /// C++ `styleData.bgTileRadius`.
+    pub bg_tile_radius: f32,
+    /// C++ `styleData.BGRotOff` (degrees).
+    pub bg_rot_off: f32,
+    /// C++ `styleData.getMainColor()`.
+    pub main_color: Color,
+    /// C++ `styleData.getCapColorResult()` — `None` when the cap colour
+    /// indexes a missing colour (the C++ `drawBackgroundMenu` would
+    /// null-deref there; the port draws the cap ring in black, the
+    /// `draw_background_menu` default for a missing cap).
+    pub cap_color: Option<Color>,
 }
 
 /// The asset load results shown on the [`crate::states::States::LoadingScreen`]
@@ -93,6 +152,18 @@ pub trait MenuAssets {
     fn style_colors(&self, level_id: &str) -> Vec<Color>;
     /// `styleData.getTextColor()` for the level's style.
     fn style_text_color(&self, level_id: &str) -> Color;
+    /// C++ `styleData` (the level's style after `computeColors`) — the
+    /// fields `MenuGame::draw`'s background pass reads
+    /// (`MenuGame.cpp:5774-5787` → `StyleData::drawBackgroundMenu`,
+    /// `HGGraphics.cpp:122-141`). `None` when the level or its style is
+    /// unknown (the C++ would be a null-deref; the port then draws no
+    /// background sectors — the `colors.is_empty()` guard in
+    /// `oh_render::graphics::draw_background_menu`).
+    fn style_background(&self, level_id: &str) -> Option<StyleBackground>;
+    /// C++ `assets.getPackData(packId)` — the `name` / `author` / `version`
+    /// the level-selection left panel shows (empty `PackDataInfo` when the
+    /// pack id is unknown).
+    fn pack_data_info(&self, pack_id: &str) -> PackDataInfo;
     /// `loadInfo` (§11.16 counters + error list).
     fn load_results(&self) -> LoadResults;
     /// `getLocalProfilesSize()` / `getLocalProfileNames()`.
@@ -118,6 +189,19 @@ pub trait MenuAssets {
     fn find_pack_id_by_name(&self, name: &str) -> Option<String>;
     /// C++ `assets.packHasLevels(packID)` (MenuGame.cpp:1709).
     fn pack_has_levels(&self, pack_id: &str) -> bool;
+    // ---- menu-draw surface (slice 13b)
+    /// C++ `assets.getPackIdsWithMissingDependencies()` — the "CURRENT
+    /// PROFILE" warning block (`MenuGame.cpp:5804-5816`).
+    fn pack_ids_with_missing_dependencies(&self) -> Vec<String>;
+    /// C++ `assets.getLocalProfileByName(name)` != nullptr → the total
+    /// survival time in the C++ `formatSurvivalTime` semantics (`int` sum
+    /// of the per-level `int`-truncated scores, `MenuGame.cpp:3861-3883`);
+    /// `None` when the profile does not exist (the C++ `nullptr` — the
+    /// survival-time line is then not drawn).
+    fn profile_total_survival_time(&self, name: &str) -> Option<i32>;
+    /// C++ `assets.getCurrentLocalProfile().getScore(validator)` — the
+    /// local personal best (0 when unset, `MenuGame.cpp:5489-5500`).
+    fn local_profile_score(&self, validator: &str) -> f32;
 }
 
 /// The config surface `MenuGame` reads/writes. Every key maps 1:1 to a C++
@@ -314,10 +398,61 @@ pub enum NetEvent {
 /// behavior; the concrete client is supplied by the app layer. The online
 /// menu items and `update()` event handling operate purely through this
 /// trait.
+/// C++ `Database::ProcessedScore` (plus `OwnScore.position`) — the
+/// leaderboard entries `drawLevelSelectionLeftSide` renders
+/// (`MenuGame.cpp:5581-5676`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScoreEntry {
+    /// C++ `ProcessedScore.userName`.
+    pub user_name: String,
+    /// C++ `ProcessedScore.scoreTimestamp` (unix seconds).
+    pub score_timestamp: i64,
+    /// C++ `ProcessedScore.scoreValue`.
+    pub score_value: f64,
+    /// C++ `OwnScore.position` (1-based rank; the top-scores loop passes the
+    /// loop index — only `getOwnScore` supplies a stored position).
+    pub position: i32,
+}
+
 pub trait NetworkClient {
     fn state(&self) -> ConnectionState;
     /// Whether the client has valid RT keys (login/register/delete).
     fn has_rt_keys(&self) -> bool;
+    /// C++ `HexagonClient::isLevelSupportedByServer` (HexagonClient.cpp:
+    /// 986-990) — membership in the server-synced validator set; the set is
+    /// EMPTY while offline (the issue-017 client fills it after
+    /// `CONNECT`), so the offline default is `false` — the RANKED badge and
+    /// the online leaderboard paths render exactly as the C++ does when
+    /// disconnected. Issue 017 overrides this with the real set.
+    fn is_level_supported_by_server(&self, _validator: &str) -> bool {
+        false
+    }
+    /// C++ `HexagonClient::getLoginName` (HexagonClient.cpp:953-956) —
+    /// `std::optional<std::string>`; `None` when not logged in.
+    fn login_name(&self) -> Option<String> {
+        None
+    }
+    // ---- leaderboard cache (C++ `leaderboardCache`, MenuGame.cpp:341;
+    // the C++ `Database::LeaderboardCache` lives in `Database.cpp` — issue
+    // 017 territory; offline it always reports "no information", which is
+    // the default below, so the left panel renders the C++ offline
+    // fallbacks: "..." / "PLEASE LOG IN TO LOAD LEADERBOARD") ----
+    /// C++ `leaderboardCache->hasInformation(validator)`.
+    fn has_score_information(&self, _validator: &str) -> bool {
+        false
+    }
+    /// C++ `leaderboardCache->getScores(validator)` (empty offline).
+    fn scores(&self, _validator: &str) -> Vec<ScoreEntry> {
+        Vec::new()
+    }
+    /// C++ `leaderboardCache->getOwnScore(validator)` (`nullptr` offline).
+    fn own_score(&self, _validator: &str) -> Option<ScoreEntry> {
+        None
+    }
+    /// C++ `hexagonClient.tryRequestTopScoresAndOwnScore(validator)` +
+    /// `leaderboardCache->requestedScores(validator)` — the draw-side
+    /// request kick (MenuGame.cpp:5571-5575); a no-op seam offline.
+    fn request_scores(&self, _validator: &str) {}
     fn connect(&self);
     fn disconnect(&self);
     fn try_login(&self, username: &str, password: &str);
@@ -392,14 +527,25 @@ impl FakeAssets {
         let mut ids = Vec::new();
         for name in level_names {
             let id = format!("{pack_id}_{name}");
+            let mut validators = std::collections::BTreeMap::new();
+            let mut validators_without_pack_id = std::collections::BTreeMap::new();
+            for dm in [0.5f32, 1.0, 1.5, 2.0] {
+                validators.insert(dm.to_bits(), format!("validator-{id}-{dm}"));
+                validators_without_pack_id
+                    .insert(dm.to_bits(), format!("validator-nopack-{name}-{dm}"));
+            }
             let lvl = LevelInfo {
                 id: id.clone(),
                 pack_id: pack_id.to_string(),
                 name: name.to_string(),
                 author: "author".to_string(),
+                description: String::new(),
                 style_id: "default".to_string(),
                 difficulty_mults: vec![0.5, 1.0, 1.5, 2.0],
                 lua_script_path: format!("{pack_id}/level.lua"),
+                unscored: false,
+                validators,
+                validators_without_pack_id,
                 music_name: String::new(),
                 music_author: String::new(),
                 music_album: String::new(),
@@ -462,6 +608,23 @@ impl MenuAssets for FakeAssets {
             .copied()
             .unwrap_or_default()
     }
+    fn style_background(&self, _level_id: &str) -> Option<StyleBackground> {
+        // The fake carries no `StyleData`; the draw bridge then skips the
+        // background sectors (the `colors.is_empty()` guard).
+        None
+    }
+    fn pack_data_info(&self, pack_id: &str) -> PackDataInfo {
+        let inner = self.inner.borrow();
+        PackDataInfo {
+            name: inner
+                .pack_names
+                .get(pack_id)
+                .cloned()
+                .unwrap_or_else(|| pack_id.to_string()),
+            author: String::new(),
+            version: 0,
+        }
+    }
     fn load_results(&self) -> LoadResults {
         self.inner.borrow().load.clone()
     }
@@ -517,6 +680,22 @@ impl MenuAssets for FakeAssets {
             .levels_by_pack
             .get(pack_id)
             .is_some_and(|levels| !levels.is_empty())
+    }
+    fn pack_ids_with_missing_dependencies(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn profile_total_survival_time(&self, name: &str) -> Option<i32> {
+        // The fake's profiles carry no scores; the profile EXISTS when its
+        // name is listed (the C++ `getLocalProfileByName` != nullptr).
+        self.inner
+            .borrow()
+            .profiles
+            .iter()
+            .any(|p| p == name)
+            .then_some(0)
+    }
+    fn local_profile_score(&self, _validator: &str) -> f32 {
+        0.0
     }
 }
 

@@ -111,6 +111,11 @@ pub struct Shared {
     pub bg_skew_y: f32,
     pub menu_half_height: f32,
     pub entering_text_offset: f32,
+    /// C++ `levelDetailsOffset` (MenuGame.hpp:421) — the level-selection
+    /// left-panel slide offset; mutated by `drawLevelSelectionLeftSide`
+    /// (`calcMenuOffset`, MenuGame.cpp:5321) and reset by
+    /// `updateLevelSelectionDrawingParameters` (MenuGame.cpp:4298).
+    pub level_details_offset: f32,
     pub char_sizes: CharSizes,
     pub rotation_speed: f32,
     // ---- colors ----
@@ -194,6 +199,7 @@ impl Shared {
             bg_skew_y: 0.6,
             menu_half_height: 0.0,
             entering_text_offset: 0.0,
+            level_details_offset: 0.0,
             char_sizes: char_sizes(false),
             rotation_speed: 0.0,
             menu_text_color: Color::WHITE,

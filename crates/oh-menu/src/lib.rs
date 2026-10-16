@@ -38,10 +38,11 @@ pub mod seams;
 pub mod states;
 
 pub use menu_game::{LevelDrawer, MenuGame, Shared};
+pub use oh_menu_system::{Category, Item, Menu};
 pub use real::RealMenuAssets;
 pub use seams::{
-    AudioSink, ConfigValues, ConnectionState, FakeAssets, FakeConfig, MenuAssets, MenuConfig,
-    NetEvent, NetworkClient, NewGameCallback, NoopNetwork, RecordingAudio, RichPresenceCallback,
-    TriggerRefreshCallback,
+    AudioSink, ConfigValues, ConnectionState, FakeAssets, FakeConfig, LevelInfo, MenuAssets,
+    MenuConfig, NetEvent, NetworkClient, NewGameCallback, NoopNetwork, PackDataInfo,
+    RecordingAudio, RichPresenceCallback, ScoreEntry, StyleBackground, TriggerRefreshCallback,
 };
 pub use states::{DialogInputState, PackChange, States};

@@ -673,6 +673,16 @@ impl Assets {
         self.profile_data_map.len()
     }
 
+    /// C++ `getLocalProfileNames` (Assets.cpp:1500-1511) — the profile names
+    /// in `std::map` (byte-sorted) order, mirroring the C++ `std::map`.
+    #[must_use]
+    pub fn get_profile_names(&self) -> Vec<String> {
+        self.profile_data_map
+            .values()
+            .map(|p| p.get_name().to_string())
+            .collect()
+    }
+
     // ---- shader registry (C++ `getShader*` / `isValidShaderId`) ---------
 
     /// C++ `getShader(packId, id)` → the loaded shader, or `None` (+ log).

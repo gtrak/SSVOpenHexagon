@@ -37,11 +37,12 @@ pub const BASE_SCROLL_SPEED: f32 = 30.0;
 /// §11.1 `difficultyBumpEffectMax`.
 pub const DIFFICULTY_BUMP_EFFECT_MAX: f32 = 24.0;
 
-/// C++ `getFPSMult()` — `60.f / window.getFPS()`. `MenuGame` computes this
-/// from its per-frame timescale; the offset helpers take it as a parameter.
+/// C++ `getFPSMult()` — `200.f / window.getFPS()` (MenuGame.cpp:5985-5989;
+/// the menu's offset animations run at the C++'s 200-unit rate — NOT the
+/// game's 60-unit `60.f / fps` frametime).
 #[must_use]
 pub fn fps_mult(fps: f32) -> f32 {
-    60.0 / fps
+    200.0 / fps
 }
 
 /// §11.13 `calcMenuOffset(offset, maxOffset, revertOffset, speedUp)` —
@@ -141,8 +142,11 @@ pub struct CharSizes {
 }
 
 /// §11.11 `refreshCamera` — the aspect-dependent char sizes + the fixed
-/// constructor sizes (§11.2). `instructions_medium` is not set by either the
-/// constructor list or `refreshCamera`; it keeps a fixed default of 24.
+/// constructor sizes (§11.2). `instructions_medium` is never set by either
+/// the constructor or `refreshCamera`; it keeps the SFML `sf::Text` default
+/// character size of 30 (D-014: the C++ `txtInstructionsMedium{
+/// .font{"", openSquare}}`, MenuGame.cpp:196 — the constructor's `sf::Text`
+/// default size is 30, not 24).
 #[must_use]
 pub fn char_sizes(four_by_three: bool) -> CharSizes {
     if four_by_three {
@@ -157,7 +161,7 @@ pub fn char_sizes(four_by_three: bool) -> CharSizes {
             menu_tiny: 9.0,
             profile: 32.0,
             instructions_big: 46.0,
-            instructions_medium: 24.0,
+            instructions_medium: 30.0,
             instructions_small: 20.0,
             entering_text: 54.0,
             selection_big: 24.0,
@@ -178,7 +182,7 @@ pub fn char_sizes(four_by_three: bool) -> CharSizes {
             menu_tiny: 14.0,
             profile: 32.0,
             instructions_big: 46.0,
-            instructions_medium: 24.0,
+            instructions_medium: 30.0,
             instructions_small: 20.0,
             entering_text: 54.0,
             selection_big: 28.0,

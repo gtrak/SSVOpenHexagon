@@ -95,6 +95,13 @@ impl ItemBase {
         &mut self.offset
     }
 
+    /// `ItemBase::getOffset` (read-only copy — the draw pass reads the
+    /// offset before it mutates it through [`Self::offset_mut`]).
+    #[must_use]
+    pub fn offset(&self) -> f32 {
+        self.offset
+    }
+
     /// C++ `increasable = true` in the Slider/Toggle constructors.
     pub(crate) fn mark_increasable(&mut self) {
         self.increasable = true;
@@ -133,6 +140,9 @@ pub trait Item: Any {
     }
     fn can_increase(&self) -> bool {
         self.base().can_increase()
+    }
+    fn offset(&self) -> f32 {
+        self.base().offset()
     }
     fn menu(&self) -> Rc<Menu> {
         self.base().menu()

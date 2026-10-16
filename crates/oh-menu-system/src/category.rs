@@ -261,6 +261,13 @@ impl Category {
         self.offset.borrow_mut()
     }
 
+    /// `Category::getOffset` (read-only copy — the draw pass reads the
+    /// offset before it mutates it through [`Self::get_offset_mut`]).
+    #[must_use]
+    pub fn get_offset(&self) -> f32 {
+        *self.offset.borrow()
+    }
+
     /// crate-local access for [`crate::controller::Controller::update`]
     pub(crate) fn items(&self) -> Ref<'_, Vec<Rc<RefCell<dyn Item>>>> {
         self.items.borrow()

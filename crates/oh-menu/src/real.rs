@@ -13,16 +13,22 @@ use std::sync::Arc;
 use oh_assets::Assets;
 use oh_math::hg::color::Color;
 
-use crate::seams::{LevelInfo, LoadResults, MenuAssets};
+use crate::seams::{LevelInfo, LoadResults, MenuAssets, PackDataInfo, StyleBackground};
 
 /// `MenuAssets` over a loaded `oh_assets::Assets`.
 ///
 /// `Arc`-shared: the windowed app builds ONE `Assets` and shares it between
 /// the engine composition and this seam (the C++ shares one `HGAssets`
 /// between `HexagonGame` and `MenuGame`, main.cpp:381/:434).
+///
+/// `current_profile` mirrors the C++ `HGAssets::pSetCurrent` bookkeeping
+/// (the profile *editor* API is deferred by `oh-assets`; this seam records
+/// the selection so the menu's "CURRENT PROFILE:" line and the local
+/// personal best read the selected profile's data, as the C++ does).
 #[derive(Debug)]
 pub struct RealMenuAssets {
     pub assets: Arc<Assets>,
+    current_profile: std::cell::RefCell<Option<String>>,
 }
 
 impl RealMenuAssets {
@@ -30,13 +36,17 @@ impl RealMenuAssets {
     pub fn new(root: impl AsRef<Path>) -> Result<Self, oh_assets::FatalLoadError> {
         Ok(Self {
             assets: Arc::new(Assets::new(root, true, false)?),
+            current_profile: std::cell::RefCell::new(None),
         })
     }
 
     /// Wrap an already-loaded `Assets` (no second load).
     #[must_use]
     pub fn from_arc(assets: Arc<Assets>) -> Self {
-        Self { assets }
+        Self {
+            assets,
+            current_profile: std::cell::RefCell::new(None),
+        }
     }
 }
 
@@ -58,17 +68,25 @@ impl MenuAssets for RealMenuAssets {
 
     fn level(&self, level_id: &str) -> Option<LevelInfo> {
         let l = self.assets.get_level_data(level_id)?;
+        // C++ `assets.getMusicData(levelData.packId, levelData.musicId)`
+        // (MenuGame.cpp:5545-5556): missing music → the C++ default-
+        // constructed `MusicData` (empty name/author/album).
+        let music = self.assets.get_music_data(&l.pack_id, &l.music_id);
         Some(LevelInfo {
             id: l.id.clone(),
             pack_id: l.pack_id.clone(),
             name: l.name.clone(),
             author: l.author.clone(),
+            description: l.description.clone(),
             style_id: l.style_id.clone(),
             difficulty_mults: l.difficulty_mults.clone(),
             lua_script_path: l.lua_script_path.clone(),
-            music_name: String::new(),
-            music_author: String::new(),
-            music_album: String::new(),
+            unscored: l.unscored,
+            validators: l.validators.clone(),
+            validators_without_pack_id: l.validators_without_pack_id.clone(),
+            music_name: music.map(|m| m.name.clone()).unwrap_or_default(),
+            music_author: music.map(|m| m.author.clone()).unwrap_or_default(),
+            music_album: music.map(|m| m.album.clone()).unwrap_or_default(),
         })
     }
 
@@ -96,6 +114,26 @@ impl MenuAssets for RealMenuAssets {
         *style.get_text_color()
     }
 
+    fn style_background(&self, level_id: &str) -> Option<StyleBackground> {
+        let style = self.style_of(level_id)?;
+        Some(StyleBackground {
+            colors: style.get_colors().to_vec(),
+            bg_tile_radius: style.bg_tile_radius,
+            bg_rot_off: style.bg_rot_off,
+            main_color: *style.get_main_color(),
+            cap_color: style.get_cap_color_result(),
+        })
+    }
+
+    fn pack_data_info(&self, pack_id: &str) -> PackDataInfo {
+        let p = self.assets.get_pack_data(pack_id);
+        PackDataInfo {
+            name: p.map(|d| d.name.clone()).unwrap_or_default(),
+            author: p.map(|d| d.author.clone()).unwrap_or_default(),
+            version: p.map(|d| d.version).unwrap_or(0),
+        }
+    }
+
     fn load_results(&self) -> LoadResults {
         let li = self.assets.get_load_results();
         LoadResults {
@@ -113,18 +151,22 @@ impl MenuAssets for RealMenuAssets {
     // The profile-name list / editor API are not yet exposed by `oh-assets`;
     // these are documented no-op seams (matching the C++ `p*` deferral).
     fn profile_names(&self) -> Vec<String> {
-        Vec::new()
+        // C++ `getLocalProfileNames` (Assets.cpp:1500-1511) — name-keyed
+        // store in `std::map` (byte-sorted) order.
+        self.assets.get_profile_names()
     }
     fn has_current_profile(&self) -> bool {
-        false
+        self.current_profile.borrow().is_some()
     }
     fn current_profile_name(&self) -> Option<String> {
-        None
+        self.current_profile.borrow().clone()
     }
     fn is_level_favorite(&self, _level_id: &str) -> bool {
         false
     }
-    fn profile_set_current(&self, _name: &str) {}
+    fn profile_set_current(&self, name: &str) {
+        *self.current_profile.borrow_mut() = Some(name.to_string());
+    }
     fn profile_create(&self, _name: &str) {}
     fn profile_remove(&self, _name: &str) {}
     fn reload_assets(&self, _entire_pack: bool, _current_level_id: &str) {}
@@ -142,5 +184,43 @@ impl MenuAssets for RealMenuAssets {
     }
     fn pack_has_levels(&self, pack_id: &str) -> bool {
         self.assets.pack_has_levels(pack_id)
+    }
+    fn pack_ids_with_missing_dependencies(&self) -> Vec<String> {
+        self.assets
+            .get_pack_ids_with_missing_dependencies()
+            .iter()
+            .cloned()
+            .collect()
+    }
+    fn profile_total_survival_time(&self, name: &str) -> Option<i32> {
+        // C++ `formatSurvivalTime(data)` (MenuGame.cpp:3861-3883):
+        // `int time{0}; for (auto& s : data->getScores()) time += s.second;`
+        // — each `float` score truncates to `int` on the compound
+        // assignment, then the `int` sums.
+        let profile = self.assets.get_profile_data(name)?;
+        Some(profile.get_scores().values().map(|v| *v as i32).sum())
+    }
+    fn local_profile_score(&self, validator: &str) -> f32 {
+        // C++ `assets.getCurrentLocalProfile().getScore(validator)`
+        // (MenuGame.cpp:5494): 0 when no current profile / unset score.
+        self.current_profile
+            .borrow()
+            .as_ref()
+            .and_then(|name| self.assets.get_profile_data(name))
+            .map(|p| p.get_score(validator))
+            .unwrap_or(0.0)
+    }
+}
+
+impl RealMenuAssets {
+    /// The level's `StyleData` after `computeColors` (`None` when the
+    /// level or its style is unknown — the C++ would be a null-deref;
+    /// the port returns `None` and the draw bridge uses the defaults).
+    fn style_of(&self, level_id: &str) -> Option<oh_data::StyleData> {
+        let l = self.assets.get_level_data(level_id)?;
+        let style = self.assets.get_style_data(&l.pack_id, &l.style_id)?;
+        let mut style = style.clone();
+        style.compute_colors();
+        Some(style)
     }
 }
