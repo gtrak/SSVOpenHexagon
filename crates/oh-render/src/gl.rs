@@ -467,9 +467,16 @@ impl GlParts {
     /// single-threaded GL, the `GlParts` contract; issue 25, on-device
     /// finding: the swap was never wired and no GL platform presented).
     pub fn present(&self) {
-        self._surface
-            .swap_buffers(&self._context)
-            .expect("glutin Surface::swap_buffers failed");
+        if let Err(e) = self._surface.swap_buffers(&self._context) {
+            // The android lifecycle: `BadSurface` at pause/lock (the
+            // EGLSurface destroyed under the app). The C++ SFML window
+            // survives focus loss; a panic here aborts the whole game on
+            // the phone's first screen lock (the on-device finding: the
+            // config-save clean exit at the lock). Log once per surface
+            // state and continue — the next `resumed` recreates the
+            // surface path; desktop GL surfaces don't hit this.
+            eprintln!("[GlParts] swap_buffers failed ({e:?}) — frame not presented (android pause/lifecycle)");
+        }
     }
 
     /// C++ `window->draw(text)` — the text pass, delegated to the
