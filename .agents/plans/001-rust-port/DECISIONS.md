@@ -699,3 +699,13 @@ does not run on wasm); (2) miniz_oxide replay deflate on web only (the
 D-006 zlib pin is system-zlib, libz-sys does not build on wasm);
 (3) v1 scope without net/steam/discord/audio. The main refactor is an
 `oh-vfs` trait (fetch-into-memory VFS on web) routing oh-assets/oh-config.
+
+## D-029 — wasm/web work happens off master (user-driven)
+
+The user is building the wasm/web port on a separate branch with a
+different agent (2026-10-16). Master/orchestration lanes stay on the
+Android port + the native trunk; `26-wasm-web.md` (D-028) is the reference
+spec on master. Lanes must NOT create wasm branches or start the 26x
+sub-lanes without an explicit go — any web-side refactor that would touch
+shared crates (the proposed `oh-vfs` routing of oh-assets/oh-config) is
+the user's branch's call, and master-side changes there need coordination.
