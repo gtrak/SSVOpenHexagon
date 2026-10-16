@@ -64,6 +64,15 @@ and the Android storage model.
 ## Verification
 
 - `cargo check --workspace --target aarch64-linux-android` green.
-- An APK that installs and boots to the first frame on a device/emulator
-  (MANUAL on-device check documented; emulator AVD optional).
+- **Real hardware (2026-10-16, the sanctioned on-device target)**: moto g
+  power (2021), Android 11, arm64-v8a, WiFi debugging — adb
+  `192.168.10.138:38721` (mDNS-discovered; paired once). The emulator is
+  TORN DOWN: its gfxstream/SwiftShader backend ballooned to 28.8 GB host
+  RSS (OOM postmortem) and a lane's raw `-gpu auto` launches made CUDA
+  allocations that disturbed other GPU workloads — software emulation is
+  no longer used while real hardware is available (the bounded
+  `tools/infra/emulator-start.sh` stays for emulator-less contingency).
+- Real-device findings fixed: the LuaJIT `__clear_cache` dlopen failure
+  (cshim 23d68ee3); extraction 222/222 verified on device; the full C++
+  boot order runs (Profiles/Replays created, NoSteam/NoDiscord continue).
 - Linux gate stays 4/4 green.
