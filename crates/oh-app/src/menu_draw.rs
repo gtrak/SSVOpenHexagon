@@ -460,10 +460,12 @@ impl MenuDraw {
         // C++ `refreshCamera`'s camera half (:3141-3159):
         // `backgroundCamera` keeps its constructor view ({0,0} ×
         // {sizeX * zoom, sizeY * zoom}) and gains the aspect skew;
-        // `overlayCamera.setView({{0, 0}, {w, h}})` — the virtual menu
-        // space (the constructor's config-based view is replaced by the
-        // time the constructor finishes, since it ends with
-        // `refreshCamera()`).
+        // `overlayCamera.setView(sf::View{sf::FloatRect({0, 0}, {w, h})})` —
+        // the SFML `View(FloatRect)` ctor centres the view at the rect's
+        // centre, so the overlay view is centre `(w/2, h/2)`, size `(w, h)`:
+        // a top-left-origin mapping of the menu's `[0, w] × [0, h]` layout.
+        // (The constructor's config-based view is replaced by the time the
+        // constructor finishes, since it ends with `refreshCamera()`.)
         let (size_x, size_y, zoom) = {
             let s = shared.borrow();
             let c = s.config();
@@ -475,7 +477,7 @@ impl MenuDraw {
         self.background_camera
             .set_skew(Vec2::new(1.0, if fbt { 0.8 } else { 0.6 }));
         self.overlay_camera
-            .set_view(View::new(Vec2::new(0.0, 0.0), Vec2::new(w, h)));
+            .set_view(View::new(Vec2::new(w / 2.0, h / 2.0), Vec2::new(w, h)));
 
         // C++ `refreshCamera`'s char-size half (:3207-3244): set the
         // aspect-dependent sizes on the fonts + `updateHeight` the cached

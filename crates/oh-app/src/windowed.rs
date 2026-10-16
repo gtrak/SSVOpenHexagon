@@ -110,10 +110,12 @@
 //!   deviation: the C++'s null-state crash is not reproduced).
 //! * **GL surface** — the [`GlDrawTarget`] clears the real framebuffer and
 //!   uploads the scene vertex batches (walls / player) through
-//!   [`oh_render::batching::GlBatchUploader`]; the sprite / text /
-//!   rectangle passes are documented no-ops (the texture/font GL uploads
-//!   are issue 10's surface), and the screenshot save is the REAL GL
-//!   readback → PNG (the C++ `GameWindow::saveScreenshot`,
+//!   [`oh_render::batching::GlBatchUploader`]; the text pass submits the
+//!   glyph quads through the persistent `GlParts` pipeline
+//!   (`oh_render::gl_text::TextRenderer`, lazily built on the first
+//!   `draw_text`); the sprite / rectangle passes are documented no-ops (the
+//!   texture GL uploads are issue 10's surface), and the screenshot save is
+//!   the REAL GL readback → PNG (the C++ `GameWindow::saveScreenshot`,
 //!   GameWindow.hpp:167-174 — `GlParts::save_screenshot`:
 //!   `glReadPixels` bottom-up → row flip → `png`-crate encode; D-004 SFML
 //!   entry).
@@ -855,9 +857,10 @@ impl MenuConfig for ConfigMenuAdapter {
 
 /// `DrawTarget` over a live [`GlParts`] context (the windowed loop's real
 /// target). `clear_black` is a real `glClear`; `draw_vertices` submits the
-/// scene batches through [`GlBatchUploader`]; the sprite / text / rectangle
-/// passes and the screenshot save are documented no-ops (module docs:
-/// GL surface / issue 10). `'a` is the window's borrow (the `GlParts`
+/// scene batches through [`GlBatchUploader`]; `draw_text` submits the glyph
+/// quads through the persistent [`GlParts::draw_text`] pipeline; the sprite /
+/// rectangle passes and the screenshot save are documented no-ops (module
+/// docs: GL surface / issue 10). `'a` is the window's borrow (the `GlParts`
 /// lives inside the `WindowedClient`'s window for the whole loop).
 pub struct GlDrawTarget<'a> {
     parts: &'a GlParts,
@@ -923,9 +926,11 @@ impl DrawTarget for GlDrawTarget<'_> {
         // uploads + a textured draw pass — the GL surface's remainder.
     }
 
-    fn draw_text(&mut self, _text: &Text, _states: RenderStates) {
-        // TODO(issue-10): the text pass (font-atlas glyphs) is the GL
-        // surface's remainder.
+    fn draw_text(&mut self, text: &Text, _states: RenderStates) {
+        // C++ `window->draw(*text)` — the glyph pass through the persistent
+        // `GlParts` text pipeline (the `RenderStates` shader is ignored, as
+        // the other passes do).
+        self.parts.draw_text(text, self.view);
     }
 
     fn draw_rectangle(&mut self, _rect: &RectangleShape, _states: RenderStates) {

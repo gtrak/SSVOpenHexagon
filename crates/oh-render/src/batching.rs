@@ -5,10 +5,12 @@
 //! program on a live `glow::Context` and performs the real GL submission that
 //! a `VertexBatch::draw_call` describes: upload the vertex stream, set the
 //! view uniforms, `glDrawArrays(TRIANGLES, 0, count)`. The view transform is
-//! the SFML view (see [`crate::view::View::map_coords_to_pixel`]):
-//! `ndc = 2 · R(rotation) · (world − center) / viewSize`, drawn into a
-//! target whose pixel origin is top-left (SFML `sf::RenderWindow`
-//! convention).
+//! the SFML view (see [`crate::view::View::map_coords_to_pixel`]), drawn
+//! into a target whose pixel origin is top-left (SFML `sf::RenderWindow`
+//! convention). Since GL NDC y grows upward while the pixel y grows
+//! downward, the y term is negated:
+//! `ndc = (2 · R(rotation) · (world − center).x / viewSize.x,
+//! −2 · R(rotation) · (world − center).y / viewSize.y)`.
 //!
 //! Only exercised on a live GL context — headless tests cannot run it
 //! (D-011; the `golden_frames` integration test skips with a printed reason
@@ -41,7 +43,7 @@ void main() {
     float s = sin(u_rotation);
     float c = cos(u_rotation);
     d = vec2(d.x * c - d.y * s, d.x * s + d.y * c);
-    gl_Position = vec4(2.0 * d.x / u_size.x, 2.0 * d.y / u_size.y, 0.0, 1.0);
+    gl_Position = vec4(2.0 * d.x / u_size.x, -2.0 * d.y / u_size.y, 0.0, 1.0);
     v_color = a_color;
 }
 "#;
