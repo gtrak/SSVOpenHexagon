@@ -32,8 +32,8 @@ use crate::layout::{
 };
 use crate::menu;
 use crate::seams::{
-    AudioSink, IgnoreInputsCallback, LevelInfo, MenuAssets, MenuConfig, NetEvent, NetworkClient,
-    NewGameCallback, RichPresenceCallback, TriggerRefreshCallback,
+    AudioSink, IgnoreInputsCallback, LevelInfo, MenuAssets, MenuConfig, MenuTouch, NetEvent,
+    NetworkClient, NewGameCallback, RichPresenceCallback, TriggerRefreshCallback,
 };
 use crate::states::{DialogInputState, PackChange, States};
 
@@ -141,6 +141,10 @@ pub struct Shared {
     config: Rc<dyn MenuConfig>,
     network: Rc<dyn NetworkClient>,
     audio: Rc<dyn AudioSink>,
+    /// issue 025f — the C++ ctor's `window` reference's touch half
+    /// (the 9-zone grid's `getFingerDownCount` / `getFingerDownPositions`
+    /// data, MenuGame.cpp:2802-2835).
+    touch: Rc<dyn MenuTouch>,
     new_game: Option<NewGameCallback>,
     trigger_refresh: Option<TriggerRefreshCallback>,
     rich_presence: Option<RichPresenceCallback>,
@@ -155,6 +159,7 @@ impl Shared {
         config: Rc<dyn MenuConfig>,
         network: Rc<dyn NetworkClient>,
         audio: Rc<dyn AudioSink>,
+        touch: Rc<dyn MenuTouch>,
         new_game: Option<NewGameCallback>,
         trigger_refresh: Option<TriggerRefreshCallback>,
         rich_presence: Option<RichPresenceCallback>,
@@ -228,6 +233,7 @@ impl Shared {
             config,
             network,
             audio,
+            touch,
             new_game,
             trigger_refresh,
             rich_presence,
@@ -252,6 +258,11 @@ impl Shared {
     #[must_use]
     pub fn audio(&self) -> &Rc<dyn AudioSink> {
         &self.audio
+    }
+
+    #[must_use]
+    pub fn touch(&self) -> &Rc<dyn MenuTouch> {
+        &self.touch
     }
 
     /// C++ `window.stop()` (EXIT items).
@@ -1002,6 +1013,7 @@ impl MenuGame {
         config: Rc<dyn MenuConfig>,
         network: Rc<dyn NetworkClient>,
         audio: Rc<dyn AudioSink>,
+        touch: Rc<dyn MenuTouch>,
         new_game: Option<NewGameCallback>,
         trigger_refresh: Option<TriggerRefreshCallback>,
         rich_presence: Option<RichPresenceCallback>,
@@ -1013,6 +1025,7 @@ impl MenuGame {
             config,
             network,
             audio,
+            touch,
             new_game,
             trigger_refresh,
             rich_presence,
@@ -1084,6 +1097,17 @@ impl MenuGame {
     #[must_use]
     pub fn state(&self) -> States {
         self.shared.borrow().state
+    }
+
+    /// C++ `getWindowWidth()` / `getWindowHeight()` (MenuGame.cpp:2804-
+    /// 2807, 3131-3168) — the logical window size (the `width` / `height`
+    /// members `refresh_camera` recomputes from the config size): the
+    /// space the 9-zone touch grid's third-math and the C++'s
+    /// `getFingerDownPositions()` coordinates run in.
+    #[must_use]
+    pub fn window_size(&self) -> (f32, f32) {
+        let s = self.shared.borrow();
+        (s.w, s.h)
     }
 
     /// The name of the currently selected item in the active menu
@@ -1791,6 +1815,53 @@ impl MenuGame {
 
         if let Some(m) = menu {
             m.update();
+        }
+
+        // C++ `MenuGame::update` 9-zone touch grid (MenuGame.cpp:2802-2835)
+        // — the phone's touch-only menu control (the port of the C++ block
+        // verbatim): with exactly ONE finger down, the screen thirds
+        // dispatch — the middle band's x-thirds to `leftAction` /
+        // `okAction` / `rightAction` (the port's `ok_action` in the
+        // entering-text states validates the entered name and creates the
+        // profile — the touch submit the system IME's Done key can't
+        // deliver, 025f), the top / bottom bands to `upAction` /
+        // `downAction`. Finger data is the platform's `MenuTouch` seam
+        // (the C++'s `window.getFingerDownCount()` /
+        // `getFingerDownPositions()` — LOGICAL coordinates, the C++'s
+        // `getWindowWidth()` / `getWindowHeight()` member space, here
+        // `s.w` / `s.h`); headless / desktop feed `NoopTouch` (never
+        // fires — the C++ desktop's `Touch::isDown`-always-false
+        // equivalent), and the desktop MOUSE is deliberately NOT wired to
+        // the zones (the `MouseButtonReleased` exec path would
+        // double-fire — the operator's later-step parity, seam note, 025f).
+        // Un-gated by state, exactly as the C++ block. Each action sets
+        // `touchDelay = 50` itself (the C++'s debounce, e.g.
+        // MenuGame.cpp:2198). Outside the `borrow_mut` block above: the
+        // action methods re-borrow `shared`.
+        let touch = self.shared.borrow().touch().clone();
+        if touch.finger_down_count() == 1 {
+            let (w, h) = self.window_size();
+            let w_third = w / 3.0;
+            let w_lt = w - w_third;
+            let h_third = h / 3.0;
+            let h_lt = h - h_third;
+            for p in touch.finger_down_positions() {
+                if p.y > h_third && p.y < h_lt {
+                    if p.x > 0.0 && p.x < w_third {
+                        self.left_action();
+                    } else if p.x < w && p.x > w_lt {
+                        self.right_action();
+                    } else if p.x > w_third && p.x < w_lt {
+                        self.ok_action();
+                    }
+                } else {
+                    if p.y < h_third {
+                        self.up_action();
+                    } else if p.y > h_lt {
+                        self.down_action();
+                    }
+                }
+            }
         }
 
         // C++ `backgroundCamera.turn(levelStatus.rotationSpeed * 10.f)` — the

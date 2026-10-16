@@ -216,6 +216,9 @@ fn windowed_client() -> WindowedClient {
         &common::release_dir(),
         Arc::new(oh_steam::SteamManager::new(Box::new(oh_steam::NoSteam))),
         None, // no Discord (headless test; build() creates the real IPC manager when None)
+        // issue 025f (D-031) — the soft-input controller: the no-op (no
+        // android-activity in the host tests — the desktop's controller).
+        Arc::new(oh_app::windowed::NoOpSoftInput),
     )
     .expect("windowed build")
 }
@@ -486,6 +489,9 @@ fn scripted_pause_key_toggles_debug_pause() {
         &common::release_dir(),
         Arc::new(oh_steam::SteamManager::new(Box::new(oh_steam::NoSteam))),
         None, // no Discord (headless test; build() creates the real IPC manager when None)
+        // issue 025f (D-031) — the soft-input controller: the no-op (the
+        // desktop's controller — no android-activity in the host tests).
+        Arc::new(oh_app::windowed::NoOpSoftInput),
     )
     .expect("windowed build");
     client.boot(Some("cube"), Some("apeirogon"), None);

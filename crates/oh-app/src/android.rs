@@ -46,6 +46,15 @@
 //! * **Audio** — the no-op `NoopAudio` menu sink + the engine's `None`
 //!   audio seam (the C++ Android build's audio is the documented AAudio
 //!   follow-up, D-026 plan: not a blocker for this issue's scope).
+//! * **Soft input (the system IME)** — issue 025f (D-031): the C++'s
+//!   Android text input came from SFML's own Android layer (the IME
+//!   wiring lived in SFML, not in this repo) — the port's platform
+//!   addition: the `ImeController` (the android-activity's
+//!   `show_soft_input(true)` / `hide_soft_input(false)` on the menu's
+//!   `is_entering_text` transition edge, once per transition — the
+//!   `windowed::MenuSlotAdapter::refresh_input` docs). The character
+//!   pipeline is the issue-025d chain (the `KeyboardInput.text` field →
+//!   the entered-text sink → `TextEntered` → `enteredChars`).
 //!
 //! # Exit
 //!
@@ -64,7 +73,36 @@ use winit::platform::android::activity::AndroidApp;
 use winit::platform::android::EventLoopBuilderExtAndroid;
 
 use crate::lifecycle::{create_folder_if_non_existant, load_and_reapply, ConfigSaveGuard};
-use crate::windowed::WindowedClient;
+use crate::windowed::{SoftInput, WindowedClient};
+
+/// issue 025f (D-031) — the Android `SoftInput` controller: the
+/// android-activity `show_soft_input` / `hide_soft_input` over the
+/// (cloned) `AndroidApp` (the `run` docs: the thread note). The C++'s
+/// Android text input came from SFML's own Android layer (D-031) — the
+/// port's platform addition: the game's `is_entering_text` transition
+/// edge (the `windowed::MenuSlotAdapter::refresh_input` docs) drives
+/// these calls; the characters then arrive the way they already do
+/// (issue 025d: the `KeyboardInput.text` → entered-text sink →
+/// `TextEntered` → `enteredChars` chain).
+struct ImeController {
+    app: AndroidApp,
+}
+
+impl SoftInput for ImeController {
+    /// The task's explicit show (D-031's route 1): the android-activity
+    /// `show_soft_input(true)` —
+    /// `InputMethodManager.showSoftInput(decorView, SHOW_IMPLICIT)`.
+    fn show(&self) {
+        self.app.show_soft_input(true);
+    }
+    /// `hide_soft_input(false)` — the android-activity's
+    /// `hideSoftInputFromWindow(token, 0)`: an unconditional hide (not
+    /// only the implicitly shown IME) — the "keyboard must NOT appear in
+    /// non-text states" half of the acceptance.
+    fn hide(&self) {
+        self.app.hide_soft_input(false);
+    }
+}
 
 /// The marker file the content extraction writes (issue 25b SG4) — its
 /// presence is the "the content is already present" skip check (a
@@ -331,6 +369,15 @@ pub fn run(app: AndroidApp) {
     // was just bound above; the documented return instead of a panic).
     let mut builder: winit::event_loop::EventLoopBuilder<()> =
         winit::event_loop::EventLoop::<()>::with_user_event();
+    // issue 025f (D-031) — the soft-input (system IME) controller (the
+    // `ImeController` docs): the `AndroidApp` is `Clone` (an
+    // `Arc`-backed handle), so the winit loop binds the original while
+    // the controller keeps its own copy. The winit loop thread IS the
+    // `android_main` thread (the android-activity entry contract — the
+    // glue's dedicated main-loop thread), so the android-activity's JNI
+    // `show/hideSoftInput` calls fired from the menu's `refresh_input`
+    // (the text-entry transition edge) run on-thread.
+    let soft_input: Arc<dyn SoftInput> = Arc::new(ImeController { app: app.clone() });
     builder.with_android_app(app);
     let event_loop = match builder.build() {
         Ok(el) => el,
@@ -359,6 +406,11 @@ pub fn run(app: AndroidApp) {
             Arc::new(oh_discord::DiscordManager::new(oh_discord::NoDiscordCore))
                 as Arc<dyn oh_discord::Discord>,
         ),
+        // issue 025f (D-031) — the soft-input (system IME) controller
+        // (the `ImeController` docs): the android-activity's
+        // `show_soft_input` / `hide_soft_input` on the menu's
+        // text-entry transitions (the desktop arm's no-op, D-031).
+        soft_input,
     ) {
         Ok(client) => {
             // C++ main.cpp:514-515 — "Start game as normal" (the android

@@ -144,6 +144,12 @@ pub fn main_client(
             Some(Arc::new(oh_discord::DiscordManager::new(
                 oh_discord::IpcDiscordCore::new(oh_discord::DISCORD_APP_ID),
             )) as Arc<dyn oh_discord::Discord>),
+            // issue 025f (D-031) — the soft-input (system IME) controller:
+            // the desktop no-op (no IME on the desktop window — the C++
+            // desktop build never asked for one; the C++'s Android IME
+            // wiring lived in SFML's own Android layer, D-031 — the
+            // Android arm passes the android-activity controller).
+            Arc::new(crate::windowed::NoOpSoftInput),
         ) {
             Ok(client) => {
                 // C++ main.cpp:334-350 — the SIGINT handler (the safe

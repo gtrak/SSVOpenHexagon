@@ -8,7 +8,8 @@ use std::rc::Rc;
 use oh_menu::layout::LinearFontHeight;
 use oh_menu::seams::NewGameCallback;
 use oh_menu::{
-    FakeAssets, FakeConfig, MenuAssets, MenuConfig, MenuGame, NoopNetwork, RecordingAudio, States,
+    FakeAssets, FakeConfig, MenuAssets, MenuConfig, MenuGame, NoopNetwork, NoopTouch,
+    RecordingAudio, States,
 };
 
 /// Recorded `fnHGNewGame(pack, level)` call log.
@@ -34,6 +35,7 @@ fn make_menu() -> (MenuGame, NewGameLog) {
         config,
         Rc::new(NoopNetwork),
         audio,
+        Rc::new(NoopTouch),
         cb,
         None,
         None,

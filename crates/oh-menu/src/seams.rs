@@ -16,6 +16,9 @@
 //!   seam: no fake network behavior lives here.** The default
 //!   [`NoopNetwork`] only ever reports `Disconnected` and no events.
 //! - [`AudioSink`] — sound playback (`playSoundOverride`).
+//! - [`MenuTouch`] — the C++ `window.getFingerDownCount()` /
+//!   `getFingerDownPositions()` data feeding the 9-zone touch grid
+//!   (the C++ constructor's `window` reference, §11).
 //!
 //! The `fakes` submodule provides `FakeAssets` / `FakeConfig` / `NoopNetwork`
 //! / `NoopAudio` so the crate's own tests (and issue 013's state-machine
@@ -25,6 +28,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use oh_math::hg::color::Color;
+use oh_math::ssvs::Vec2;
 
 /// `fnHGNewGame(pack, level, firstPlay, difficultyMult, executeLastReplay)` —
 /// C++ `std::function<void(const std::string&, const std::string&, bool,
@@ -485,6 +489,43 @@ pub trait NetworkClient {
 pub trait AudioSink {
     fn play_sound(&self, asset_id: &str);
     fn stop_all(&self);
+}
+
+/// issue 025f — the C++ `window.getFingerDownCount()` /
+/// `window.getFingerDownPositions()` seam (the SSVStart `GameWindow`
+/// extension, GameWindow.hpp:299-309) feeding the C++ `MenuGame::update`
+/// 9-zone touch grid (MenuGame.cpp:2802-2835): with exactly ONE finger
+/// down, the screen thirds dispatch — the middle band's x-thirds to
+/// `leftAction` / `okAction` / `rightAction`, the top / bottom bands to
+/// `upAction` / `downAction`. On the phone that grid is the touch-only
+/// menu control (on the name-entry states the center-zone
+/// `okAction` creates the profile — the touch submit the system IME's
+/// Done key can't deliver, the 025f on-device finding), and it replaces
+/// the hardware keyboard's arrow / Enter.
+///
+/// PLATFORM-NEUTRAL by design (the operator's 025f constraint): the
+/// grid lives in the menu's own `update` (this crate), and the seam is
+/// what each platform feeds it — the windowed / Android path: the
+/// window's touch-event fold's shared sink (the 25b SG5
+/// `finger_down_positions` data, LOGICAL window coordinates — the C++
+/// `width` / `height` member space, the port's `Shared::w` / `h`);
+/// headless / desktop / the tests: [`NoopTouch`] (no fingers — the grid
+/// never fires; the C++ desktop build's `Touch::isDown` is always false
+/// there, so the behavior is identical). DESKTOP MOUSE: deliberately NOT
+/// wired to the zones in this lane — a mouse-driven zone would
+/// double-fire with the existing menu mouse handling (the
+/// `MouseButtonReleased` exec path, MenuGame.cpp:617-637); the operator
+/// accepted the mouse-zone parity as a later step (seam note, 025f).
+pub trait MenuTouch {
+    /// C++ `window.getFingerDownCount()` — the number of fingers down.
+    fn finger_down_count(&self) -> usize;
+    /// C++ `window.getFingerDownPositions()` — the down fingers' current
+    /// positions in LOGICAL window coordinates (the C++'s
+    /// `getWindowWidth()` / `getWindowHeight()` member space, the
+    /// port's `Shared::w` / `Shared::h`); `(0, 0)` for a down finger
+    /// with no recorded position (the C++'s unknown-position value,
+    /// GameWindow.hpp:299-309).
+    fn finger_down_positions(&self) -> Vec<Vec2>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1216,4 +1257,24 @@ impl AudioSink for RecordingAudio {
         self.played.borrow_mut().push(asset_id.to_string());
     }
     fn stop_all(&self) {}
+}
+
+/// The no-touch [`MenuTouch`] (headless / desktop / the tests — the
+/// module docs): no fingers down, the 9-zone grid never fires (the C++
+/// desktop's `Touch::isDown`-always-false equivalent).
+pub struct NoopTouch;
+
+impl Default for NoopTouch {
+    fn default() -> Self {
+        Self
+    }
+}
+
+impl MenuTouch for NoopTouch {
+    fn finger_down_count(&self) -> usize {
+        0
+    }
+    fn finger_down_positions(&self) -> Vec<Vec2> {
+        Vec::new()
+    }
 }

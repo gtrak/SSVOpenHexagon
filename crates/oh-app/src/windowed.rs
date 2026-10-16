@@ -125,7 +125,7 @@
 //!   binding (`RenderStates::shader`) stays the documented issue-10 gap:
 //!   the internal passes run, the pack's fragment shaders do not execute.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -136,7 +136,7 @@ use oh_game::hexagon_game::HexagonGame;
 use oh_game::seams::{Audio, NullProfiles};
 use oh_lua::api::state::GameApiState;
 use oh_menu::layout::LinearFontHeight;
-use oh_menu::seams::{NewGameCallback, RichPresenceCallback, TriggerRefreshCallback};
+use oh_menu::seams::{MenuTouch, NewGameCallback, RichPresenceCallback, TriggerRefreshCallback};
 use oh_menu::states::States;
 use oh_menu::{AudioSink, MenuConfig, MenuGame, NoopNetwork, RealMenuAssets};
 use oh_render::batching::GlBatchUploader;
@@ -206,6 +206,41 @@ struct WindowTouchRenderer {
 }
 
 impl oh_game::renderer::Renderer for WindowTouchRenderer {
+    fn finger_down_positions(&self) -> Vec<oh_math::ssvs::Vec2> {
+        self.positions
+            .read()
+            .expect("touch sink poisoned")
+            .iter()
+            .filter_map(|slot| *slot)
+            .collect()
+    }
+}
+
+/// issue 025f — the menu's `MenuTouch` seam over the SAME shared touch
+/// sink (the C++ `window.getFingerDownCount()` / `getFingerDownPositions()`
+/// data the 25b SG5 window fold maintains — LOGICAL coordinates; the
+/// engine's `WindowTouchRenderer` above reads the identical sink):
+/// the platform feed of the 9-zone touch grid (oh-menu `MenuGame::
+/// update`, MenuGame.cpp:2802-2835). Desktop: no `WindowEvent::Touch`
+/// arrives — the sink stays empty, the grid never fires (behavior-
+/// identical to the C++ desktop; the mouse-zone parity is the operator's
+/// later step — the `MouseButtonReleased` exec path must not
+/// double-fire, the oh-menu `MenuTouch` seam note).
+struct MenuTouchSink {
+    positions: std::sync::Arc<
+        std::sync::RwLock<[Option<oh_math::ssvs::Vec2>; oh_render::input::FINGER_COUNT]>,
+    >,
+}
+
+impl MenuTouch for MenuTouchSink {
+    fn finger_down_count(&self) -> usize {
+        self.positions
+            .read()
+            .expect("touch sink poisoned")
+            .iter()
+            .filter(|slot| slot.is_some())
+            .count()
+    }
     fn finger_down_positions(&self) -> Vec<oh_math::ssvs::Vec2> {
         self.positions
             .read()
@@ -1176,6 +1211,37 @@ impl GameState for GameSlotAdapter {
     }
 }
 
+/// issue 025f / D-031 — the soft-input (the system IME, the on-screen
+/// keyboard) controller: `show` on the menu's ENTER-TEXT entry, `hide`
+/// on its leave (the C++ `isEnteringText` gate's transition — the
+/// `MenuSlotAdapter::refresh_input` docs: the edge is computed there,
+/// once per transition, not per frame).
+///
+/// The C++'s Android text input came from SFML's own Android layer (the
+/// IME wiring lived in SFML, D-031) — the port's deliberate platform
+/// addition is this seam: the Android controller (the android-activity
+/// `show_soft_input(true)` / `hide_soft_input(false)`, the
+/// `oh-app::android` `ImeController`) and the desktop no-op (no IME on
+/// the desktop window — the C++ desktop build never asked for one).
+pub trait SoftInput: Send + Sync {
+    /// Show the system IME (the android-activity `show_soft_input(true)`
+    /// — `InputMethodManager.showSoftInput(decorView, SHOW_IMPLICIT)`).
+    fn show(&self);
+    /// Hide the system IME (the android-activity `hide_soft_input(false)`
+    /// — `hideSoftInputFromWindow(token, 0)`: an unconditional hide, not
+    /// only the implicitly shown IME).
+    fn hide(&self);
+}
+
+/// The desktop / headless `SoftInput` (the trait's docs): the no-op —
+/// no IME on the desktop window.
+pub struct NoOpSoftInput;
+
+impl SoftInput for NoOpSoftInput {
+    fn show(&self) {}
+    fn hide(&self) {}
+}
+
 /// The C++ `mg->getGame()` `GameState` (main.cpp:461/479/505/532): the
 /// menu's `update(mFT)` (MenuGame.cpp:257) + `draw()` (MenuGame.cpp:259 —
 /// the issue-013b bridge, `crate::menu_draw::draw`).
@@ -1197,6 +1263,15 @@ struct MenuSlotAdapter {
     /// dispatch — the `MenuGame::handle_text_entered` docs; the
     /// `refresh_input` docs, below).
     entered_text: std::sync::Arc<std::sync::RwLock<Vec<char>>>,
+    /// issue 025f (D-031) — the soft-input (system IME) controller (the
+    /// `SoftInput` docs): the `refresh_input`'s transition edge shows it
+    /// on entering the text-entry states and hides it on leaving (the C++
+    /// `isEnteringText` gate's port — `oh-menu` `States::is_entering_text`).
+    soft_input: std::sync::Arc<dyn SoftInput>,
+    /// issue 025f (D-031) — the previous frame's `is_entering_text` (the
+    /// `was` latch of the transition edge the `refresh_input` tail
+    /// computes — the `refresh_input` docs, below).
+    was_entering_text: Cell<bool>,
 }
 
 impl GameState for MenuSlotAdapter {
@@ -1281,6 +1356,25 @@ impl GameState for MenuSlotAdapter {
             }
         }
         self.input_manager.borrow_mut().refresh(input);
+        // issue 025f (D-031) — the soft-input (system IME) transition
+        // edge: the menu's `is_entering_text` (the C++ `isEnteringText`,
+        // `oh-menu` `States::is_entering_text` — `ETLPNewBoot` /
+        // `ETLPNew`) changed since the last frame's `refresh_input`
+        // (the boot-screen advance above can flip it WITHIN this frame,
+        // so the edge is read AFTER the released-edges drain) → show the
+        // IME on the enter edge, hide it on the leave edge — ONCE per
+        // transition (the `was` latch), never per frame. The
+        // android-activity calls ride the controller (the `SoftInput`
+        // docs); the desktop is the no-op (module docs: D-031).
+        let entering = self.menu.is_entering_text();
+        if entering != self.was_entering_text.get() {
+            self.was_entering_text.set(entering);
+            if entering {
+                self.soft_input.show();
+            } else {
+                self.soft_input.hide();
+            }
+        }
     }
 
     fn update_input(&self, input: &InputState, ft: f32) {
@@ -1822,6 +1916,11 @@ impl WindowedClient {
         base_dir: &Path,
         steam: Arc<oh_steam::SteamManager>,
         discord: Option<Arc<dyn oh_discord::Discord>>,
+        // issue 025f (D-031) — the soft-input (system IME) controller
+        // (the `SoftInput` docs): the Android activity's
+        // `show_soft_input` / `hide_soft_input` on the menu's text-entry
+        // transitions; the desktop's no-op.
+        soft_input: Arc<dyn SoftInput>,
     ) -> Result<Self, String> {
         // ------------------------------------------------------------------
         // C++ main.cpp:330-332 — `window->setTimer<ssvs::TimerStatic>(
@@ -1856,6 +1955,15 @@ impl WindowedClient {
             [None; oh_render::input::FINGER_COUNT],
         ));
         window.set_touch_position_sink(touch_sink.clone());
+        // issue 025f: the menu's `MenuTouch` seam (the 9-zone touch grid,
+        // MenuGame.cpp:2802-2835) — the SAME shared sink the engine's
+        // `WindowTouchRenderer` below reads: the window's touch-event
+        // fold's data (LOGICAL coordinates) is the C++'s
+        // `window.getFingerDownCount()` / `getFingerDownPositions()`
+        // equivalent the menu's `update` grid block dispatches on.
+        let menu_touch: std::rc::Rc<dyn MenuTouch> = std::rc::Rc::new(MenuTouchSink {
+            positions: touch_sink.clone(),
+        });
         // issue 025c: the release-edge sink (the C++
         // `checkCloseBootScreens` event-driven seam — the
         // `oh_render::window::ReleasedEdges` docs): the window's event
@@ -2030,6 +2138,7 @@ impl WindowedClient {
                 audio: audio.clone(),
                 config: config.clone(),
             }),
+            menu_touch,
             new_game_cb,
             trigger_refresh_cb,
             rich_presence_cb,
@@ -2082,6 +2191,11 @@ impl WindowedClient {
             menu_draw,
             released_edges: released_sink.clone(),
             entered_text: entered_text_sink.clone(),
+            soft_input,
+            // The first menu state is the boot `LoadingScreen` (not a
+            // text-entry state — `is_entering_text` is false), so the
+            // edge latch starts there.
+            was_entering_text: Cell::new(false),
         });
         let game_adapter: Rc<dyn GameState> = Rc::new(GameSlotAdapter {
             game: game.clone(),
@@ -2602,7 +2716,7 @@ pub fn frame(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oh_menu::seams::{FakeAssets, FakeConfig, NoopNetwork};
+    use oh_menu::seams::{FakeAssets, FakeConfig, NoopNetwork, NoopTouch};
     use oh_render::window::ReleasedEdges;
     use std::sync::RwLock;
 
@@ -2622,6 +2736,7 @@ mod tests {
             FakeConfig::new(),
             Rc::new(NoopNetwork),
             oh_menu::RecordingAudio::new(),
+            Rc::new(NoopTouch),
             None,
             None,
             None,
@@ -2640,6 +2755,8 @@ mod tests {
             menu_draw: RefCell::new(crate::menu_draw::MenuDraw::new(&f, &f)),
             released_edges: released_edges.clone(),
             entered_text: Arc::new(RwLock::new(Vec::new())),
+            soft_input: Arc::new(NoOpSoftInput),
+            was_entering_text: Cell::new(false),
         };
 
         // The C++ ctor body holds the boot gate (MenuGame.cpp:357).
@@ -2711,6 +2828,7 @@ mod tests {
             FakeConfig::new(),
             Rc::new(NoopNetwork),
             oh_menu::RecordingAudio::new(),
+            Rc::new(NoopTouch),
             None,
             None,
             None,
@@ -2729,6 +2847,8 @@ mod tests {
             menu_draw: RefCell::new(crate::menu_draw::MenuDraw::new(&f, &f)),
             released_edges: released_edges.clone(),
             entered_text: Arc::new(RwLock::new(Vec::new())),
+            soft_input: Arc::new(NoOpSoftInput),
+            was_entering_text: Cell::new(false),
         };
         let mut window = Window::headless(800, 480);
         window.set_released_edges_sink(released_edges.clone());
@@ -2798,6 +2918,7 @@ mod tests {
             FakeConfig::new(),
             Rc::new(NoopNetwork),
             oh_menu::RecordingAudio::new(),
+            Rc::new(NoopTouch),
             None,
             None,
             None,
@@ -2817,6 +2938,8 @@ mod tests {
             menu_draw: RefCell::new(crate::menu_draw::MenuDraw::new(&f, &f)),
             released_edges: released_edges.clone(),
             entered_text: entered_text.clone(),
+            soft_input: Arc::new(NoOpSoftInput),
+            was_entering_text: Cell::new(false),
         };
         let mut window = Window::headless(800, 480);
         window.set_released_edges_sink(released_edges.clone());
@@ -2863,5 +2986,131 @@ mod tests {
         menu.update(0.01);
         assert_eq!(menu.shared().borrow().entered_str, "DAF");
         assert!(menu.shared().borrow().entered_chars.is_empty());
+    }
+
+    /// issue 025f (D-031): the soft-input (system IME) transition edge —
+    /// the `MenuSlotAdapter::refresh_input` docs: the menu's
+    /// `is_entering_text` (the C++ `isEnteringText` — the `oh-menu`
+    /// `States::is_entering_text`: `ETLPNewBoot` / `ETLPNew`) flips the
+    /// controller's `show`/`hide` ONCE per transition (the `was` latch),
+    /// never per frame. Driven over the `SoftInput` seam with a
+    /// recording controller (no android-activity on the host — the
+    /// seam's whole point).
+    #[test]
+    fn soft_input_edge_shows_on_entering_text_and_hides_on_leaving() {
+        // The recording controller (the `SoftInput` seam's test arm —
+        // records the calls in order: `true` = `show`, `false` = `hide`).
+        #[derive(Default)]
+        struct RecordingSoftInput {
+            calls: std::sync::Mutex<Vec<bool>>,
+        }
+        impl SoftInput for RecordingSoftInput {
+            fn show(&self) {
+                self.calls
+                    .lock()
+                    .expect("recording mutex poisoned")
+                    .push(true);
+            }
+            fn hide(&self) {
+                self.calls
+                    .lock()
+                    .expect("recording mutex poisoned")
+                    .push(false);
+            }
+        }
+        let rec = Arc::new(RecordingSoftInput::default());
+        let menu = Rc::new(MenuGame::new(
+            FakeAssets::new(),
+            FakeConfig::new(),
+            Rc::new(NoopNetwork),
+            oh_menu::RecordingAudio::new(),
+            Rc::new(NoopTouch),
+            None,
+            None,
+            None,
+            None,
+            Rc::new(oh_menu::layout::LinearFontHeight),
+        ));
+        let f = oh_render::font::Font::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../_RELEASE/Assets/OpenSquare-Regular.ttf"),
+        )
+        .expect("OpenSquare-Regular.ttf must load");
+        let soft_input: Arc<dyn SoftInput> = rec.clone();
+        let adapter = MenuSlotAdapter {
+            menu: menu.clone(),
+            input_manager: Rc::new(RefCell::new(Manager::new())),
+            menu_draw: RefCell::new(crate::menu_draw::MenuDraw::new(&f, &f)),
+            released_edges: Arc::new(RwLock::new(ReleasedEdges::default())),
+            entered_text: Arc::new(RwLock::new(Vec::new())),
+            soft_input,
+            was_entering_text: Cell::new(false),
+        };
+
+        // The boot state is not a text-entry state — no call (the latch
+        // starts at `false`, matching the first frame).
+        assert!(!adapter.menu.is_entering_text());
+        adapter.refresh_input(&InputState::new());
+        assert!(rec
+            .calls
+            .lock()
+            .expect("recording mutex poisoned")
+            .is_empty());
+
+        // Enter the entering-text state (the C++ `isEnteringText`'s
+        // `ETLPNewBoot` arm — the fresh-install name screen) → ONE
+        // `show`.
+        menu.shared().borrow_mut().state = States::ETLPNewBoot;
+        adapter.refresh_input(&InputState::new());
+        assert_eq!(
+            rec.calls
+                .lock()
+                .expect("recording mutex poisoned")
+                .as_slice(),
+            &[true]
+        );
+        // Holding the state across frames: no per-frame calls (the `was`
+        // latch — the task's "call once per transition, not per frame").
+        adapter.refresh_input(&InputState::new());
+        adapter.refresh_input(&InputState::new());
+        assert_eq!(
+            rec.calls
+                .lock()
+                .expect("recording mutex poisoned")
+                .as_slice(),
+            &[true]
+        );
+
+        // Leave it (→ `SMain`, the profile-created state) → ONE `hide`.
+        menu.shared().borrow_mut().state = States::SMain;
+        adapter.refresh_input(&InputState::new());
+        assert_eq!(
+            rec.calls
+                .lock()
+                .expect("recording mutex poisoned")
+                .as_slice(),
+            &[true, false]
+        );
+        // And holding `SMain` stays quiet (no keyboard in the main menu).
+        adapter.refresh_input(&InputState::new());
+        assert_eq!(
+            rec.calls
+                .lock()
+                .expect("recording mutex poisoned")
+                .as_slice(),
+            &[true, false]
+        );
+
+        // The second entering-text state (`ETLPNew` — the level-pack
+        // name dialog) re-arms the `show` on its own edge.
+        menu.shared().borrow_mut().state = States::ETLPNew;
+        adapter.refresh_input(&InputState::new());
+        assert_eq!(
+            rec.calls
+                .lock()
+                .expect("recording mutex poisoned")
+                .as_slice(),
+            &[true, false, true]
+        );
     }
 }
