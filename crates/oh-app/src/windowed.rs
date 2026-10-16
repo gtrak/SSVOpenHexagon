@@ -2664,7 +2664,37 @@ impl WindowedClient {
         // default `sf::Color::Transparent`) — the per-frame pre-update
         // clear of the default framebuffer.
         if let Some(gl) = window.gl() {
+            // 025j PROBE (temporary): time the pre-update GL clear.
+            let _pclear = std::time::Instant::now();
             gl.clear(COLOR_TRANSPARENT);
+            // 025j PROBE (temporary): the phase + loop-period reading
+            // (every-30-frames gate — the logcat IPC must not inflate the
+            // measured cost; the 025i probe shape).
+            if cfg!(target_os = "android") {
+                use std::sync::atomic::{AtomicU64, Ordering};
+                static TF_PROBE: AtomicU64 = AtomicU64::new(0);
+                static TF_LAST_NS: AtomicU64 = AtomicU64::new(0);
+                let c = TF_PROBE.fetch_add(1, Ordering::Relaxed) + 1;
+                if c % 30 == 0 {
+                    let now_ns = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_nanos() as u64);
+                    let last = TF_LAST_NS.swap(now_ns, Ordering::Relaxed);
+                    let period = if last > 0 {
+                        (now_ns - last) as f64 / 1e9 / 30.0 * 1000.0
+                    } else {
+                        0.0
+                    };
+                    eprintln!(
+                        "[025j-tf] frame#{} gl.clear={:.3}ms msUpdate={:.3} msDraw={:.3} period={:.3}ms",
+                        c,
+                        _pclear.elapsed().as_secs_f64() * 1000.0,
+                        window.get_ms_update(),
+                        window.get_ms_draw(),
+                        period
+                    );
+                }
+            }
         }
         // C++ `gameEngine->refreshTimer();` (GameWindow.hpp:128 →
         // GameEngine.hpp:34-37 → GameTimer::refresh, GameTimer.hpp:26-37):
