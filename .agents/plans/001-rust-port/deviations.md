@@ -411,3 +411,10 @@ Also worth 28b's eye (not categorised LB, but user-visible omissions stated by t
 - oh-steam: 11
 - oh-workshop-uploader: 16
 - **total: 260 rows**
+
+## Fixed deviations (the FIX lanes' rows — the standing rule: a fixed
+deviation gets its register row in the same commit)
+
+| # | site | deviation | C++ counterpart (verified) | fix |
+|---|---|---|---|---|
+| F1 | `crates/oh-menu/src/menu_game.rs` (`refresh_camera`, `window_size`, the 9-zone grid's thirds) + `crates/oh-app/src/menu_draw.rs` (`draw_online_status`) | the menu's layout space ran on the CONFIG resolution (`MenuConfig::size_x()`/`size_y()`) where the C++ runs on `getWindowWidth()`/`getWindowHeight()` = `window.getRenderWindow().getSize()` — the ACTUAL current render-target size. Invisible on the desktop (window == config resolution × pixelMult; the `refresh_view` math is scale-invariant under a uniform factor) but wrong on the phone (window 1530×678 vs the 1024×768-ish config — the orchestrator probe read the port's menu space as `window=(1024,1024)` while the touch coordinates live in the 1530×678 space, so the 9-zone grid's thirds landed in the wrong place: a center tap dispatched to the "right" band instead of the center `ok` band). | C++: MenuGame.cpp:3129-3136 (`refreshCamera`'s `fw`/`fh`/`fmax` on `getWindowWidth()`/`getWindowHeight()`), 3350-3357 (`getWindowWidth()`/`getWindowHeight()` = `window.getRenderWindow().getSize()`), 2804-2807 (the grid's thirds), 6001-6002 (`drawOnlineStatus`'s identity view) — all verified | **025g** (commits `3fa6fcab` + `fb0ea4a5`): the `MenuWindow` seam (oh-menu, the C++ ctor's `window` reference's size half) + the `RenderWindowSize` slot refreshed per frame from the window's current size (oh-app `tick_fields`) + the `refresh_if_stale` stale-detection tuple carrying the window size; host tests: `oh-menu` `layout`'s `refresh_view_matching_window_desktop_unchanged` / `refresh_view_mismatched_mobile_window` + `tests/window_size.rs` (5 tests, incl. the device-finding host repro); device acceptance: the phone's center tap creates the profile (the lane's device evidence) |
