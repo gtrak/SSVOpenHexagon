@@ -195,12 +195,14 @@ impl AudioSink for MenuAudioSink {
 /// down-finger positions (the C++ `getFingerDownPositions` data path —
 /// the C++'s window IS the position source; the port's windowed client
 /// owns both sides: the window's touch events update the shared slot
-/// array (the C++'s 0..`FINGER_COUNT` order; LOGICAL coordinates — the
-/// window's physical→logical scale, its `RunHandler`'s `mapPixelToCoords`
-/// equivalent), the engine's `updateInput_UpdateTouchControls` reads it
-/// through this renderer every update tick). Desktop: `WindowEvent::
-/// Touch` never arrives — every slot stays `None`, the engine sees the
-/// exact no-renderer behavior (behavior-identical, the 25b constraint).
+/// array (the C++'s 0..`FINGER_COUNT` order; the window's CURRENT size
+/// coordinates — issue 025g: the raw winit coordinates, the C++'s
+/// `mapPixelToCoords` target on the phone; the 025b-era physical →
+/// config-logical rescale is gone, `oh-render`'s `RunHandler` note),
+/// the engine's `updateInput_UpdateTouchControls` reads it through this
+/// renderer every update tick). Desktop: `WindowEvent::Touch` never
+/// arrives — every slot stays `None`, the engine sees the exact
+/// no-renderer behavior (behavior-identical, the 25b constraint).
 struct WindowTouchRenderer {
     positions: std::sync::Arc<
         std::sync::RwLock<[Option<oh_math::ssvs::Vec2>; oh_render::input::FINGER_COUNT]>,
@@ -223,17 +225,16 @@ impl oh_game::renderer::Renderer for WindowTouchRenderer {
 /// data the 25b SG5 window fold maintains — the C++'s `mapPixelToCoords`
 /// window coordinates; the engine's `WindowTouchRenderer` above reads
 /// the identical sink): the platform feed of the 9-zone touch grid
-/// (oh-menu `MenuGame:: update`, MenuGame.cpp:2802-2835). The fold maps
-/// the physical touch pixels to the window's CURRENT size (`width_px` /
-/// `height_px` ÷ the GL surface size — the C++'s `mapPixelToCoords`), so
-/// in every live steady state the positions are in the ACTUAL window
-/// space the grid's thirds run in (issue 025g: on Android the `Resized`
-/// fold sets `width_px`/`height_px` to the native window size — the
-/// `Window`'s creation size is config-driven, so before the first
-/// `Resized` the scale is config/native; winit delivers the `Resized`
-/// before the first frame — `oh-render`'s android note + winit 0.30's
-/// android `MainEvent::WindowResized` → `WindowEvent::Resized(native
-/// size)`). Desktop: no `WindowEvent::Touch` arrives — the sink stays
+/// (oh-menu `MenuGame:: update`, MenuGame.cpp:2802-2835). The fold passes
+/// the raw winit touch coordinates through (issue 025g: the physical
+/// drawable pixels ARE the window's current-size space — the C++'s
+/// `mapPixelToCoords` target on the phone; the 025b-era physical →
+/// config-logical rescale is gone, `oh-render`'s `RunHandler` note), so
+/// the positions are in the ACTUAL window space the grid's thirds run
+/// in (issue 025g: the `Resized` fold sets the window's size to the
+/// native window size — winit delivers it before the first frame — and
+/// keeps it current on every later resize, the IME's ADJUST_RESIZE
+/// included). Desktop: no `WindowEvent::Touch` arrives — the sink stays
 /// empty, the grid never fires (behavior-identical to the C++ desktop;
 /// the mouse-zone parity is the operator's later step — the
 /// `MouseButtonReleased` exec path must not double-fire, the oh-menu
@@ -2028,9 +2029,9 @@ impl WindowedClient {
         // issue 025f: the menu's `MenuTouch` seam (the 9-zone touch grid,
         // MenuGame.cpp:2802-2835) — the SAME shared sink the engine's
         // `WindowTouchRenderer` below reads: the window's touch-event
-        // fold's data (LOGICAL coordinates) is the C++'s
-        // `window.getFingerDownCount()` / `getFingerDownPositions()`
-        // equivalent the menu's `update` grid block dispatches on.
+        // fold's data (the window's CURRENT size coordinates — issue
+        // 025g: the raw winit coordinates, the same space the grid's
+        // thirds run in via the `MenuWindow` seam).
         let menu_touch: std::rc::Rc<dyn MenuTouch> = std::rc::Rc::new(MenuTouchSink {
             positions: touch_sink.clone(),
         });

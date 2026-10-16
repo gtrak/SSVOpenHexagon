@@ -395,9 +395,11 @@ pub struct Window {
     // Desktop: always `false` (the desktop bootstrap is pre-`run`).
     #[cfg(target_os = "android")]
     ensure_android_gl_failed: bool,
-    // issue 25b SG5: the down-finger positions (LOGICAL coordinates — the
-    // winit touch positions are scaled physical→logical in
-    // `RunHandler::window_event`, the C++'s `mapPixelToCoords`),
+    // issue 25b SG5 (space clarified by issue 025g): the down-finger
+    // positions (the window's CURRENT size coordinates — the winit touch
+    // positions pass through UNSCALED, `RunHandler::window_event`: the
+    // physical drawable pixels ARE the window's current-size space, the
+    // C++'s `mapPixelToCoords` target on the phone),
     // finger-id → position; the C++ `getFingerDownPositions`'s data
     // (SSVStart GameWindow.hpp:299 — the C++ polls SFML, the port
     // event-updates on TouchBegan/TouchMoved/TouchEnded). Always empty
@@ -589,8 +591,10 @@ impl Window {
     }
 
     /// C++ `getFingerDownPositions()` (SSVStart GameWindow.hpp:299-309):
-    /// for each finger whose `InputState` bit is set, its current LOGICAL
-    /// position — `(0,0)` for a down finger with no recorded position
+    /// for each finger whose `InputState` bit is set, its current position
+    /// in the window's CURRENT size coordinates (issue 025g — the raw
+    /// winit touch coordinates, the C++'s `mapPixelToCoords` target on
+    /// the phone) — `(0,0)` for a down finger with no recorded position
     /// (the SFML `Touch::getPosition` unknown-position value). The engine's
     /// `updateInput_UpdateTouchControls` half-width comparison runs
     /// against these (oh-game `update_input_update_touch_controls`, the
@@ -1060,40 +1064,27 @@ impl<F: FnMut(&mut Window)> ApplicationHandler<()> for RunHandler<'_, F> {
     }
 
     fn window_event(&mut self, _el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        if let Some(mut e) = map_window_event(&event) {
-            // Android (issue 25b SG5): winit delivers the touch position
-            // in PHYSICAL pixels (the activity window's drawable); the
-            // engine's seam (the C++ `getFingerDownPositions` →
-            // `mapPixelToCoords`) wants the LOGICAL coordinates — scale
-            // each axis by the window's logical/physical ratio (the
-            // screen-sized platform window vs the config logical size;
-            // per-axis, the SFML `mapPixelToCoords`). The physical size
-            // is the GL surface's (`GlParts`'s `width`/`height` — the
-            // native window's screen size on android, the requested
-            // physical size on desktop; winit 0.30 has no window-by-id
-            // lookup, the surface IS the drawable). Before the first
-            // `resumed` (or on a GL-creation failure) the surface is
-            // unknown: the position stays raw (the documented headless
-            // degradation — no GL, the frames are null-target anyway).
+        if let Some(e) = map_window_event(&event) {
+            // Android (issue 25b SG5; the space clarified by issue 025g):
+            // winit delivers the touch position in PHYSICAL pixels of the
+            // window's drawable — which IS the window's current size space
+            // (the `width_px` / `height_px` the `Resized` fold keeps
+            // current; the C++'s `mapPixelToCoords` maps to the window's
+            // CURRENT size — the same space, so the raw position is the
+            // coordinate the C++'s `getFingerDownPositions()` returns on
+            // the phone). The 025g menu grid's thirds run on that same
+            // current size (the `MenuWindow` seam — `oh_app::windowed`
+            // `tick_fields`), and the engine's 25b SG5 half-width
+            // comparison runs on it too (its documented contract —
+            // `Config::getWidth()/2` threshold, oh-game). The 025b-era
+            // physical → config-logical rescale (window size ÷ GL-surface
+            // size) is REMOVED: after a post-GL window resize (the IME's
+            // ADJUST_RESIZE shrinks the native window; the `GlParts`
+            // bookkeeping is creation-frozen) the scale's denominator
+            // went stale and squashed the positions out of the grid's
+            // thirds space (a window-center tap landed in the wrong band).
             // Desktop: `WindowEvent::Touch` never arrives (the arm is
             // dead there) — behavior-identical.
-            if matches!(e, Event::TouchBegan { .. } | Event::TouchMoved { .. }) {
-                if let Some(gl) = self.window.gl.as_ref() {
-                    let sx = self.window.get_width() as f32 / (gl.width as f32).max(1.0);
-                    let sy = self.window.get_height() as f32 / (gl.height as f32).max(1.0);
-                    e = match e {
-                        Event::TouchBegan { finger, position } => Event::TouchBegan {
-                            finger,
-                            position: Vec2::new(position.x * sx, position.y * sy),
-                        },
-                        Event::TouchMoved { finger, position } => Event::TouchMoved {
-                            finger,
-                            position: Vec2::new(position.x * sx, position.y * sy),
-                        },
-                        other => other,
-                    };
-                }
-            }
             Window::apply_event(self.window, e);
         }
         // SFML dispatches a `TextEntered` event ALONGSIDE the
@@ -1192,10 +1183,11 @@ mod tests {
     }
 
     // issue 25b SG5: the touch → engine seam (the C++
-    // `getFingerDownPositions` data path; the positions arrive LOGICAL —
-    // the `RunHandler::window_event`'s physical→logical scale is the
-    // `mapPixelToCoords` equivalent, exercised over the already-scaled
-    // `Event`s here).
+    // `getFingerDownPositions` data path; the positions arrive in the
+    // window's CURRENT size coordinates — the raw winit coordinates,
+    // issue 025g: the 025b-era physical→config-logical rescale lived in
+    // `RunHandler::window_event` and went stale after a post-GL window
+    // resize; the fold now passes the position through).
     #[test]
     fn touch_events_fold_into_input_state_and_the_sink() {
         use crate::input::FINGER_COUNT;

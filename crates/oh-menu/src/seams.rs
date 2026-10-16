@@ -523,11 +523,10 @@ pub trait MenuTouch {
     /// positions in window coordinates (the C++'s `mapPixelToCoords`,
     /// GameWindow.hpp:285-287 — the space the grid's thirds run in, the
     /// C++ `getWindowWidth()` / `getWindowHeight()` space, [`MenuWindow`];
-    /// issue 025g: the port's feed maps physical touch pixels to the
-    /// window's CURRENT size, so in every live steady state the
-    /// coordinates are in the actual-window space — on Android the
-    /// `Resized` fold sets the window's size to the native size, making
-    /// the scale the identity); `(0, 0)` for a down finger with no
+    /// issue 025g: the port's feed passes the raw winit coordinates
+    /// through — the physical drawable pixels ARE the window's current
+    /// size space on the phone, the C++'s `mapPixelToCoords` target);
+    /// `(0, 0)` for a down finger with no
     /// recorded position (the C++'s unknown-position value, GameWindow
     /// .hpp:299-309).
     fn finger_down_positions(&self) -> Vec<Vec2>;
