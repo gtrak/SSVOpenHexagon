@@ -237,6 +237,83 @@ and `PATH` must include emsdk's `upstream\emscripten`, `upstream\bin`, and
 - Minor spike artifact: `main` ran twice in the spike (two context handles) —
   to resolve when structuring `oh-web`.
 
+## 26c.2 — Luau + wasm-bindgen + glow in one emscripten module (verified)
+
+**Issue 26c.2 spike = PASS** (supervisor-verified live in Chromium via
+`agent-browser`, 2026-10-16): **Luau (mlua, vendored C++) +
+`wasm-bindgen`/`web-sys` + `glow` all link AND run in ONE
+`wasm32-unknown-emscripten` module.** Browser console:
+
+```
+emscripten: webgl2 create handle=1 make_context_current->0 (0=ok)
+(a) raw webgl2: clear blue (0.1,0.4,0.8) OK
+(b) glow: clear orange (204,102,26) OK -> status()=glow-ok
+(c) luau: acc=9 d=42 q=3 -> status() includes luau-ok
+render loop started (request_animation_frame)
+status glow-ok;luau-ok;acc=9 d=42 q=3
+```
+
+Canvas renders (orange). This **confirms D-029's single-module premise** (Lua +
+engine in one module, no cross-module bridge). Artifacts (debug): `.js` ≈ 317 KB,
+`.wasm` ≈ 19.5 MB.
+
+**The two load-bearing integration facts (non-obvious; will bite `oh-web`):**
+
+1. **`-Clink-arg=-sDEFAULT_TO_CXX` is REQUIRED to link.** emcc's linker driver
+   does NOT auto-link the C++ exception runtime (libcxxabi) for the mixed
+   Rust+C++ module, so Luau's objects (built with `-fwasm-exceptions`) leave
+   `__gxx_wasm_personality_v0`, `__cxa_throw`, `__cxa_begin_catch`,
+   `std::terminate`, `typeinfo for std::exception`, `operator delete`…
+   undefined. emcc's own hint says to pass `-sDEFAULT_TO_CXX`. (Linking with
+   `-fwasm-exceptions` is NOT needed — emscripten 6.0.x's prebuilt libcxxabi
+   already provides those symbols.)
+2. **CRITICAL init-order bug — the actual cause of a Luau runtime trap, and the
+   fix.** With `-sWASM_BINDGEN`, the wasm-bindgen glue registers Rust `main` via
+   `addOnInit(initBindgen)`, and emscripten's `initRuntime()` runs the onInit
+   callbacks **BEFORE** `wasmExports['__wasm_call_ctors']()`. So Rust `main` — and
+   therefore Luau's `Lua::new()` — runs **before C++ static initializers**. Luau's
+   `kSizeClassConfig` (a `const` global with a non-trivial constructor,
+   `lmem.cpp:192`) is then zero-initialized → `blockSize == 0` → an integer
+   **divide-by-zero trap** in `newclasspage` (`lmem.cpp:285`) via
+   `lua_newstate` → `Lua::new()`. It is a wasm trap, so it appears as a SILENT
+   halt (no Rust `Err`) — which is why it was hard to spot. **FIX:** Rust owns the
+   entry point here, so call the C++ static initializers explicitly:
+   `extern "C" { fn __wasm_call_ctors(); }` and call `__wasm_call_ctors()` as the
+   FIRST statement of `main()`. After that, Luau runs. (Reproduced identically
+   under node: `RuntimeError: divide by zero at newclasspage … lua_newstate`.)
+   - The `-Cllvm-args=-enable-emscripten-cxx-exceptions=0` flag is NOT the
+     culprit — it only affects Rust codegen and **coexists** with Luau's
+     `-fwasm-exceptions`.
+3. Minor spike artifact (note for `oh-web`): `main` ran twice (two context
+   handles) in the spike; resolve when structuring `oh-web` (ensure a single
+   init).
+
+**Final minimal working `.cargo/config.toml` (record verbatim):**
+
+```toml
+[build]
+target = "wasm32-unknown-emscripten"
+
+[target.wasm32-unknown-emscripten]
+linker = "emcc.exe"
+rustflags = [
+  "-Cpanic=abort",
+  "-Cllvm-args=-enable-emscripten-cxx-exceptions=0",
+  "-Crelocation-model=static",
+  "-Clink-arg=-sDEFAULT_TO_CXX",
+  "-Clink-arg=-sWASM_BINDGEN",
+  "-Clink-arg=-Wno-experimental",
+  "-Clink-arg=-sMODULARIZE",
+  "-Clink-arg=-sEXPORT_ES6",
+  "-Clink-arg=-sMAX_WEBGL_VERSION=2",
+  "-Clink-arg=-sMIN_WEBGL_VERSION=2",
+]
+```
+
+Deps include `mlua = { version = "0.10", features = ["luau","vendored"] }`;
+env `CXXFLAGS_wasm32_unknown_emscripten=-fwasm-exceptions`; `cargo clean -p
+mlua-sys` once after changing that env.
+
 ## Phase 0 status (2026-10-16)
 
 - **P0.1 (replay compression interchange): PASS** — miniz_oxide ↔ zlib

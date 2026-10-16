@@ -892,6 +892,32 @@ NOT `cargo check --target wasm32-unknown-unknown`.
   so `std::fs`/`std::time`/`std::env` actually WORK on this target (content
   could be preloaded into MEMFS); the fetch→`MemoryVfs` remains the intended
   content path, but `RealFs` is not automatically excluded on emscripten.
+- **26c.2 confirmation (2026-10-16, supervisor-verified live in Chromium via
+  `agent-browser`):** the **single-module premise is verified** — Luau (mlua,
+  vendored C++) + `wasm-bindgen`/`web-sys` + `glow` all link AND run in ONE
+  `wasm32-unknown-emscripten` module (console: raw-webgl2 clear OK, glow clear
+  OK → `glow-ok`, Luau `acc=9 d=42 q=3` → `luau-ok`; canvas renders orange; debug
+  `.js` ≈ 317 KB, `.wasm` ≈ 19.5 MB). Two load-bearing facts the `oh-web`
+  implementation must not rediscover: (1) **`-Clink-arg=-sDEFAULT_TO_CXX` is
+  REQUIRED to link** — emcc's linker driver does NOT auto-link the C++ exception
+  runtime (libcxxabi) for the mixed Rust+C++ module, so Luau's objects (built
+  with `-fwasm-exceptions`) leave `__gxx_wasm_personality_v0`, `__cxa_throw`,
+  `__cxa_begin_catch`, `std::terminate`, `typeinfo for std::exception`,
+  `operator delete`… undefined (linking with `-fwasm-exceptions` is NOT needed —
+  emscripten 6.0.x's prebuilt libcxxabi already provides those). (2) **the
+  `__wasm_call_ctors` init-order requirement:** with `-sWASM_BINDGEN` the
+  wasm-bindgen glue registers Rust `main` via `addOnInit(initBindgen)`, and
+  emscripten's `initRuntime()` runs the onInit callbacks **BEFORE**
+  `wasmExports['__wasm_call_ctors']()`, so Rust `main` (and Luau's `Lua::new()`)
+  runs **before C++ static initializers** → Luau's `kSizeClassConfig`
+  (`lmem.cpp:192`) is zero-initialized → `blockSize == 0` → an integer
+  divide-by-zero trap in `newclasspage` (`lmem.cpp:285`) via `lua_newstate` — a
+  SILENT wasm trap. **FIX:** call `__wasm_call_ctors()` (declared
+  `extern "C"`) as the FIRST statement of `main()`. (The
+  `-Cllvm-args=-enable-emscripten-cxx-exceptions=0` flag is NOT the culprit — it
+  only affects Rust codegen and coexists with Luau's `-fwasm-exceptions`.) Minor
+  spike artifact: `main` ran twice (two context handles); ensure a single init
+  when structuring `oh-web`.
 - **Landed by:** issue 26 (26c.1 spike); recorded in
   `.agents/plans/001-rust-port/26-wasm-web.md` §"26c.1 — emscripten web boot:
   PASS" and `.agents/skills/lib-web-stack.md` §"26c.1 — Emscripten target
