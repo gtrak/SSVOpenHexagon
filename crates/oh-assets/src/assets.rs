@@ -20,13 +20,15 @@
 //! - the `reloadPack` / `reloadLevel` / `reloadAllShaders` dev-tool paths.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::sync::Arc;
 
-use oh_data::json::{self, read_file_with_errors, Obj};
+use oh_data::json::{self, Obj};
 use oh_data::{
     build_pack_id, load_music_from_json, load_profile_from_json, pack_data_from_json, LevelData,
     LoadInfo, MusicData, PackData, PackInfo, ProfileData, StyleData,
 };
+use oh_vfs::Vfs;
 
 use crate::asset_storage::{AssetRef, AssetStorage};
 use crate::pack_scan;
@@ -46,8 +48,10 @@ pub struct FatalLoadError {
 /// C++ `hg::HGAssets` (the `HGAssetsImpl` body).
 #[derive(Debug)]
 pub struct Assets {
-    /// Process-CWD equivalent (the `_RELEASE` dir in tests).
-    root: PathBuf,
+    /// The content provider (issue 026a §3): every content fs op routes
+    /// through this. Native is a `RealFs` rooted at the process CWD /
+    /// `_RELEASE` dir; web is a `MemoryVfs`.
+    vfs: Arc<dyn Vfs>,
     levels_only: bool,
 
     storage: AssetStorage,
@@ -88,17 +92,17 @@ impl Assets {
     /// C++ `HGAssetsImpl(mSteamManager, mHeadless, mLevelsOnly)` constructor
     /// flow, minus the Steam manager (see module docs) and the timing log.
     ///
-    /// - `root` — the process CWD (the `_RELEASE` directory in tests);
+    /// - `vfs` — the content provider (issue 026a §3); native callers pass a
+    ///   `RealFs` rooted at the process CWD (the `_RELEASE` directory in tests);
     /// - `headless` — C++ `mHeadless`;
     /// - `levels_only` — C++ `mLevelsOnly`.
-    pub fn new(
-        root: impl AsRef<Path>,
+    pub fn new_with_vfs(
+        vfs: Arc<dyn Vfs>,
         headless: bool,
         levels_only: bool,
     ) -> Result<Self, FatalLoadError> {
-        let root = root.as_ref().to_path_buf();
         let mut a = Self {
-            root,
+            vfs,
             levels_only,
             storage: AssetStorage::new(),
             level_datas: HashMap::new(),
@@ -117,12 +121,11 @@ impl Assets {
 
         // (1) assets.json — C++: only when `!levelsOnly && !mHeadless`.
         if !levels_only && !headless {
-            if !a.root.join("Assets").is_dir() {
+            if !a.vfs.is_dir("Assets") {
                 return Err(a.fatal("Folder Assets/ does not exist"));
             }
-            let (object, mut error) =
-                read_file_with_errors(&a.root.join("Assets").join("assets.json"));
-            load_assets_from_json(&mut a.storage, &a.root, "Assets/", &object);
+            let (object, mut error) = read_json(&*a.vfs, "Assets/assets.json");
+            load_assets_from_json(&mut a.storage, &*a.vfs, "Assets/", &object);
             a.load_info.add_formatted_error(&mut error);
         }
 
@@ -156,6 +159,27 @@ impl Assets {
         Ok(a)
     }
 
+    /// Transitional convenience (issue 026a sub-goal 3): construct over a
+    /// native filesystem root. Sub-goal 5 migrates the remaining callers to
+    /// [`Self::new_with_vfs`] and removes this shim. `#[cfg(not(target_arch =
+    /// "wasm32"))]` because it wraps `RealFs` (which uses `std::fs`).
+    ///
+    /// The parameter stays `impl AsRef<Path>` (the pre-refactor signature) so
+    /// every existing caller — including generic `impl AsRef<Path>` forwarders
+    /// such as `oh_menu::RealMenuAssets::new` — keeps compiling untouched.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new(
+        root: impl AsRef<Path>,
+        headless: bool,
+        levels_only: bool,
+    ) -> Result<Self, FatalLoadError> {
+        Self::new_with_vfs(
+            Arc::new(oh_vfs::RealFs::new(root.as_ref().to_path_buf())),
+            headless,
+            levels_only,
+        )
+    }
+
     fn fatal(self, reason: &str) -> FatalLoadError {
         FatalLoadError {
             load_info: self.load_info,
@@ -164,7 +188,7 @@ impl Assets {
     }
 
     fn is_dir(&self, logical: &str) -> bool {
-        self.root.join(logical).is_dir()
+        self.vfs.is_dir(logical)
     }
 
     // ------------------------------------------------------------------
@@ -172,13 +196,13 @@ impl Assets {
     // ------------------------------------------------------------------
 
     fn load_all_pack_datas(&mut self) -> Result<bool, oh_data::json::JsonError> {
-        if !self.root.join("Packs").is_dir() {
+        if !self.vfs.is_dir("Packs") {
             return Ok(false);
         }
 
         // Local packs first: immediate sub-folders of `Packs/`, byte-sorted
         // (the C++ `scanSingleFolderName` default `Sort::Alphabetic`).
-        for pack_path in pack_scan::scan_single_folder_name(&self.root, "Packs/") {
+        for pack_path in pack_scan::scan_single_folder_name(&*self.vfs, "Packs/") {
             self.try_load_pack_from_path(&pack_path)?;
         }
 
@@ -207,11 +231,11 @@ impl Assets {
     /// wrong JSON type (C++ would throw here with no surrounding catch).
     fn load_pack_data(&mut self, pack_path: &str) -> Result<bool, oh_data::json::JsonError> {
         let pack_json = format!("{pack_path}pack.json");
-        if !self.root.join(&pack_json).is_file() {
+        if !self.vfs.is_file(&pack_json) {
             return Ok(false);
         }
 
-        let (pack_root, mut error) = read_file_with_errors(&self.root.join(&pack_json));
+        let (pack_root, mut error) = read_json(&*self.vfs, &pack_json);
         self.load_info.add_formatted_error(&mut error);
 
         // Read the fields `buildPackId` needs first (mirrors the C++ locals).
@@ -312,10 +336,10 @@ impl Assets {
             return;
         }
         let mut load_of_type = |ext: &str, stype: ShaderType| {
-            for p in pack_scan::scan_single_by_ext(&self.root, &format!("{pack_path}Shaders/"), ext)
+            for p in pack_scan::scan_single_by_ext(&*self.vfs, &format!("{pack_path}Shaders/"), ext)
             {
                 // `sf::Shader::loadFromFile` stand-in: the file must exist.
-                if !self.root.join(&p).is_file() {
+                if !self.vfs.is_file(&p) {
                     // C++: log "Failed to load shader '<p>'" and continue.
                     continue;
                 }
@@ -335,12 +359,11 @@ impl Assets {
 
     /// C++ `loadPackAssets_loadCustomSounds`.
     fn load_pack_assets_load_custom_sounds(&mut self, pack_id: &str, pack_path: &str) {
-        for p in pack_scan::scan_single_by_ext(&self.root, &format!("{pack_path}Sounds/"), ".ogg") {
+        for p in pack_scan::scan_single_by_ext(&*self.vfs, &format!("{pack_path}Sounds/"), ".ogg") {
             // C++ `p.getFileName()` = the bare file name (with `.ogg`).
             let file_name = logical_filename(&p);
             let asset_id = format!("{pack_id}_{file_name}");
-            let real = self.root.join(&p);
-            if !self.storage.load_sound_buffer(&asset_id, &real) {
+            if !self.storage.load_sound_buffer(&asset_id, &*self.vfs, &p) {
                 // C++: log "Failed to load sound buffer '<p>'"
             }
             self.load_info.assets += 1;
@@ -349,7 +372,7 @@ impl Assets {
 
     /// C++ `loadPackAssets_loadMusic` (the `.ogg` files → `musicPathMap`).
     fn load_pack_assets_load_music(&mut self, pack_id: &str, pack_path: &str) {
-        for p in pack_scan::scan_single_by_ext(&self.root, &format!("{pack_path}Music/"), ".ogg") {
+        for p in pack_scan::scan_single_by_ext(&*self.vfs, &format!("{pack_path}Music/"), ".ogg") {
             let base = file_name_no_ext(&p);
             let asset_id = format!("{pack_id}_{base}");
             self.music_path_map.insert(asset_id, p.clone());
@@ -363,8 +386,8 @@ impl Assets {
         pack_id: &str,
         pack_path: &str,
     ) -> Result<(), oh_data::json::JsonError> {
-        for p in pack_scan::scan_single_by_ext(&self.root, &format!("{pack_path}Music/"), ".json") {
-            let (object, mut error) = read_file_with_errors(&self.root.join(&p));
+        for p in pack_scan::scan_single_by_ext(&*self.vfs, &format!("{pack_path}Music/"), ".json") {
+            let (object, mut error) = read_json(&*self.vfs, &p);
             self.load_info.add_formatted_error(&mut error);
 
             let music_data = load_music_from_json(&object)?;
@@ -381,9 +404,9 @@ impl Assets {
         pack_id: &str,
         pack_path: &str,
     ) -> Result<(), oh_data::json::JsonError> {
-        for p in pack_scan::scan_single_by_ext(&self.root, &format!("{pack_path}Styles/"), ".json")
+        for p in pack_scan::scan_single_by_ext(&*self.vfs, &format!("{pack_path}Styles/"), ".json")
         {
-            let (object, mut error) = read_file_with_errors(&self.root.join(&p));
+            let (object, mut error) = read_json(&*self.vfs, &p);
             self.load_info.add_formatted_error(&mut error);
 
             let style_data = StyleData::from_json(&object)?;
@@ -400,9 +423,9 @@ impl Assets {
         pack_id: &str,
         pack_path: &str,
     ) -> Result<(), oh_data::json::JsonError> {
-        for p in pack_scan::scan_single_by_ext(&self.root, &format!("{pack_path}Levels/"), ".json")
+        for p in pack_scan::scan_single_by_ext(&*self.vfs, &format!("{pack_path}Levels/"), ".json")
         {
-            let (object, mut error) = read_file_with_errors(&self.root.join(&p));
+            let (object, mut error) = read_json(&*self.vfs, &p);
             self.load_info.add_formatted_error(&mut error);
 
             // C++ `LevelData{object, mPath, mPackId}` (mPath = packPath string).
@@ -462,13 +485,13 @@ impl Assets {
     // ------------------------------------------------------------------
 
     fn load_all_local_profiles(&mut self) -> bool {
-        if !self.root.join("Profiles").is_dir() {
+        if !self.vfs.is_dir("Profiles") {
             // C++: log "Folder Profiles/ does not exist" and return false
             // (NOT fatal).
             return false;
         }
-        for p in pack_scan::scan_single_by_ext(&self.root, "Profiles/", ".json") {
-            let (object, mut error) = read_file_with_errors(&self.root.join(&p));
+        for p in pack_scan::scan_single_by_ext(&*self.vfs, "Profiles/", ".json") {
+            let (object, mut error) = read_json(&*self.vfs, &p);
             self.load_info.add_formatted_error(&mut error);
             if let Ok(profile) = load_profile_from_json(&object) {
                 self.add_local_profile(profile);
@@ -532,12 +555,6 @@ impl Assets {
     #[must_use = "mirrors the C++ [[nodiscard]]"]
     pub fn get_load_results(&self) -> &LoadInfo {
         &self.load_info
-    }
-
-    /// The process-CWD root this `Assets` instance was built from.
-    #[must_use]
-    pub fn root(&self) -> &Path {
-        &self.root
     }
 
     #[must_use]
@@ -715,24 +732,24 @@ impl Assets {
 /// C++ `loadAssetsFromJson(assetStorage, mRootPath, mObj)`: reads the three
 /// `vector<string>` keys (no defaults → missing key = empty list) and loads
 /// each into the storage. Failures only log (not recorded in `LoadInfo`).
-fn load_assets_from_json(storage: &mut AssetStorage, root: &Path, root_path: &str, obj: &Obj) {
+fn load_assets_from_json(storage: &mut AssetStorage, vfs: &dyn Vfs, root_path: &str, obj: &Obj) {
     if let Ok(fonts) = json::extr_vec_str(json::get_missing_as_null(obj, "fonts")) {
         for f in fonts {
-            if !storage.load_font(&f, &root.join(format!("{root_path}{f}"))) {
+            if !storage.load_font(&f, vfs, &format!("{root_path}{f}")) {
                 // C++: log "Failed to load font '<f>'"
             }
         }
     }
     if let Ok(textures) = json::extr_vec_str(json::get_missing_as_null(obj, "textures")) {
         for f in textures {
-            if !storage.load_texture(&f, &root.join(format!("{root_path}{f}"))) {
+            if !storage.load_texture(&f, vfs, &format!("{root_path}{f}")) {
                 // C++: log "Failed to load texture '<f>'"
             }
         }
     }
     if let Ok(sounds) = json::extr_vec_str(json::get_missing_as_null(obj, "soundBuffers")) {
         for f in sounds {
-            if !storage.load_sound_buffer(&f, &root.join(format!("{root_path}{f}"))) {
+            if !storage.load_sound_buffer(&f, vfs, &format!("{root_path}{f}")) {
                 // C++: log "Failed to load sound buffer '<f>'"
             }
         }
@@ -752,6 +769,20 @@ fn file_name_no_ext(logical: &str) -> String {
 /// C++ `Path::getFileName()` — the last path component (e.g. `"gradient.frag"`).
 fn logical_filename(logical: &str) -> &str {
     logical.rsplit('/').next().unwrap_or(logical)
+}
+
+/// Read a logical JSON file through the VFS, mirroring the exact
+/// `oh_data::json::read_file_with_errors` error strings: a missing/unreadable
+/// file yields `(Null, " in file <name>")`; a parse failure yields
+/// `(Null, "<formatted messages> in file <name>")`. `name` is the bare file
+/// name (the last path component) — the same `Path::file_name()` value the
+/// old `root.join(logical)` produced.
+fn read_json(vfs: &dyn Vfs, logical: &str) -> (Obj, String) {
+    let file_name = logical_filename(logical);
+    match vfs.read(logical) {
+        Err(_) => (Obj::Null, format!(" in file {file_name}")),
+        Ok(bytes) => json::parse_with_errors(&bytes, file_name),
+    }
 }
 
 /// Sort a `Vec<PackInfo>` by `PackData::priority` ascending (C++ end-of-ctor

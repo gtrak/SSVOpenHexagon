@@ -21,22 +21,21 @@
 //! results carry a trailing slash, file results do not, and the list is
 //! byte-sorted on the full logical path.
 //!
-//! All functions take `root` (the process-CWD equivalent, i.e. the
-//! `_RELEASE` directory) plus a **logical** path relative to it (the string
-//! form the C++ code operates on, e.g. `"Packs/"` or
-//! `"Packs/cube/Levels/"`). Filesystem checks are done on `root.join(...)`,
-//! but the returned strings are the logical (CWD-relative) paths the C++
-//! stores in `PackData::folderPath`, `PackInfo::path`, `LevelData::packPath`
-//! and the asset-id maps.
+//! All functions take a `&dyn Vfs` (the content provider, issue 026a §3) plus
+//! a **logical** path relative to its root (the string form the C++ code
+//! operates on, e.g. `"Packs/"` or `"Packs/cube/Levels/"`). The enumeration
+//! goes through `Vfs::list_dir`; the returned strings are the logical
+//! (CWD-relative) paths the C++ stores in `PackData::folderPath`,
+//! `PackInfo::path`, `LevelData::packPath` and the asset-id maps.
 
-use std::path::Path;
+use oh_vfs::{EntryKind, Vfs};
 
 /// `scanSingleFolderName(path)` — C++
 /// `scan<Mode::Single, Type::Folder>(buffer, path)` (default
 /// `Sort::Alphabetic`): the immediate sub-**folders** of `logical`, each
 /// returned as a logical path WITH a trailing slash, byte-sorted.
-pub fn scan_single_folder_name(root: &Path, logical: &str) -> Vec<String> {
-    scan_dirs_or_files(root, logical, false, None)
+pub fn scan_single_folder_name(vfs: &dyn Vfs, logical: &str) -> Vec<String> {
+    scan_dirs_or_files(vfs, logical, false, None)
 }
 
 /// `scanSingleByExt(path, extension)` — C++
@@ -44,16 +43,16 @@ pub fn scan_single_folder_name(root: &Path, logical: &str) -> Vec<String> {
 /// the immediate sub-**files** whose name ends with `extension`
 /// (CASE-SENSITIVE, `ssvu::endsWith`), as logical paths WITHOUT a trailing
 /// slash, byte-sorted.
-pub fn scan_single_by_ext(root: &Path, logical: &str, extension: &str) -> Vec<String> {
-    scan_dirs_or_files(root, logical, true, Some(extension))
+pub fn scan_single_by_ext(vfs: &dyn Vfs, logical: &str, extension: &str) -> Vec<String> {
+    scan_dirs_or_files(vfs, logical, true, Some(extension))
 }
 
 /// `scanSingleByName(path, name)` — C++
 /// `scan<Mode::Single, Type::File, Pick::ByName>(buffer, path, name)`: the
 /// immediate sub-**files** whose name equals `name` exactly (case-sensitive),
 /// byte-sorted.
-pub fn scan_single_by_name(root: &Path, logical: &str, name: &str) -> Vec<String> {
-    scan_dirs_or_files(root, logical, true, None)
+pub fn scan_single_by_name(vfs: &dyn Vfs, logical: &str, name: &str) -> Vec<String> {
+    scan_dirs_or_files(vfs, logical, true, None)
         .into_iter()
         .filter(|p| p.strip_prefix(logical).is_some_and(|n| n == name))
         .collect()
@@ -62,25 +61,21 @@ pub fn scan_single_by_name(root: &Path, logical: &str, name: &str) -> Vec<String
 /// Shared enumeration + filter + byte-sort. `want_files` selects files
 /// (`true`) or folders (`false`); `ext` (only meaningful for files) is the
 /// case-sensitive extension filter. The C++ `isRootOrParent` guard drops the
-/// `.`/`..` pseudo-entries (absent from Rust's `read_dir`, kept for
-/// clarity).
+/// `.`/`..` pseudo-entries (absent from `Vfs::list_dir` — both `RealFs`'s
+/// `read_dir` and `MemoryVfs` never yield them — so no explicit guard).
 fn scan_dirs_or_files(
-    root: &Path,
+    vfs: &dyn Vfs,
     logical: &str,
     want_files: bool,
     ext: Option<&str>,
 ) -> Vec<String> {
-    let real = root.join(logical);
-    let mut out: Vec<String> = match std::fs::read_dir(&real) {
-        Ok(rd) => rd,
+    let mut out: Vec<String> = match vfs.list_dir(logical) {
+        Ok(entries) => entries,
         Err(_) => return Vec::new(),
     }
-    .filter_map(|e| e.ok())
+    .into_iter()
     .filter(|e| {
-        if e.file_name().to_string_lossy() == ".." {
-            return false;
-        }
-        let is_dir = e.path().is_dir();
+        let is_dir = e.kind == EntryKind::Dir;
         if want_files {
             !is_dir
         } else {
@@ -88,20 +83,21 @@ fn scan_dirs_or_files(
         }
     })
     .filter(|e| match ext {
-        Some(suffix) => e.file_name().to_string_lossy().ends_with(suffix),
+        Some(suffix) => e.name.ends_with(suffix),
         None => true,
     })
     .map(|e| {
-        let name = e.file_name().to_string_lossy().into_owned();
         if want_files {
-            format!("{logical}{name}")
+            format!("{logical}{}", e.name)
         } else {
-            format!("{logical}{name}/")
+            format!("{logical}{}/", e.name)
         }
     })
     .collect();
 
     // C++ `std::sort` on `Path` (= normalized full-path string, byte-wise).
+    // `Vfs::list_dir` already returns byte-sorted entries, so this is a
+    // harmless no-op re-sort kept for fidelity (issue 026a §3).
     out.sort();
     out
 }
@@ -124,7 +120,8 @@ mod tests {
         for d in ["beta", "alpha", "gamma"] {
             fs::create_dir_all(root.join("Packs").join(d)).unwrap();
         }
-        let got = scan_single_folder_name(&root, "Packs/");
+        let vfs = oh_vfs::RealFs::new(root.clone());
+        let got = scan_single_folder_name(&vfs, "Packs/");
         assert_eq!(got, vec!["Packs/alpha/", "Packs/beta/", "Packs/gamma/"]);
         let _ = fs::remove_dir_all(&root);
     }
@@ -139,7 +136,8 @@ mod tests {
         // `.json` is case-sensitive: `c.JSON` and `note.txt` are excluded.
         // Byte-wise: 'A' (0x41) < 'a' (0x61) < 'b' (0x62) — matches C++
         // `std::sort` on the path strings.
-        let got = scan_single_by_ext(&root, "Levels/", ".json");
+        let vfs = oh_vfs::RealFs::new(root.clone());
+        let got = scan_single_by_ext(&vfs, "Levels/", ".json");
         assert_eq!(got, vec!["Levels/A.json", "Levels/a.json", "Levels/b.json"]);
         let _ = fs::remove_dir_all(&root);
     }
@@ -150,8 +148,9 @@ mod tests {
         fs::create_dir_all(root.join("Levels")).unwrap();
         fs::write(root.join("Levels").join("pi.json"), "{}").unwrap();
         fs::write(root.join("Levels").join("piX.json"), "{}").unwrap();
+        let vfs = oh_vfs::RealFs::new(root.clone());
         assert_eq!(
-            scan_single_by_name(&root, "Levels/", "pi.json"),
+            scan_single_by_name(&vfs, "Levels/", "pi.json"),
             vec!["Levels/pi.json"]
         );
         let _ = fs::remove_dir_all(&root);

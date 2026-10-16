@@ -127,10 +127,10 @@ fn real_tree_apeirogon_level_data_is_exact() {
 
 #[test]
 fn discovery_order_is_byte_sorted_full_path() {
-    let root = release_dir();
+    let vfs = oh_vfs::RealFs::new(release_dir());
     // `scanSingleFolderName("Packs/")`: byte-sorted, trailing slash.
     assert_eq!(
-        pack_scan::scan_single_folder_name(&root, "Packs/"),
+        pack_scan::scan_single_folder_name(&vfs, "Packs/"),
         vec![
             "Packs/artwork/",
             "Packs/base/",
@@ -144,7 +144,7 @@ fn discovery_order_is_byte_sorted_full_path() {
     );
     // `scanSingleByExt("Packs/cube/Levels/", ".json")`: byte-sorted, no slash.
     assert_eq!(
-        pack_scan::scan_single_by_ext(&root, "Packs/cube/Levels/", ".json"),
+        pack_scan::scan_single_by_ext(&vfs, "Packs/cube/Levels/", ".json"),
         vec![
             "Packs/cube/Levels/apeirogon.json",
             "Packs/cube/Levels/commando.json",

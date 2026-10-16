@@ -15,13 +15,14 @@
 //!   - a second load of the same id is a no-op and returns `false` (first
 //!     load wins, even if it failed).
 //!
-//! The `loadFromFile` success here is stood in by "the file exists on disk"
-//! (deterministic, no SFML). A real binary parse is issue 10's job; the
-//! registry shape (id → loaded?) is what the game and the fail-soft getters
-//! actually observe.
+//! The `loadFromFile` success here is stood in by "the file exists in the
+//! VFS" (`Vfs::is_file` — deterministic, no SFML). A real binary parse is
+//! issue 10's job; the registry shape (id → loaded?) is what the game and the
+//! fail-soft getters actually observe.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+
+use oh_vfs::Vfs;
 
 /// A reference to an asset slot (stand-in for an SFML handle reference; issue
 /// 10 replaces the payload). Mirrors the two C++ getter shapes:
@@ -58,31 +59,36 @@ impl AssetStorage {
 
     /// C++ `tryEmplaceAndThenLoadFromFile(map, id, path)`:
     /// `map.emplace(...)` and, **only if inserted**, `loadFromFile(path)`.
-    /// The loader stand-in (`Path::exists`) decides success.
-    fn try_emplace_and_load(map: &mut BTreeMap<String, bool>, id: &str, path: &Path) -> bool {
+    /// The loader stand-in (`Vfs::is_file`) decides success.
+    fn try_emplace_and_load(
+        map: &mut BTreeMap<String, bool>,
+        id: &str,
+        vfs: &dyn Vfs,
+        logical: &str,
+    ) -> bool {
         if map.contains_key(id) {
             // Second load is a no-op: `inserted` is false, C++ returns
             // `inserted && loadFromFile(...) == false`.
             return false;
         }
-        let loaded = path.exists();
+        let loaded = vfs.is_file(logical);
         map.insert(id.to_string(), loaded);
         loaded
     }
 
     /// C++ `loadTexture(id, path)`.
-    pub fn load_texture(&mut self, id: &str, path: &Path) -> bool {
-        Self::try_emplace_and_load(&mut self.textures, id, path)
+    pub fn load_texture(&mut self, id: &str, vfs: &dyn Vfs, logical: &str) -> bool {
+        Self::try_emplace_and_load(&mut self.textures, id, vfs, logical)
     }
 
     /// C++ `loadFont(id, path)`.
-    pub fn load_font(&mut self, id: &str, path: &Path) -> bool {
-        Self::try_emplace_and_load(&mut self.fonts, id, path)
+    pub fn load_font(&mut self, id: &str, vfs: &dyn Vfs, logical: &str) -> bool {
+        Self::try_emplace_and_load(&mut self.fonts, id, vfs, logical)
     }
 
     /// C++ `loadSoundBuffer(id, path)`.
-    pub fn load_sound_buffer(&mut self, id: &str, path: &Path) -> bool {
-        Self::try_emplace_and_load(&mut self.sound_buffers, id, path)
+    pub fn load_sound_buffer(&mut self, id: &str, vfs: &dyn Vfs, logical: &str) -> bool {
+        Self::try_emplace_and_load(&mut self.sound_buffers, id, vfs, logical)
     }
 
     /// C++ `getTexture(id)` → `sf::Texture*` (non-null iff a slot exists,
@@ -144,16 +150,18 @@ mod tests {
     #[test]
     fn failed_load_keeps_a_slot_and_second_load_is_noop() {
         let mut s = AssetStorage::new();
-        let missing = std::path::Path::new("/nonexistent/nope.png");
+        // A RealFs rooted at the manifest dir; the logical path below does
+        // not exist → `is_file` is false (the failed-load case).
+        let vfs = oh_vfs::RealFs::new(env!("CARGO_MANIFEST_DIR"));
 
         // first load: inserted, but the file is missing → false (failed).
-        assert!(!s.load_texture("t", missing));
+        assert!(!s.load_texture("t", &vfs, "no-such-asset.png"));
         // the empty entry remains: has = true, get = Some(false).
         assert!(s.has_texture("t"));
         assert_eq!(s.get_texture("t"), Some(false));
 
         // second load of the same id is a no-op (first load wins).
-        assert!(!s.load_texture("t", missing));
+        assert!(!s.load_texture("t", &vfs, "no-such-asset.png"));
         assert_eq!(s.get_texture("t"), Some(false));
     }
 
@@ -169,8 +177,8 @@ mod tests {
     fn existing_file_loads_as_present() {
         let mut s = AssetStorage::new();
         // the crate's own Cargo.toml always exists.
-        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-        assert!(s.load_texture("t", &manifest));
+        let vfs = oh_vfs::RealFs::new(env!("CARGO_MANIFEST_DIR"));
+        assert!(s.load_texture("t", &vfs, "Cargo.toml"));
         assert_eq!(s.get_texture("t"), Some(true));
         assert_eq!(s.texture_or_null("t"), AssetRef::Present("t"));
         assert_eq!(s.font_or_null("nope"), AssetRef::Null);

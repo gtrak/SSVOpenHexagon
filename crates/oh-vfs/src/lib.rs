@@ -39,8 +39,8 @@
 //!   can filter files-vs-folders in one call instead of `list_dir` + N
 //!   `is_dir` re-probes.
 
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Mutex;
 
 /// The kind of a directory entry (the C++ `Path::isFolder()` / `isFile()`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,7 +96,13 @@ pub type VfsResult<T> = Result<T, VfsError>;
 /// C++/port already builds (e.g. `"Packs/"`, `"Packs/cube/Levels/pi.json"`,
 /// `"config.json"`). Each provider resolves them against its own root; the
 /// caller never sees a `std::path::Path`.
-pub trait Vfs {
+///
+/// `Send + Sync` supertraits: the `Assets`/`Config` layers hold their
+/// provider as `Arc<dyn Vfs>`, and the engine stores those as `Arc<dyn
+/// GameApi>` (a `Send + Sync` trait object), so the trait object itself must
+/// be `Send + Sync`. `Debug` is required so the owning `Assets` struct can
+/// keep its `#[derive(Debug)]`.
+pub trait Vfs: Send + Sync + std::fmt::Debug {
     /// Read the whole file at logical `path`. `Err(NotFound)` when it is
     /// missing or not a regular file (the C++ open-failure).
     fn read(&self, path: &str) -> VfsResult<Vec<u8>>;
@@ -235,14 +241,28 @@ impl Vfs for RealFs {
 /// in-session (on-disk config persistence on web is out of scope — v1 is a
 /// prototype).
 ///
-/// `files` is a `RefCell` because the trait's `write(&self, …)` must mutate
+/// `files` is a `Mutex` because the trait's `write(&self, …)` must mutate
 /// the in-memory store through a shared reference (interior mutability);
-/// `dirs` is set at construction and never mutated. Pure (no `std::fs`) —
-/// compiles for `wasm32-unknown-unknown`.
-#[derive(Debug, Clone, Default)]
+/// `dirs` is set at construction and never mutated. A `Mutex` (not `RefCell`)
+/// makes `MemoryVfs` `Sync`, which the `Vfs: Send + Sync` supertrait requires
+/// (the provider is held as `Arc<dyn Vfs>` inside a `Send + Sync` engine);
+/// it works single-threaded on wasm32. Pure (no `std::fs`) — compiles for
+/// `wasm32-unknown-unknown`.
+#[derive(Debug, Default)]
 pub struct MemoryVfs {
-    files: RefCell<BTreeMap<String, Vec<u8>>>,
+    files: Mutex<BTreeMap<String, Vec<u8>>>,
     dirs: BTreeSet<String>,
+}
+
+/// `std::sync::Mutex` is not `Clone`, so the derive is dropped; the map is
+/// cloned through the guard (a faithful copy of the in-memory content).
+impl Clone for MemoryVfs {
+    fn clone(&self) -> Self {
+        Self {
+            files: Mutex::new(self.files.lock().expect("vfs lock poisoned").clone()),
+            dirs: self.dirs.clone(),
+        }
+    }
 }
 
 impl MemoryVfs {
@@ -252,7 +272,7 @@ impl MemoryVfs {
     #[must_use]
     pub fn new(files: BTreeMap<String, Vec<u8>>, dirs: BTreeSet<String>) -> Self {
         Self {
-            files: RefCell::new(files),
+            files: Mutex::new(files),
             dirs,
         }
     }
@@ -261,7 +281,8 @@ impl MemoryVfs {
 impl Vfs for MemoryVfs {
     fn read(&self, path: &str) -> VfsResult<Vec<u8>> {
         self.files
-            .borrow()
+            .lock()
+            .expect("vfs lock poisoned")
             .get(path)
             .cloned()
             .ok_or(VfsError::NotFound)
@@ -275,7 +296,10 @@ impl Vfs for MemoryVfs {
     }
 
     fn is_file(&self, path: &str) -> bool {
-        self.files.borrow().contains_key(path)
+        self.files
+            .lock()
+            .expect("vfs lock poisoned")
+            .contains_key(path)
     }
 
     fn list_dir(&self, path: &str) -> VfsResult<Vec<Entry>> {
@@ -290,8 +314,9 @@ impl Vfs for MemoryVfs {
         } else {
             format!("{dir}/")
         };
+        let files = self.files.lock().expect("vfs lock poisoned");
         let mut entries = Vec::new();
-        for key in self.files.borrow().keys() {
+        for key in files.keys() {
             if let Some(name) = child_name(key, &prefix) {
                 entries.push(Entry {
                     name,
@@ -313,7 +338,8 @@ impl Vfs for MemoryVfs {
 
     fn write(&self, path: &str, bytes: &[u8]) -> VfsResult<()> {
         self.files
-            .borrow_mut()
+            .lock()
+            .expect("vfs lock poisoned")
             .insert(path.to_string(), bytes.to_vec());
         Ok(())
     }

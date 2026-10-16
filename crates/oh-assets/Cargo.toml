@@ -7,5 +7,6 @@ edition.workspace = true
 [dependencies]
 oh-data = { path = "../oh-data" }
 oh-math = { path = "../oh-math" }
+oh-vfs = { path = "../oh-vfs" }
 
 [dev-dependencies]
