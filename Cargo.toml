@@ -14,6 +14,8 @@ members = [
     "crates/oh-menu",
     "crates/oh-app",
     "crates/oh-net",
+    "crates/oh-server-control",
+    "crates/oh-workshop-uploader",
 ]
 # Later issues add workspace members as they land (PLAN.md architecture
 # table): oh-timeline, oh-replay, oh-data, oh-config, oh-assets, oh-lua,

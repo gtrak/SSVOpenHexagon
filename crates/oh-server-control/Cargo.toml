@@ -1,0 +1,21 @@
+[package]
+name = "oh-server-control"
+description = "The OHServerControl tool port (src/OHServerControl/main.cpp): sends control commands over UDP to the server control port (127.0.0.1:50506)"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+# Library + the `oh-server-control` binary (issue 19); the CLI/send logic
+# lives in the lib so tests can drive it with a fake sender and against an
+# in-process UDP listener.
+
+[[bin]]
+name = "oh-server-control"
+path = "src/main.rs"
+
+[dependencies]
+# The control datagram is the C++ `sf::Packet` string form (`packet <<
+# stringBuf`, main.cpp:37) — the same wire codec oh-net pins as
+# `oh_net::packet::Packet` (SFML fork `src/SFML/Network/Packet.cpp:521`,
+# re-exported from `oh_replay::Packet`).
+oh-net = { path = "../oh-net" }

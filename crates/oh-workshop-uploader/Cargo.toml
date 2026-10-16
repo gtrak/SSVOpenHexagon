@@ -1,0 +1,23 @@
+[package]
+name = "oh-workshop-uploader"
+description = "The OHWorkshopUploader tool port (src/OHWorkshopUploader/main.cpp): the interactive workshop-item menu over the SteamUgc seam (the real Steam wiring is issue 20)"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+# Library + the `oh-workshop-uploader` binary (issue 19); the menu/reader
+# logic lives in the lib so tests can drive it with a `SteamUgc` test double
+# and a captured output sink.
+
+[[bin]]
+name = "oh-workshop-uploader"
+path = "src/main.rs"
+
+[dependencies]
+# None — the Steam UGC surface is the `steam::SteamUgc` seam (issue 20 wires
+# the real SDK), and the tool's only other I/O is stdin/stdout + filesystem
+# path validation.
+
+[dev-dependencies]
+# The path-validation tests need isolated on-disk fixtures.
+tempfile = { workspace = true }
