@@ -15,7 +15,7 @@ use oh_menu::{
 /// Recorded `fnHGNewGame(pack, level)` call log.
 type NewGameLog = Rc<RefCell<Vec<(String, String)>>>;
 
-fn make_menu() -> (MenuGame, NewGameLog) {
+fn make_menu() -> (MenuGame, NewGameLog, Rc<RecordingAudio>) {
     let assets: Rc<dyn MenuAssets> = {
         let fa = FakeAssets::new();
         fa.add_pack("cube", &["cube1", "cube2", "cube3"]);
@@ -34,7 +34,7 @@ fn make_menu() -> (MenuGame, NewGameLog) {
         assets,
         config,
         Rc::new(NoopNetwork),
-        audio,
+        audio.clone(),
         Rc::new(NoopTouch),
         FakeWindow::new(),
         cb,
@@ -43,7 +43,7 @@ fn make_menu() -> (MenuGame, NewGameLog) {
         None,
         Rc::new(LinearFontHeight),
     );
-    (menu, recorded)
+    (menu, recorded, audio)
 }
 
 /// Boot the menu through the two boot screens to the main menu (with one
@@ -62,7 +62,7 @@ fn boot_to_main(menu: &MenuGame) {
 
 #[test]
 fn boot_flow_and_level_selection() {
-    let (menu, recorded) = make_menu();
+    let (menu, recorded, _audio) = make_menu();
     boot_to_main(&menu);
 
     // Main menu: root "main" category, "LEVEL SELECT" selected.
@@ -100,7 +100,7 @@ fn boot_flow_and_level_selection() {
 
 #[test]
 fn main_menu_navigation_to_options_submenus() {
-    let (menu, _recorded) = make_menu();
+    let (menu, _recorded, _audio) = make_menu();
     boot_to_main(&menu);
 
     // LEVEL SELECT → LOCAL PROFILES → ONLINE → OPTIONS (three downs).
@@ -137,7 +137,7 @@ fn main_menu_navigation_to_options_submenus() {
 
 #[test]
 fn online_menu_visibility_with_disconnected_client() {
-    let (menu, _recorded) = make_menu();
+    let (menu, _recorded, _audio) = make_menu();
     boot_to_main(&menu);
 
     // Down to ONLINE, ok → MOnline.
@@ -158,5 +158,108 @@ fn online_menu_visibility_with_disconnected_client() {
         enabled,
         vec![true, false, false, false, false, false],
         "CONNECT enabled while disconnected; all login/register items gated off"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// issue 025g — the C++ release-tail `--ignoreInputs` decrement
+// (MenuGame.cpp:576-601 / :644-666 / :694-700)
+// ---------------------------------------------------------------------------
+
+/// The C++ `fnGoToMenu` (main.cpp:456-462) runs `returnToLevelSelection()`
+/// — `setIgnoreAllInputs(1)` — on the game → menu drop; the C++'s first
+/// release after the drop takes `ignoreInputs` 1 → 0 (the shared tail of
+/// `KeyReleased` / `MouseButtonReleased` / `JoystickButtonReleased`),
+/// unblocking the menu's key binds. The port's on-device 025g finding:
+/// without the tail the menu stayed input-dead after the round trip.
+#[test]
+fn release_edge_decrements_ignore_inputs_after_return_to_level_selection() {
+    let (menu, _recorded, _audio) = make_menu();
+    boot_to_main(&menu);
+
+    // LEVEL SELECT (the C++ SMain's first item) → LevelSelection:
+    menu.ok_action();
+    assert_eq!(menu.state(), States::LevelSelection);
+
+    // The `fnGoToMenu` half (the C++'s game → menu drop):
+    menu.return_to_level_selection();
+    assert_eq!(menu.shared().borrow().ignore_inputs, 1);
+
+    // The first release decrements 1 → 0 (the C++ `--ignoreInputs` tail):
+    menu.handle_release_edge();
+    assert_eq!(menu.shared().borrow().ignore_inputs, 0);
+
+    // A second release at 0 is the no-op head (`if(ignoreInputs == 0)
+    // return;`): no state drift.
+    menu.handle_release_edge();
+    assert_eq!(menu.shared().borrow().ignore_inputs, 0);
+    assert_eq!(menu.state(), States::LevelSelection);
+}
+
+/// Multi-press holds (the C++'s `setIgnoreAllInputs(2)` dialog-error
+/// shape): each release decrements once; the binds stay blocked until
+/// the counter reaches 0.
+#[test]
+fn release_edge_holds_ignore_inputs_above_one_until_each_release() {
+    let (menu, _recorded, _audio) = make_menu();
+    boot_to_main(&menu);
+    menu.shared().borrow_mut().set_ignore_all_inputs(2);
+
+    menu.handle_release_edge();
+    assert_eq!(menu.shared().borrow().ignore_inputs, 1);
+    menu.handle_release_edge();
+    assert_eq!(menu.shared().borrow().ignore_inputs, 0);
+}
+
+/// Scenario 1 (the boot screens — the caller's `advance_boot_screen`
+/// owns the release; the tail must not double-decrement) + scenario 2
+/// (a dialog delay holds the decrement).
+#[test]
+fn release_edge_noop_on_boot_screens_and_during_dialog_delay() {
+    let (menu, _recorded, _audio) = make_menu();
+
+    // LoadingScreen (ignore held at 1): the tail's scenario-1 `return`
+    // — the boot advance (the caller's `advance_boot_screen`) owns it.
+    assert_eq!(menu.state(), States::LoadingScreen);
+    menu.handle_release_edge();
+    assert_eq!(
+        menu.shared().borrow().ignore_inputs,
+        1,
+        "the boot screen is untouched by the tail"
+    );
+
+    boot_to_main(&menu);
+    menu.shared().borrow_mut().dialog_box_delay = 64.0;
+    menu.shared().borrow_mut().set_ignore_all_inputs(1);
+    menu.handle_release_edge();
+    assert_eq!(
+        menu.shared().borrow().ignore_inputs,
+        1,
+        "the dialog delay holds the decrement (scenario 2)"
+    );
+}
+
+/// Scenario 3: an open dialog box with an unknown close key closes on
+/// the release — the C++ `checkCloseDialogBox`'s `closeBox` (select
+/// sound + `clearDialogBox` + `setIgnoreAllInputs(0)`).
+#[test]
+fn release_edge_closes_an_open_dialog_box() {
+    let (menu, _recorded, audio) = make_menu();
+    boot_to_main(&menu);
+
+    menu.shared()
+        .borrow_mut()
+        .show_dialog_box("PRESS ANY KEY OR BUTTON TO CLOSE THIS MESSAGE");
+    menu.shared().borrow_mut().set_ignore_all_inputs(2);
+    menu.handle_release_edge();
+
+    assert!(
+        menu.shared().borrow().dialog.empty(),
+        "the box cleared (the C++ closeBox)"
+    );
+    assert_eq!(menu.shared().borrow().ignore_inputs, 0);
+    assert!(
+        audio.played.borrow().iter().any(|s| s == "select.ogg"),
+        "the closeBox select sound"
     );
 }

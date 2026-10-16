@@ -1964,6 +1964,79 @@ impl MenuGame {
         }
     }
 
+    /// C++ `KeyReleased` / `MouseButtonReleased` /
+    /// `JoystickButtonReleased` shared release tail
+    /// (MenuGame.cpp:576-601 / :644-666 / :694-700) — issue 025g:
+    /// while `ignoreInputs > 0` (inputs are special-cased: boot
+    /// screens, dialog boxes, bind capture), a release that is NOT a
+    /// boot-screen close (scenario 1 — the C++
+    /// `checkCloseBootScreens`, MenuGame.cpp:360-380; the port's
+    /// [`Self::advance_boot_screen`]) and NOT during a dialog delay and
+    /// NOT a dialog-box close (scenario 3) DECREMENTS `ignoreInputs`
+    /// (`--ignoreInputs`) — the mechanism that unblocks the menu's bind
+    /// system after, e.g., `returnToLevelSelection`'s
+    /// `setIgnoreAllInputs(1)` on `fnGoToMenu` (main.cpp:456-462): the
+    /// C++'s first release after a game → menu drop takes the menu from
+    /// 1 to 0, and subsequent keys work. Without this tail the port held
+    /// `ignore_inputs >= 1` forever after such a drop (the on-device
+    /// 025g finding: the menu's key binds stayed dead after a
+    /// profile-creation → game → `goToMenu` round trip).
+    ///
+    /// The C++'s scenario-3 bind-capture half (the
+    /// `KeyboardBindControl` key-assignment, MenuGame.cpp:586-601 /
+    /// :655-666) is the documented oh-config `BindControl` seam (the
+    /// port's options bind-capture UI lives there — `oh-menu`
+    /// `menu.rs` module docs); the input-box login/registration
+    /// `transitionInputSequence` half is the port's
+    /// `DialogInputState` flow (not this tail).
+    pub fn handle_release_edge(&self) {
+        let mut s = self.shared.borrow_mut();
+        // All three handlers' head: `if(ignoreInputs == 0) return;`
+        if s.ignore_inputs == 0 {
+            return;
+        }
+        // Scenario 1 (the boot screens) is the caller's
+        // `advance_boot_screen` (the C++ `checkCloseBootScreens` — its
+        // own `--ignoreInputs` gate, MenuGame.cpp:362-380).
+        if matches!(s.state, States::LoadingScreen | States::EpilepsyWarning) {
+            return;
+        }
+        // Scenario 2 (MenuGame.cpp:530-532 / :633-635 / :683-685).
+        if s.dialog_box_delay > 0.0 {
+            return;
+        }
+        // Scenario 3 (MenuGame.cpp:534-573 / :637-643 / :687-693): a
+        // dialog box with an unknown close key closes on any release —
+        // the C++ `checkCloseDialogBox`'s `closeBox` (select sound +
+        // `clearDialogBox` + `setIgnoreAllInputs(0)`; the C++'s
+        // `--ignoreInputs;` before the `closeBox` is subsumed — the
+        // close zeroes it).
+        if !s.dialog.empty() {
+            if s.dialog.key_to_close() != DialogKey::Unknown {
+                return;
+            }
+            if s.dialog_input_state == DialogInputState::Nothing {
+                s.play_sound_override("select.ogg");
+                s.dialog.clear();
+                s.set_ignore_all_inputs(0);
+            } else {
+                // The C++'s input-sequence `--ignoreInputs;` (the
+                // sequence transition itself is the `DialogInputState`
+                // flow's, not this tail's).
+                let n = s.ignore_inputs - 1;
+                s.set_ignore_all_inputs(n);
+            }
+            return;
+        }
+        // The generic `--ignoreInputs` tail (all three handlers); the
+        // C++'s `if ((--ignoreInputs) == 0)` — `setIgnoreAllInputs(0)`
+        // re-syncs the manager flag at 0 (the no-menu / not-MOpts
+        // branch, MenuGame.cpp:579-582 / :647-650 / :697-700; the MOpts
+        // bind-assignment branch is the documented `BindControl` seam).
+        let n = s.ignore_inputs - 1;
+        s.set_ignore_all_inputs(n);
+    }
+
     /// C++ `levelStatus`-level selection accessors (state-machine test helpers).
     #[must_use]
     pub fn diff_mult_idx(&self) -> i32 {

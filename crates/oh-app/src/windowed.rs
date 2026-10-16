@@ -1378,7 +1378,10 @@ impl GameState for MenuSlotAdapter {
         // event. One advance per frame: the C++'s per-event double-fire
         // on two releases between two polls is an edge case the game's
         // boot flow never exercises (the first release advances; the
-        // boot screen then re-arms its own gate).
+        // boot screen then re-arms its own gate). Beyond the boot
+        // screens, every release runs the C++ handlers' shared tail —
+        // the `--ignoreInputs` decrement (`handle_release_edge`, issue
+        // 025g; the `refresh_input` drain's per-edge loop).
         // (The issue-025c on-device finding: the `MenuGame::
         // advance_boot_screen` port existed but had no app-layer call
         // site — the boot screens were uncloseable on the windowed
@@ -1411,14 +1414,34 @@ impl GameState for MenuSlotAdapter {
             .expect("released sink poisoned")
             .take()
         {
-            if !edges.is_empty()
-                && self.menu.shared().borrow().ignore_inputs > 0
-                && matches!(
-                    self.menu.state(),
-                    States::LoadingScreen | States::EpilepsyWarning
-                )
-            {
-                self.menu.advance_boot_screen();
+            // C++ `KeyReleased` / `MouseButtonReleased` /
+            // `JoystickButtonReleased` per-release dispatch
+            // (MenuGame.cpp:495-700): each release event runs the
+            // handler — scenario 1 (a boot screen, the C++
+            // `checkCloseBootScreens`), then the shared tail (the dialog
+            // delay / box scenarios + the generic `--ignoreInputs`
+            // decrement, the port's `MenuGame::handle_release_edge` —
+            // issue 025g: the decrement is what unblocks the menu's
+            // key binds after `returnToLevelSelection`'s
+            // `setIgnoreAllInputs(1)` on `fnGoToMenu`). The port's
+            // documented once-per-frame boot advance holds (the
+            // 025c/025f note above): at most ONE `advance_boot_screen`
+            // per frame — two boot releases in one frame (the C++'s
+            // per-event double-fire) is the documented edge case the
+            // boot flow never exercises.
+            let mut boot_advanced = false;
+            let n_edges = edges.keys.len() + edges.buttons.len() + edges.fingers.len();
+            for _ in 0..n_edges {
+                if self.menu.shared().borrow().ignore_inputs == 0 {
+                    continue;
+                }
+                match self.menu.state() {
+                    States::LoadingScreen | States::EpilepsyWarning if !boot_advanced => {
+                        self.menu.advance_boot_screen();
+                        boot_advanced = true;
+                    }
+                    _ => self.menu.handle_release_edge(),
+                }
             }
         }
         self.input_manager.borrow_mut().refresh(input);
