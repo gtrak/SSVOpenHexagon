@@ -128,8 +128,14 @@
 use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, RwLock};
+
+// 025i PROBE (temporary): per-frame probe rate gate — the gl.clear /
+// post-msDraw probes fire every 30 frames (logcat load must not inflate the
+// CPU reading; the frame itself is ~30fps on the device).
+#[cfg(target_os = "android")]
+static TF_PROBE: AtomicU32 = AtomicU32::new(0);
 
 use oh_config::{Config, Key, Tid, Trigger, TIME_SLICE, TIME_STEP};
 use oh_game::hexagon_game::HexagonGame;
@@ -2653,7 +2659,8 @@ impl WindowedClient {
             // leading candidate for the ~9ms of on_frame outside the spans).
             let _pclear = std::time::Instant::now();
             gl.clear(COLOR_TRANSPARENT);
-            if cfg!(target_os = "android") {
+            #[cfg(target_os = "android")]
+            if TF_PROBE.fetch_add(1, Ordering::Relaxed) % 30 == 0 {
                 eprintln!(
                     "[025i-tf] gl.clear={:.3}ms",
                     _pclear.elapsed().as_secs_f64() * 1000.0
@@ -2752,10 +2759,12 @@ impl WindowedClient {
         }
         // 025i PROBE (temporary): the post-msDraw tail time.
         #[cfg(target_os = "android")]
-        eprintln!(
-            "[025i-tf] post_msdraw_tail={:.3}ms",
-            _pend.elapsed().as_secs_f64() * 1000.0
-        );
+        if TF_PROBE.load(Ordering::Relaxed) % 30 == 0 {
+            eprintln!(
+                "[025i-tf] post_msdraw_tail={:.3}ms",
+                _pend.elapsed().as_secs_f64() * 1000.0
+            );
+        }
     }
 }
 

@@ -240,12 +240,9 @@ fn finish_gl(
     // software (SwiftShader) context would explain the ~10ms per-frame
     // gl.clear (a CPU clear); a hardware GLES GPU should clear in <0.5ms.
     if cfg!(target_os = "android") {
-        if let (Ok(r), Ok(v)) = (
-            gl.get_string(glow::RENDERER),
-            gl.get_string(glow::VENDOR),
-        ) {
-            eprintln!("[025i-gl] RENDERER={r} VENDOR={v}");
-        }
+        let r = unsafe { gl.get_parameter_string(glow::RENDERER) };
+        let v = unsafe { gl.get_parameter_string(glow::VENDOR) };
+        eprintln!("[025i-gl] RENDERER={r} VENDOR={v}");
     }
     Some(GlParts {
         gl,
