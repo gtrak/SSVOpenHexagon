@@ -451,6 +451,14 @@ pub trait NetworkClient {
     fn has_score_information(&self, _validator: &str) -> bool {
         false
     }
+    /// C++ `leaderboardCache->shouldRequestScores(validator)`
+    /// (LeaderboardCache.cpp:39-50) — the 6-second cache-TTL predicate
+    /// (true when the validator was never cached or the cache is older
+    /// than 6 s). The issue-017 client implements the real TTL; the
+    /// offline default is `true` (never cached).
+    fn should_request_scores(&self, _validator: &str) -> bool {
+        true
+    }
     /// C++ `leaderboardCache->getScores(validator)` (empty offline).
     fn scores(&self, _validator: &str) -> Vec<ScoreEntry> {
         Vec::new()
@@ -584,6 +592,11 @@ impl FakeAssets {
             .borrow_mut()
             .pack_names
             .insert(pack_id.to_string(), name.to_string());
+    }
+    /// The C++ `loadInfo` (the boot load results — the (b)
+    /// `drawLoadResults` screen).
+    pub fn set_load(&self, load: LoadResults) {
+        self.inner.borrow_mut().load = load;
     }
 }
 

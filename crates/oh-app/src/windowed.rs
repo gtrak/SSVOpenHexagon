@@ -61,10 +61,11 @@
 //!   (`hg.updateRichPresenceCallbacks()`): Steam (issue 20) is absent; the
 //!   wired closure documents the no-op.
 //! * **MenuGame `draw`** — C++ `MenuGame.cpp:259`
-//!   (`game.onDraw += [this] { draw(); }`): `MenuGame::draw` is not
-//!   ported yet, so the menu state's `GameState::draw` is an explicit
-//!   no-op (the menu's UPDATE is wired — its state machine runs on the
-//!   real timer). `TODO(issue-13-menu-draw)`.
+//!   (`game.onDraw += [this] { draw(); }`): wired to
+//!   `crate::menu_draw::draw` (the issue-013b bridge — the full C++
+//!   `MenuGame::draw` surface, main menu / level selection / profile /
+//!   entering-text / load-results / online status). The menu's UPDATE is
+//!   wired — its state machine runs on the real timer.
 //! * **fnGoToMenu timing** — C++ `main.cpp:456-462` runs
 //!   `returnToLevelSelection` + `init(error)` + `setGameState(menu)`
 //!   synchronously at the tail of `HexagonGame::goToMenu`. The engine's
@@ -999,14 +1000,18 @@ impl GameState for GameSlotAdapter {
 }
 
 /// The C++ `mg->getGame()` `GameState` (main.cpp:461/479/505/532): the
-/// menu's `update(mFT)` is wired (MenuGame.cpp:257); its `draw` is not
-/// ported (module docs: MenuGame draw).
+/// menu's `update(mFT)` (MenuGame.cpp:257) + `draw()` (MenuGame.cpp:259 —
+/// the issue-013b bridge, `crate::menu_draw::draw`).
 struct MenuSlotAdapter {
     menu: Rc<MenuGame>,
     /// The C++ `MenuGame::game` member's `ssvs::Input::Manager` — the menu
     /// keyboard binds (MenuGame.cpp:912-1018, registered in
     /// `WindowedClient::build`).
     input_manager: Rc<RefCell<Manager>>,
+    /// The bridge's render-side state (the C++'s `MenuGame` draw members —
+    /// fonts / sprites / quads; the C++'s `draw` mutates its members, so
+    /// the bridge needs a `RefCell`, as the game state's `AppDraw`).
+    menu_draw: RefCell<crate::menu_draw::MenuDraw>,
 }
 
 impl GameState for MenuSlotAdapter {
@@ -1016,10 +1021,10 @@ impl GameState for MenuSlotAdapter {
         self.menu.update(ft);
     }
 
-    fn draw(&self, _target: &mut dyn DrawTarget) {
+    fn draw(&self, target: &mut dyn DrawTarget) {
         // C++ MenuGame.cpp:259 (`game.onDraw += [this] { draw(); }`) —
-        // `MenuGame::draw` is not ported yet: explicit no-op, NOT faked.
-        // TODO(issue-13-menu-draw)
+        // the full C++ `MenuGame::draw` surface (issue-013b).
+        crate::menu_draw::draw(&self.menu, &mut self.menu_draw.borrow_mut(), target);
     }
 
     fn refresh_input(&self, input: &InputState) {
@@ -1565,9 +1570,12 @@ impl WindowedClient {
             .map_err(|e| format!("failed to load Assets/OpenSquare-Bold.ttf: {e}"))?;
         let app_draw = Rc::new(RefCell::new(AppDraw::new(
             &config.read().expect("config poisoned"),
-            font,
-            font_bold,
+            font.clone(),
+            font_bold.clone(),
         )));
+        // The menu draw bridge's fonts (issue-013b) — the C++ shares the
+        // `initText` fonts with the game (HexagonGame.cpp:289-290).
+        let menu_draw = RefCell::new(crate::menu_draw::MenuDraw::new(&font, &font_bold));
 
         // ------------------------------------------------------------------
         // C++ main.cpp:427-434 — the MenuGame (the Steam / Discord /
@@ -1709,6 +1717,7 @@ impl WindowedClient {
         let menu_adapter: Rc<dyn GameState> = Rc::new(MenuSlotAdapter {
             menu: menu.clone(),
             input_manager: menu_manager.clone(),
+            menu_draw,
         });
         let game_adapter: Rc<dyn GameState> = Rc::new(GameSlotAdapter {
             game: game.clone(),
