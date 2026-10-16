@@ -24,12 +24,15 @@ pixel layout need not match, behaviour must.
 - `crates/oh-app/src/windowed.rs` — the loop (`tick_fields`, per-frame order),
   `post_update` driving, the debug/official gates, and the input manager
   (`Tid::LuaConsole` → `set_ilc_show_console_next`, landed in 010b).
-- C++ oracle: `HGUpdate.cpp:1287-1641` (`postUpdate_ImguiLuaConsole` — the
-  window/`ImGui::SFML::Update` tail), `HGGraphics.cpp:318+`
-  (`drawImguiLuaConsole` — the whole UI: cmd log with per-tag colours, the
-  InputText with completion/history callbacks, Track field + Untrack All, the
-  update/draw ms + Timescale DragFloat + Invincible Checkbox), and
-  `HexagonGame.cpp:269-274` (`imguiLuaConsoleHasInput`).
+- C++ oracle (D-014 verified against the submodule at the final commit):
+  `HGUpdate.cpp:1287-1646` (`postUpdate_ImguiLuaConsole` — the window /
+  `ImGui::SFML::Update` tail; the UI tail itself is `:1314-1643`),
+  `HGGraphics.cpp:318-336` (`drawImguiLuaConsole` — the console's GL paint),
+  and `HexagonGame.cpp:270-274` (`imguiLuaConsoleHasInput`). (The WHOLE UI —
+  cmd log with per-tag colours (`HGUpdate.cpp:1335-1363`), the InputText with
+  completion/history callbacks (`HGUpdate.cpp:1118-1285`), Track field +
+  Untrack All, the update/draw ms + Timescale DragFloat + Invincible
+  Checkbox — lives in `postUpdate_ImguiLuaConsole`, not `HGGraphics.cpp`.)
 
 ## Scope
 

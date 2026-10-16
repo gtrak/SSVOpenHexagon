@@ -56,6 +56,25 @@ oh-net = { path = "../oh-net" }
 # backend (feature `steam` = the real SDK, default = `NoSteam`).
 oh-steam = { path = "../oh-steam" }
 
+# Issue 014b — the egui Lua console overlay (DECISIONS.md D-022, verified
+# against the D-011 stack: egui 0.37 + egui-winit 0.37 + egui_glow 0.37
+# coexist with winit 0.30.13). The overlay lives HERE (composition, like
+# the draw bridge) — `oh-game` stays egui-free (headless stays clean).
+# D-022 caveat: `egui_glow 0.37` pulls `glow 0.17` while `oh-render`
+# uses `glow 0.18` — different Rust types over the SAME GL context; the
+# console builds its own glow-0.17 context from
+# `oh_render::GlParts::proc_address` (never from `oh-render`'s context).
+egui = "0.37"
+egui-winit = { version = "0.37", default-features = false, features = ["links"] }
+egui_glow = "0.37"
+# The console's own GL loader (the D-022 glow-0.17 half — coexists in the
+# lockfile with `oh-render`'s `glow 0.18`).
+glow = "0.17"
+# The console's event hook sees the window's raw winit events (the C++
+# `runEvents`'s per-event `gameEngine->handleEvent`, GameWindow.hpp:79;
+# the D-011 stack's `winit 0.30.13` — the same major the lockfile pins).
+winit = "0.30"
+
 [features]
 # Issue 020: the real Steam backend (the C++'s `#ifndef SSVOH_ANDROID`
 # build — links the official loader stub via `steamworks-sys`; degrades

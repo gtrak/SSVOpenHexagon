@@ -37,7 +37,7 @@
 //! [`post_update`](crate::hexagon_game::HexagonGame::post_update) documents
 //! the window return and runs the two gates the C++ runs after it (the
 //! spec-mandated headless-testable prefix); the whole ImGui tail
-//! (`HGUpdate.cpp:1305-1641`) is step (b).
+//! (`HGUpdate.cpp:1314-1643`) is step (b).
 
 use std::io::Write;
 
@@ -787,6 +787,17 @@ impl<S: SharedStore> HexagonGame<S> {
         self.est().ilc_track_buffer = s.to_string();
     }
 
+    /// The C++ `Command` `InputText` buffer (`ilcCmdBuffer`):
+    /// `ImGui::InputText("Command", &ilcCmdBuffer, ...)` binds the widget to
+    /// the member — every keystroke lands here (HGUpdate.cpp:1425-1426),
+    /// and the completion/history callbacks edit it in place (the
+    /// [`Self::ilc_complete`] / [`Self::ilc_history_key`] buffer ops). The
+    /// step (b) egui UI writes the widget text here after each frame it
+    /// sees an edit (the egui analogue of the direct member binding).
+    pub fn ilc_set_cmd_buffer(&self, s: &str) {
+        self.est().ilc_cmd_buffer = s.to_string();
+    }
+
     /// C++ "Untrack All" button (`HGUpdate.cpp:1577-1581`).
     pub fn ilc_untrack_all(&self) {
         let mut e = self.est();
@@ -835,6 +846,18 @@ impl<S: SharedStore> HexagonGame<S> {
         }
     }
 
+    /// The C++ `imguiLuaConsoleHasInput()` `wantCaptureKeyboard/Mouse`
+    /// conjunct (`HexagonGame.cpp:272-273`) — the step (b) egui layer
+    /// (issue 014b) rewrites it every frame from the egui context's
+    /// `egui_wants_keyboard_input() || egui_wants_pointer_input()` AFTER
+    /// the console's post-update pass (the C++'s one-frame-lag semantics —
+    /// see [`Self::imgui_lua_console_has_input`]). Headless it is never
+    /// called (no egui context), so the field keeps its `true` default and
+    /// the headless gate stays byte-identical.
+    pub fn set_ilc_capture(&self, capture: bool) {
+        self.est().ilc_capture = capture;
+    }
+
     // -- state readers (the step (b) UI + the headless tests) -------------
 
     /// C++ `ilcShowConsole`.
@@ -867,6 +890,14 @@ impl<S: SharedStore> HexagonGame<S> {
         self.est().ilc_cmd_buffer.clone()
     }
 
+    /// C++ `ilcTrackBuffer` (the pending track snippet text — the step (b)
+    /// `InputText("Track", &ilcTrackBuffer)`'s widget text, bound exactly
+    /// like `ilcCmdBuffer`).
+    #[must_use]
+    pub fn ilc_track_buffer(&self) -> String {
+        self.est().ilc_track_buffer.clone()
+    }
+
     /// C++ `ilcLuaTracked` (snapshot).
     #[must_use]
     pub fn ilc_lua_tracked(&self) -> Vec<String> {
@@ -877,6 +908,15 @@ impl<S: SharedStore> HexagonGame<S> {
     #[must_use]
     pub fn ilc_lua_tracked_names(&self) -> Vec<String> {
         self.est().ilc_lua_tracked_names.clone()
+    }
+
+    /// C++ `ilcLuaTrackedResults` (snapshot — the Lua-shared
+    /// [`SharedState::ilc_lua_tracked_results`]; the step (b) UI's
+    /// `TrackedResults` table, HGUpdate.cpp:1627-1641, pairs it 1:1 with
+    /// `ilcLuaTrackedNames` after [`Self::ilc_update_tracked_results`]).
+    #[must_use]
+    pub fn ilc_lua_tracked_results(&self) -> Vec<String> {
+        self.st().ilc_lua_tracked_results.clone()
     }
 }
 
@@ -947,6 +987,7 @@ mod tests {
             always_spin_right: false,
             debug_pause: false,
             ilc_show_console: false,
+            ilc_capture: true,
             ilc_delta_clock: std::time::Instant::now(),
             ilc_history: Vec::new(),
             ilc_history_pos: -1,
@@ -2047,6 +2088,103 @@ mod tests {
         game.set_ilc_show_console_next();
         game.post_update();
         assert!(!game.ilc_show_console());
+    }
+
+    // -- the `wantCapture*` conjunct (issue 014b's step-(b) seam) --------
+
+    /// The C++ `imguiLuaConsoleHasInput()` conjunct (HexagonGame.cpp:270-274):
+    /// `ilcShowConsole && (wantCaptureKeyboard || wantCaptureMouse)` — the
+    /// port's `ilc_capture` is the wantCapture half, unit-tested here with
+    /// the FAKE egui focus values (the real values come from the egui
+    /// context in `oh-app`, issue 014b).
+    #[test]
+    fn gate_conjunct_flips_with_the_capture_fake() {
+        let game = bare_engine(Arc::new(RecHost::new()));
+        // Shown + capture → the gate is true: the game's input is ignored
+        // while the console has focus.
+        {
+            let mut e = game.est();
+            e.ilc_show_console = true;
+            e.ilc_capture = true;
+        }
+        assert!(game.lua_console_has_input());
+        // Shown + no capture (the console window is open but egui has no
+        // keyboard/pointer focus) → the gate is false: the C++ lets the
+        // game input through.
+        {
+            let mut e = game.est();
+            e.ilc_capture = false;
+        }
+        assert!(!game.lua_console_has_input());
+        // Hidden → the gate is false regardless of the capture conjunct
+        // (the C++'s `ilcShowConsole &&` first term).
+        {
+            let mut e = game.est();
+            e.ilc_show_console = false;
+            e.ilc_capture = true;
+        }
+        assert!(!game.lua_console_has_input());
+    }
+
+    /// The step (b) writer: the windowed egui layer rewrites the conjunct
+    /// every frame from the egui context's `egui_wants_*` state.
+    #[test]
+    fn set_ilc_capture_is_the_step_b_focus_writer() {
+        let game = bare_engine(Arc::new(RecHost::new()));
+        {
+            let mut e = game.est();
+            e.ilc_show_console = true;
+        }
+        game.set_ilc_capture(true);
+        assert!(game.lua_console_has_input());
+        game.set_ilc_capture(false);
+        assert!(!game.lua_console_has_input());
+    }
+
+    /// The `Command` `InputText`'s buffer binding (C++
+    /// `ImGui::InputText("Command", &ilcCmdBuffer, ...)`,
+    /// HGUpdate.cpp:1425-1426): the step (b) UI writes the widget text
+    /// through the setter; the 14a command path still consumes + clears it.
+    #[test]
+    fn ilc_set_cmd_buffer_feeds_the_landed_command_path() {
+        let game = bare_engine(Arc::new(RecHost::new()));
+        game.ilc_set_cmd_buffer("u_log('x')");
+        assert_eq!(game.ilc_cmd_buffer(), "u_log('x')");
+        // The Enter branch reads the buffer's content + clears it
+        // (HGUpdate.cpp:1427-1429).
+        game.post_update_imgui_lua_console_command(&game.ilc_cmd_buffer());
+        assert_eq!(game.ilc_cmd_buffer(), "");
+        assert_eq!(game.ilc_history(), vec!["u_log('x')".to_string()]);
+    }
+
+    /// The `TrackedResults` table's right-hand column (C++
+    /// `ilcLuaTrackedResults`, HGUpdate.cpp:1631-1635) — the Lua-shared
+    /// results vec, read through the step (b) snapshot getter.
+    #[test]
+    fn ilc_lua_tracked_results_reads_the_shared_vec() {
+        let game = bare_engine(Arc::new(RecHost::new()));
+        assert!(game.ilc_lua_tracked_results().is_empty());
+        game.state_handle()
+            .lock()
+            .ilc_lua_tracked_results
+            .push("v = 42\n".into());
+        assert_eq!(game.ilc_lua_tracked_results(), vec!["v = 42\n"]);
+    }
+
+    /// The `Track` `InputText`'s buffer binding (C++
+    /// `ImGui::InputText("Track", &ilcTrackBuffer, ...)`,
+    /// HGUpdate.cpp:1568-1569): the step (b) UI writes the widget text
+    /// through the setter; the 14a `ilc_track` still consumes + clears it.
+    #[test]
+    fn ilc_set_track_buffer_feeds_the_landed_track_path() {
+        let game = bare_engine(Arc::new(RecHost::new()));
+        game.ilc_set_track_buffer("  myVar ");
+        assert_eq!(game.ilc_track_buffer(), "  myVar ");
+        // The Enter branch reads the buffer's content + clears it
+        // (HGUpdate.cpp:1570-1583 — the landed `ilc_track`).
+        game.ilc_track();
+        assert_eq!(game.ilc_track_buffer(), "");
+        assert_eq!(game.ilc_lua_tracked_names(), vec!["myVar".to_string()]);
     }
 
     #[test]

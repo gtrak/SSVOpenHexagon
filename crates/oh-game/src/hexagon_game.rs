@@ -309,6 +309,18 @@ pub struct EngineState {
     // visibility; toggled by the `post_update` gate (issue 014 step (a))
     // and read by `imgui_lua_console_has_input`.
     pub(crate) ilc_show_console: bool,
+    // The port's stand-in for the C++ gate's `Imgui::wantCaptureKeyboard()
+    // || Imgui::wantCaptureMouse()` conjunct (HexagonGame.cpp:272-273) —
+    // the windowed egui layer (`oh-app`, issue 014b) rewrites it every
+    // frame from the egui context's `egui_wants_keyboard_input() /
+    // egui_wants_pointer_input()`. Default `true`: headless has no egui
+    // context (the C++'s conjuncts would be `false`, but C++ headless
+    // never shows the console — `window == nullptr` returns first,
+    // HGUpdate.cpp:1290-1293 — so `ilc_show_console` is always false and
+    // the conjunct is moot), and `true` keeps the landed 14a headless gate
+    // byte-identical; a windowed frame without an egui pump yet (the first
+    // shown frame, before its post-update pass) conservatively gates too.
+    pub(crate) ilc_capture: bool,
     // C++ `sf::Clock ilcDeltaClock` (HexagonGame.hpp:108) — read ONLY by the
     // windowed ImGui frame (`ImGui::SFML::Update(*window,
     // ilcDeltaClock.restart())`, `HGUpdate.cpp:1305`). Nothing in the
@@ -588,6 +600,7 @@ impl<S: SharedStore> HexagonGame<S> {
             always_spin_right: false,
             debug_pause: false,
             ilc_show_console: false,
+            ilc_capture: true,
             ilc_delta_clock: std::time::Instant::now(),
             ilc_history: Vec::new(),
             ilc_history_pos: -1,
@@ -2515,14 +2528,19 @@ impl<S: SharedStore> HexagonGame<S> {
 
     /// C++ `imguiLuaConsoleHasInput()` (`HexagonGame.cpp:270-274`):
     /// `ilcShowConsole && (Imgui::wantCaptureKeyboard() ||
-    /// Imgui::wantCaptureMouse())`. The port returns `ilc_show_console`
-    /// alone: the `wantCaptureKeyboard/Mouse` conjunct is the step (b) egui
-    /// piece (issue 15), and headless the C++ conjuncts are false anyway —
-    /// when the console IS shown (debug + non-official + F1), suppressing
-    /// the game input is the behavior that matters (the C++ gate at
-    /// `HGUpdate.cpp:649` then returns before any input is read).
+    /// Imgui::wantCaptureMouse())`. The `wantCapture*` conjunct is the
+    /// windowed egui piece (issue 014b, D-022): `oh-app` rewrites
+    /// `ilc_capture` every frame from the egui context's focus state
+    /// (after the console's own post-update pass — the C++'s one-frame
+    /// lag: `ImGui::SFML::Update` computes `WantCapture*` DURING this
+    /// frame's post-update, so this frame's `update_input` gate reads the
+    /// PREVIOUS frame's values). Headless there is no egui context and the
+    /// conjunct defaults to `true`, keeping the landed 14a gate
+    /// byte-identical (C++ headless never shows the console, so the
+    /// conjunct is moot there — see the field's docs).
     pub(crate) fn imgui_lua_console_has_input(&self) -> bool {
-        self.est().ilc_show_console
+        let e = self.est();
+        e.ilc_show_console && e.ilc_capture
     }
 
     /// Draws one random bool the way C++ `executeRandomInputs` does:

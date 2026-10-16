@@ -266,6 +266,13 @@ pub fn map_window_event(event: &WindowEvent) -> Option<Event> {
     }
 }
 
+/// The per-window-event hook of [`Window::run_with_event_hook`] (issue
+/// 014b) — the egui console's `egui-winit` event feed, seeing every raw
+/// winit `WindowEvent` on a real window (the C++ `runEvents`'s per-event
+/// `gameEngine->handleEvent`, GameWindow.hpp:79, called AFTER the SFML
+/// input-state fold).
+type EventHook = dyn FnMut(&winit::window::Window, &winit::event::WindowEvent);
+
 // ---------------------------------------------------------------------------
 // Window
 // ---------------------------------------------------------------------------
@@ -299,6 +306,15 @@ pub struct Window {
     input: InputState,
     mouse_pixel: Vec2,
     icon_set: bool,
+    // C++ `GameWindow::msUpdate` / `msDraw` (GameWindow.hpp:36; getters at
+    // :270-276) — the per-frame update/draw phase durations in ms that the
+    // C++'s `GameWindow::run` records (GameWindow.hpp:131-146); the issue
+    // 014b egui console footer displays them (`window->getMsUpdate()` /
+    // `getMsDraw()`, HGUpdate.cpp:1544-1546). `0.0` until the first
+    // `WindowedClient` frame records them (the C++ members are likewise
+    // default-initialized).
+    ms_update: f32,
+    ms_draw: f32,
     // Real-GL backend (both `None` in headless mode):
     event_loop: Option<winit::event_loop::EventLoop<()>>,
     gl: Option<GlParts>,
@@ -350,6 +366,8 @@ impl Window {
             input: InputState::new(),
             mouse_pixel: Vec2::new(0.0, 0.0),
             icon_set: false,
+            ms_update: 0.0,
+            ms_draw: 0.0,
             event_loop: None,
             gl: None,
         }
@@ -617,12 +635,54 @@ impl Window {
         self.gl().is_some_and(|g| g.save_screenshot(path))
     }
 
+    // ---- per-frame phase durations (issue 014b) ---------------------------
+    /// C++ `GameWindow::msUpdate` (GameWindow.hpp:36) — the update phase
+    /// duration in ms for the last frame.
+    #[must_use]
+    pub fn get_ms_update(&self) -> f32 {
+        self.ms_update
+    }
+
+    /// C++ `GameWindow::msUpdate = ...` (GameWindow.hpp:135-137) — the
+    /// windowed loop records the phase's elapsed milliseconds.
+    pub fn set_ms_update(&mut self, ms: f32) {
+        self.ms_update = ms;
+    }
+
+    /// C++ `GameWindow::msDraw` (GameWindow.hpp:36) — the draw phase
+    /// duration in ms for the last frame.
+    #[must_use]
+    pub fn get_ms_draw(&self) -> f32 {
+        self.ms_draw
+    }
+
+    /// C++ `GameWindow::msDraw = ...` (GameWindow.hpp:144-146).
+    pub fn set_ms_draw(&mut self, ms: f32) {
+        self.ms_draw = ms;
+    }
+
     // ---- the game loop ----------------------------------------------------
     /// Drive the winit event loop (the SFML `while(isOpen){ runEvents; update;
     /// draw; }` model, via `run_app`). `on_frame` is invoked once per
     /// `about_to_wait` (i.e. once per idle frame). In headless mode it runs
     /// exactly one frame and stops.
-    pub fn run(mut self, mut on_frame: impl FnMut(&mut Window)) {
+    pub fn run(self, mut on_frame: impl FnMut(&mut Window)) {
+        self.run_with_event_hook(None, &mut on_frame);
+    }
+
+    /// The [`Self::run`] variant with a per-window-event hook (issue 014b —
+    /// the egui console's `egui-winit` event feed, the C++
+    /// `game.onAnyEvent += Imgui::processEvent` (HexagonGame.cpp:335) that
+    /// the C++ `runEvents` dispatches AFTER the input-state update, per
+    /// event, GameWindow.hpp:42-83). The hook sees every raw winit
+    /// `WindowEvent` (real windows only — headless runs one frame without
+    /// an event loop and never fires it) with the GL backend's winit window
+    /// (the `egui-winit` state's window; `None` hook = plain [`Self::run`]).
+    pub fn run_with_event_hook(
+        mut self,
+        on_event: Option<Box<EventHook>>,
+        mut on_frame: impl FnMut(&mut Window),
+    ) {
         let event_loop = match self.event_loop.take() {
             Some(el) => el,
             None => {
@@ -633,6 +693,7 @@ impl Window {
         };
         let mut handler = RunHandler {
             window: &mut self,
+            on_event,
             on_frame: &mut on_frame,
         };
         let _ = event_loop.run_app(&mut handler);
@@ -662,9 +723,13 @@ impl Window {
 
 /// `ApplicationHandler` that folds winit window events into SFML `Event`s and
 /// drives the per-frame callback on `about_to_wait` (the winit 0.30 frame-pace
-/// point — `MainEventsCleared` was removed in winit 0.29).
+/// point — `MainEventsCleared` was removed in winit 0.29). `on_event` is the
+/// issue-014b raw-event hook (C++ `runEvents`'s per-event
+/// `gameEngine->handleEvent`, GameWindow.hpp:79 — called AFTER the SFML
+/// input-state fold, the C++'s order).
 struct RunHandler<'a, F> {
     window: &'a mut Window,
+    on_event: Option<Box<EventHook>>,
     on_frame: &'a mut F,
 }
 
@@ -675,6 +740,15 @@ impl<F: FnMut(&mut Window)> ApplicationHandler<()> for RunHandler<'_, F> {
         if let Some(e) = map_window_event(&event) {
             Window::apply_event(self.window, e);
         }
+        // C++ `runEvents` (GameWindow.hpp:42-83): the input state is
+        // updated FIRST, then `gameEngine->handleEvent(event)` (the game's
+        // `onAnyEvent` = `Imgui::processEvent`, HexagonGame.cpp:335 — the
+        // ImGui console's event feed; the port's egui equivalent). The
+        // hook is GL-gated: headless (`gl == None`) has no console (the
+        // C++'s `window == nullptr` early-return, HGUpdate.cpp:1290-1293).
+        if let (Some(hook), Some(gl)) = (self.on_event.as_deref_mut(), &self.window.gl) {
+            hook(gl.winit_window(), &event);
+        }
     }
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
@@ -684,5 +758,48 @@ impl<F: FnMut(&mut Window)> ApplicationHandler<()> for RunHandler<'_, F> {
         if !self.window.open {
             el.exit();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// C++ `GameWindow::msUpdate` / `msDraw` (GameWindow.hpp:36,270-276):
+    /// the members are default-initialized (`0`) and the windowed loop
+    /// records each frame's phase durations; the issue-014b console footer
+    /// reads them back through the getters.
+    #[test]
+    fn ms_phase_durations_default_zero_and_round_trip() {
+        let mut w = Window::headless(640, 480);
+        assert_eq!(w.get_ms_update(), 0.0);
+        assert_eq!(w.get_ms_draw(), 0.0);
+        w.set_ms_update(3.25);
+        w.set_ms_draw(1.75);
+        assert_eq!(w.get_ms_update(), 3.25);
+        assert_eq!(w.get_ms_draw(), 1.75);
+    }
+
+    /// The event-hook loop variant is headless-safe (the C++
+    /// `window == nullptr` early-return, HGUpdate.cpp:1290-1293): without a
+    /// real event loop the frame callback runs exactly once and the hook —
+    /// the egui console's `Imgui::processEvent` analogue (the C++
+    /// `runEvents` per-event dispatch, GameWindow.hpp:79) — is never fired.
+    #[test]
+    fn run_with_event_hook_headless_runs_one_frame_and_never_fires_the_hook() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+        let frames = Arc::new(AtomicU32::new(0));
+        let hook_fired = Arc::new(AtomicU32::new(0));
+        let (frames_c, hook_c) = (frames.clone(), hook_fired.clone());
+        let w = Window::headless(640, 480);
+        w.run_with_event_hook(
+            Some(Box::new(move |_win, _event| {
+                hook_c.store(1, Ordering::SeqCst)
+            })),
+            move |_win| frames_c.store(1, Ordering::SeqCst),
+        );
+        assert_eq!(frames.load(Ordering::SeqCst), 1);
+        assert_eq!(hook_fired.load(Ordering::SeqCst), 0);
     }
 }

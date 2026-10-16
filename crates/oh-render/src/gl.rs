@@ -139,6 +139,27 @@ impl GlBackend {
 }
 
 impl GlParts {
+    /// The winit window this GL context lives on (issue 014b: the egui
+    /// console's `egui-winit` state + `egui_glow` painter need the winit
+    /// window — sizes / clipboard display handle / the event hook's
+    /// argument — without taking the `glow 0.18` `Context` out of the
+    /// render layer).
+    #[must_use]
+    pub fn winit_window(&self) -> &WinitWindow {
+        &self._window
+    }
+
+    /// The GL entry-point address for `name` from this context's display
+    /// loader (issue 014b / DECISIONS.md D-022: `egui_glow 0.37` pulls
+    /// `glow 0.17` while this crate uses `glow 0.18` — different Rust
+    /// types over the SAME GL context; the console builds its own
+    /// `glow 0.17` context with this loader, exactly as [`Self::gl`]'s
+    /// `glow 0.18` context was built at `create`).
+    #[must_use]
+    pub fn proc_address(&self, name: &std::ffi::CStr) -> *const () {
+        self._display.get_proc_address(name) as *const ()
+    }
+
     /// The live `GL_VERSION` string (proves a real context is current).
     #[must_use]
     pub fn version_string(&self) -> Option<String> {

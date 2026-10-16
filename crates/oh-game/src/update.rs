@@ -483,7 +483,7 @@ impl<S: SharedStore> HexagonGame<S> {
     ///   in C++ the rest of the function never runs headless. The port
     ///   instead runs the two gates the C++ applies AFTER the window check
     ///   (spec-mandated headless-testable prefix); the whole ImGui tail
-    ///   (`HGUpdate.cpp:1305-1641`) is step (b).
+    ///   (`HGUpdate.cpp:1314-1643`) is step (b).
     /// * C++ `if(!Config::getDebug() || Config::getOfficial())` → force-hide
     ///   the console and clear the pending toggle.
     /// * C++ `if(ilcShowConsoleNext)` → toggle `ilcShowConsole`, clear
@@ -512,7 +512,7 @@ impl<S: SharedStore> HexagonGame<S> {
         // empty here.
         if self.est().ilc_show_console {
             // C++ `ImGui::SFML::Update(*window, ilcDeltaClock.restart())` …
-            // `ImGui::End()` (`HGUpdate.cpp:1305-1641`) — the console UI,
+            // `ImGui::End()` (`HGUpdate.cpp:1314-1643`) — the console UI,
             // incl. the `InputText("Command")` Enter branch (port headlessly
             // as [`Self::post_update_imgui_lua_console_command`]) — step (b).
         }

@@ -31,7 +31,10 @@
 //! callbacks + boot dispatch + `window->run()`, in the C++
 //! `GameWindow::runEvents` order — see `client::main_client` / `windowed`).
 //!
-//! Out of scope here: the egui console overlay (issue 14 step (b)).
+//! Issue 14 step (b): [`lua_console_ui`] — the windowed egui Lua console
+//! overlay (the C++ `postUpdate_ImguiLuaConsole`'s UI tail +
+//! `drawImguiLuaConsole` on the D-022 egui stack — the composition's
+//! windowed-only half; `oh-game` stays egui-free).
 
 pub mod args;
 pub mod bridge;
@@ -41,6 +44,7 @@ pub mod compose;
 pub mod dispatch;
 pub mod game_state;
 pub mod lifecycle;
+pub mod lua_console_ui;
 pub mod menu_draw;
 pub mod print_lua_docs;
 pub mod steam;

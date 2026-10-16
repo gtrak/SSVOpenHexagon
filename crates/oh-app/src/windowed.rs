@@ -1559,6 +1559,17 @@ pub struct WindowedClient {
     pub menu: Rc<MenuGame>,
     /// C++ `hg` (main.cpp:414-421) — the composition's engine handle.
     pub game: Rc<HexagonGame<GameApiState>>,
+    /// The shared process config (the C++'s `hg::Config` singleton —
+    /// `build`'s parameter): the egui console footer's statics
+    /// seed/write back into it (HGUpdate.cpp:1549, 1555-1557) and the
+    /// `tick` / `run` frame bodies pass it to the console pass.
+    pub config: Arc<RwLock<Config>>,
+    /// Issue 014b — the egui console overlay's lazy slot (`None` until
+    /// the first shown frame — `crate::lua_console_ui`'s module docs:
+    /// Gates). Shared by the per-event hook (the C++'s
+    /// `Imgui::processEvent` feed, HexagonGame.cpp:335) and the frame
+    /// bodies (`tick_fields`'s post-update / draw halves).
+    ilc: Rc<RefCell<Option<crate::lua_console_ui::IlcConsole>>>,
     /// C++ `steamManager` (main.cpp:251) — the composition's Steam manager
     /// (issue 020): shared with the engine (the `steam_manager` seam) and
     /// driving the menu's `MenuGame::init`-lifecycle calls
@@ -1844,12 +1855,14 @@ impl WindowedClient {
             timer,
             menu,
             game,
+            config,
             steam,
             discord: Some(discord),
             engine_slot,
             interrupt: Arc::new(AtomicBool::new(false)),
             _app_draw: app_draw,
             composed,
+            ilc: Rc::new(RefCell::new(None)),
         })
     }
 
@@ -2016,14 +2029,39 @@ impl WindowedClient {
             engine,
             timer,
             menu,
-            game: _game,
+            game,
+            config,
             engine_slot: _engine_slot,
             interrupt,
             _app_draw,
+            ilc,
         } = self;
         let _ = &composed; // keep it alive until the end of the scope
         let mut timer = timer;
-        window.run(|window| Self::tick_fields(window, &mut timer, &engine, &menu, &interrupt));
+        // Issue 014b — the C++ `runEvents`'s per-event
+        // `gameEngine->handleEvent` (GameWindow.hpp:79; the game's
+        // `onAnyEvent` = `Imgui::processEvent`, HexagonGame.cpp:335) —
+        // the egui console's event feed: it fires AFTER the SFML
+        // input-state fold (the C++'s `runEvents` order, GameWindow.hpp:
+        // 42-83 — the input state is updated FIRST), and the game input
+        // is gated by the engine's `imgui_lua_console_has_input`, NOT by
+        // dropping events (the C++ updates its `inputState`
+        // unconditionally and lets the gate suppress). The slot stays
+        // `None` until the first shown frame (the GL-gated lazy
+        // creation), so most frames this is a cheap check.
+        let hook_ilc = ilc.clone();
+        window.run_with_event_hook(
+            Some(Box::new(move |winit_window, event| {
+                if let Some(console) = hook_ilc.borrow_mut().as_mut() {
+                    console.on_event(winit_window, event);
+                }
+            })),
+            |window| {
+                Self::tick_fields(
+                    window, &mut timer, &engine, &menu, &interrupt, &game, &config, &ilc,
+                )
+            },
+        );
         // C++ main.cpp:594-595 — the `main_client` caller prints the
         // "Finished" line (the ported `main_client` does, after this
         // returns).
@@ -2032,7 +2070,16 @@ impl WindowedClient {
     /// One frame — the C++ `GameWindow::run` body (GameWindow.hpp:117-150)
     /// with the port's target + exit translation (module docs).
     pub fn tick(&self, window: &mut Window, timer: &mut TimerStatic) {
-        Self::tick_fields(window, timer, &self.engine, &self.menu, &self.interrupt)
+        Self::tick_fields(
+            window,
+            timer,
+            &self.engine,
+            &self.menu,
+            &self.interrupt,
+            &self.game,
+            &self.config,
+            &self.ilc,
+        )
     }
 
     /// A [`Self::tick`] driven by the client's own window + timer — the
@@ -2046,17 +2093,28 @@ impl WindowedClient {
             &self.engine,
             &self.menu,
             &self.interrupt,
+            &self.game,
+            &self.config,
+            &self.ilc,
         )
     }
 
     /// The frame body over the client's pieces (the `tick` wrapper is the
     /// `&self` convenience; `run` calls this with the moved-out fields).
+    /// `#[allow]`: the C++'s frame body genuinely needs all eight pieces
+    /// (the two states' frame halves + the console's post-update/draw
+    /// halves + the phase timers) — a context struct would just hide the
+    /// C++'s parameter list (cf. `HexagonGame::new`'s allow).
+    #[allow(clippy::too_many_arguments)]
     fn tick_fields(
         window: &mut Window,
         timer: &mut TimerStatic,
         engine: &Rc<GameEngine>,
         menu: &Rc<MenuGame>,
         interrupt: &AtomicBool,
+        game: &Rc<HexagonGame<GameApiState>>,
+        config: &Arc<RwLock<Config>>,
+        ilc: &Rc<RefCell<Option<crate::lua_console_ui::IlcConsole>>>,
     ) {
         // C++ `while(gameEngine->isRunning())` loop head (GameWindow.hpp:
         // 121) — the SIGINT flag (the safe port of the C++ handler, main
@@ -2101,6 +2159,13 @@ impl WindowedClient {
         // before the burst) → `timer->runUpdate()` (N×`updateFromTimer`,
         // each = the current state's `updateInput` + `update`,
         // GameEngine.hpp:40-50 / GameState.hpp:49-57) → `onPostUpdate`.
+        // The C++ `msUpdate` span starts at this position
+        // (GameWindow.hpp:131-137 — the C++ timer wraps `runEvents()` +
+        // `runUpdate()`; the port's `runEvents` equivalent — winit's
+        // per-event fold — completed during the event dispatch that
+        // drove this frame, so its time is not included: documented,
+        // the footer's `update ms` is the port's `runUpdate` span).
+        let ms_update_start = std::time::Instant::now();
         let input = window.get_input_state();
         engine.refresh_input(input);
         timer.run_update(|ft| {
@@ -2108,18 +2173,40 @@ impl WindowedClient {
             engine.update_from_timer(ft);
         });
         engine.on_post_update();
+        // C++ `postUpdate_ImguiLuaConsole`'s egui UI tail (issue 014b /
+        // D-022 — `crate::lua_console_ui`'s module docs: the per-frame
+        // order + the C++'s one-frame `wantCapture*` lag). The C++ runs
+        // it INSIDE `HexagonGame::postUpdate` (HexagonGame.cpp:331), so
+        // the game-state gate is the C++'s state gate.
+        if engine.current() == GameSlot::Game {
+            crate::lua_console_ui::frame_post_update(window, game, config, ilc);
+        }
+        // C++ `msUpdate = ...` (GameWindow.hpp:135-137).
+        window.set_ms_update(ms_update_start.elapsed().as_secs_f64() as f32 * 1000.0);
         // C++ `gameEngine->runDraw();` + `renderWindow.display();`
         // (GameWindow.hpp:141-143) — the current state's `draw`, then the
         // swap (winit displays at event-loop end). The target is a
         // per-frame scratch (the concrete type — no `'static` erasure):
         // the `GlParts` lives in the client's window for the whole loop.
+        // The C++ `msDraw` span (GameWindow.hpp:143-146 — the C++ timer
+        // wraps `runDraw()` + `display()`; the port's swap is winit's,
+        // unmeasured from here: documented).
+        let ms_draw_start = std::time::Instant::now();
         if let Some(gl) = window.gl() {
             let mut target = GlDrawTarget::new(gl);
             engine.draw(&mut target);
+            // C++ `drawImguiLuaConsole` (HGGraphics.cpp:318-336) — the
+            // console's GL paint, the C++ `draw()`'s LAST step
+            // (HGGraphics.cpp:315), after the game's own draw.
+            if engine.current() == GameSlot::Game {
+                crate::lua_console_ui::frame_draw(window, game, ilc);
+            }
         } else {
             let mut target = NullDrawTarget;
             engine.draw(&mut target);
         }
+        // C++ `msDraw = ...` (GameWindow.hpp:144-146).
+        window.set_ms_draw(ms_draw_start.elapsed().as_secs_f64() as f32 * 1000.0);
         // C++ `gameEngine->runFPS();` (GameWindow.hpp:148 →
         // GameEngine.hpp:96-101): `runFrameTime` (the next frame's
         // `frameTime`, TimerBase.hpp:40-43) then `runFPS`
