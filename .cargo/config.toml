@@ -19,3 +19,7 @@ rustflags = ["-C", "link-arg=-ladvapi32"]
 # tools/android-env.sh (the cargo-ndk equivalent, without the tool).
 [target.aarch64-linux-android]
 linker = "aarch64-linux-android28-clang"
+
+# Issue 25 — Android x86_64 (emulator smoke): same scheme as aarch64.
+[target.x86_64-linux-android]
+linker = "x86_64-linux-android28-clang"
