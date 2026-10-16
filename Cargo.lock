@@ -1875,6 +1875,7 @@ dependencies = [
 name = "oh-android"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "oh-app",
  "winit",
 ]
