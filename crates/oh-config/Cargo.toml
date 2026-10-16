@@ -9,5 +9,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 oh-math = { path = "../oh-math" }
 oh-data = { path = "../oh-data" }
+oh-vfs = { path = "../oh-vfs" }
 
 [dev-dependencies]

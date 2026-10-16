@@ -20,10 +20,12 @@
 //!   key for spawn distance (so `isEligibleForScore`'s spawn branch is
 //!   effectively dead, kept for 1:1).
 
-use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
 
 use oh_data::json::{self, JsonError, Obj};
 use oh_data::LinkedValue;
+use oh_vfs::{EntryKind, Vfs};
 use serde_json::Value as SerdeValue;
 
 use crate::joystick::{self, Jid};
@@ -582,56 +584,69 @@ impl Default for Config {
 }
 
 impl Config {
-    /// C++ free-function `hg::Config::loadConfig(overrideIds)`, with the
-    /// hardcoded CWD paths (`"config.json"`, `"ConfigOverrides/"`) made
-    /// explicit through `base_dir` so tests can point at `_RELEASE`.
+    /// C++ free-function `hg::Config::loadConfig(overrideIds)`, routed
+    /// through the `oh-vfs` `Vfs` provider (issue 026a §3): every content
+    /// filesystem op goes through `vfs` (logical paths) instead of
+    /// `std::fs` / `Path`.
     ///
     /// C++ semantics: `config.json` missing/unreadable → `root` stays the
     /// null object (defaults); each listed override (extension-less file
     /// name) is shallow-merged into `root` top-level-key by
     /// top-level-key; then every `LinkedValue` re-syncs and empty triggers
     /// are fixed up to four unbound slots.
-    pub fn load_config(
+    pub fn load_config_with_vfs(
         &mut self,
-        base_dir: &Path,
+        vfs: &dyn Vfs,
         override_ids: &[impl AsRef<str>],
     ) -> Result<(), JsonError> {
         // C++ `root()`: "config.json" in the CWD if present (getFromFile
         // swallows parse failures -> root stays null).
-        let config_path = base_dir.join("config.json");
-        if config_path.is_file() {
-            match std::fs::read_to_string(&config_path) {
-                Ok(contents) => match json::parse(&contents) {
-                    Ok(obj) => self.root = obj,
+        if vfs.is_file("config.json") {
+            match vfs.read("config.json") {
+                Ok(bytes) => match std::str::from_utf8(&bytes) {
+                    Ok(contents) => match json::parse(contents) {
+                        Ok(obj) => self.root = obj,
+                        Err(_) => self.root = SerdeValue::Null,
+                    },
                     Err(_) => self.root = SerdeValue::Null,
                 },
                 Err(_) => self.root = SerdeValue::Null,
             }
         }
 
-        if base_dir.join("ConfigOverrides").is_dir() {
+        if vfs.is_dir("ConfigOverrides/") {
             // ssvufs::scan: single level, by ext ".json" (case-sensitive),
-            // sorted by full path.
-            let mut files: Vec<PathBuf> = std::fs::read_dir(base_dir.join("ConfigOverrides"))
-                .into_iter()
-                .flatten()
-                .filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "json"))
-                .collect();
-            files.sort();
-            for path in files {
-                let name = path
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
+            // sorted by full path. `list_dir` is already byte-sorted by name
+            // (== the full logical path, common prefix — the C++ `std::sort`).
+            // A list failure yields an empty set (the original
+            // `.into_iter().flatten()` produced nothing).
+            let entries = vfs.list_dir("ConfigOverrides/").unwrap_or_default();
+            for entry in entries {
+                // per-entry filter: a regular file whose extension is "json"
+                // (case-sensitive) — the C++ `p.is_file() && ext == "json"`.
+                if entry.kind != EntryKind::File {
+                    continue;
+                }
+                // `Path::extension`/`file_stem` on the BARE name: the text
+                // after the final `.` is the extension; a leading-dot name or
+                // a name with no `.` has no extension (both filtered out).
+                let Some((name, ext)) = entry.name.rsplit_once('.') else {
+                    continue;
+                };
+                if name.is_empty() || ext != "json" {
+                    continue;
+                }
                 if !override_ids.iter().any(|id| id.as_ref() == name) {
                     continue;
                 }
                 // C++ logs "applying config override '<name>'" and uses
                 // getFromFile (parse failure -> skipped, root untouched).
-                let (obj, err) = json::read_file_with_errors(&path);
+                // The missing-file shape is `(Null, " in file <name>")`.
+                let file_name = entry.name.clone();
+                let (obj, err) = match vfs.read(&format!("ConfigOverrides/{file_name}")) {
+                    Err(_) => (SerdeValue::Null, format!(" in file {file_name}")),
+                    Ok(bytes) => json::parse_with_errors(&bytes, &file_name),
+                };
                 if !err.is_empty() {
                     continue;
                 }
@@ -651,6 +666,20 @@ impl Config {
         self.sync_all_from_obj()?;
         self.fixup_missing_triggers();
         Ok(())
+    }
+
+    /// Path-based `load_config` (issue 026a sub-goal 4 transitional shim):
+    /// builds a `RealFs` over `base_dir` and delegates to
+    /// [`Config::load_config_with_vfs`]. Dropped in sub-goal 5 when the real
+    /// callers migrate to the `Vfs` provider directly.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn load_config(
+        &mut self,
+        base_dir: &Path,
+        override_ids: &[impl AsRef<str>],
+    ) -> Result<(), JsonError> {
+        let vfs = oh_vfs::RealFs::new(base_dir);
+        self.load_config_with_vfs(&vfs, override_ids)
     }
 
     /// C++ `syncAllFromObj()`: every `LinkedValue` re-syncs from `root`.
@@ -898,11 +927,30 @@ impl Config {
         sync_lv(root, &self.t_pause);
     }
 
-    /// C++ `saveConfig()` → `writeToFile(root(), "config.json")` with the
-    /// CWD path made explicit.
-    pub fn save_config(&mut self, path: &Path) -> std::io::Result<()> {
+    /// C++ `saveConfig()` → `writeToFile(root(), "config.json")`, routed
+    /// through the `oh-vfs` `Vfs` provider (issue 026a §3).
+    pub fn save_config_with_vfs(&mut self, vfs: &dyn Vfs) -> oh_vfs::VfsResult<()> {
         self.sync_all_to_obj();
-        std::fs::write(path, json::write_to_string(&self.root))
+        vfs.write("config.json", json::write_to_string(&self.root).as_bytes())
+    }
+
+    /// Path-based `save_config` (issue 026a sub-goal 4 transitional shim):
+    /// the pre-VFS contract took the full file path (the binary passes
+    /// `base_dir.join("config.json")`); the `Vfs` contract writes the logical
+    /// `"config.json"` under a root, so root a `RealFs` at the file's parent
+    /// and delegate (the bytes land at exactly `path`). Dropped in sub-goal 5
+    /// when the real callers migrate to the `Vfs` provider directly.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn save_config(&mut self, path: &Path) -> std::io::Result<()> {
+        let base_dir = path.parent().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "save_config path has no parent directory",
+            )
+        })?;
+        let vfs = oh_vfs::RealFs::new(base_dir);
+        self.save_config_with_vfs(&vfs)
+            .map_err(|e| std::io::Error::other(format!("{e:?}")))
     }
 
     /// `saveConfig`'s output as a string (the StyledStreamWriter format,
