@@ -79,50 +79,79 @@ String→number parsing (`convert.rs` `parse_lua_number`) is Lua 5.1 `tonumber`:
 - Don't call `mlua::Value::to_string()` for number→string where C++ `lua_tostring` output matters (formatting divergence above).
 - `Lua::new()` panics on OOM; `oh_lua::LuaContext::new()` documents that as the fatal-creation contract (like a C++ `bad_alloc` from `lua_newstate`).
 
-## WASM / web (the D-028a gate)
+## WASM / web (the D-028a gate) — **PASS on `wasm32-unknown-emscripten`**
 
-Phase 0 (issue 26, 2026-10-16) ran the Luau go/no-go (DECISIONS.md D-028a) on
-both installed wasm targets. The script/backend is **not** the blocker — the
-**wasm C++ toolchain** is. Versions read: `mlua-sys 0.6.8`
-(`~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mlua-sys-0.6.8/`,
-build scripts `build/main_inner.rs` + `build/find_vendored.rs` + `Cargo.toml`),
-`luau0-src 0.12.3+luau663` (registry; **not** in `Cargo.lock`, since
-`oh-lua` uses `luajit`+`vendored` — it is pulled only when the `luau` feature
-is on), `cc 1.8.0` (`Cargo.lock:230-232`), `getrandom 0.2.17`
-(`Cargo.lock:815-819`), `discord-rich-presence 1.1.0` (`Cargo.lock:437-439`),
-`uuid 0.8.2` (`Cargo.lock:3070-3074`).
+The Luau go/no-go (DECISIONS.md D-028a) is **PASS** — verified on
+`wasm32-unknown-emscripten` (2026-10-16, independently verified by the
+supervisor). The earlier note ("Luau does NOT build for wasm / needs
+wasi-sdk") is **superseded**: the working target is **emscripten**, NOT
+`wasm32-unknown-unknown` or `wasm32-wasip1`.
 
-- **`wasm32-unknown-unknown`, `vendored` OFF and ON → both FAIL:**
-  `mlua-sys ... cc-rs: failed to find tool "clang++"` (via
-  `luau0-src 0.12.3+luau663`). `vendored` is a **no-op for Luau**:
-  `mlua-sys/build/main_inner.rs` routes
-  `cfg(any(feature = "luau", feature = "vendored"))` to `find_vendored.rs`, and
-  `mlua-sys/Cargo.toml` has `vendored = ["lua-src", "luajit-src"]` (does **not**
-  gate `luau0-src`) while `luau = ["luau0-src"]` — so `find_vendored.rs`
-  builds Luau from `luau0_src::Build::new()...build()` (a `cc` C++ compile)
-  regardless of `vendored`. Enabling `vendored` changes nothing for Luau.
-- **`wasm32-wasip1` (installed) with a host clang 22.1.8** (which does list a
-  `wasm32` backend) → still FAILS at the definitive point:
-  `fatal error: 'iterator' file not found` compiling
-  `luau/Ast/include/Luau/Ast.h` via `clang++ --target=wasm32-wasip1 -std=c++17`
-  — i.e. **no wasm C++ standard library** (no libc++/wasi-libc C++ headers).
-- **Native control (`cargo run`) → PASS** (`third=0.33333333333333`, table loop
-  `sum=20`): the script/backend is fine; only the wasm C++ toolchain is missing.
-- **`oh-lua` transitive blockers (on `wasm32-unknown-unknown`):**
-  (1) `getrandom 0.2.17` `compile_error!` at
-  `getrandom-0.2.17/src/lib.rs:346` — "the wasm\*-unknown-unknown targets are
-  not supported by default, you may need to enable the `js` feature" — reached
-  via `oh-lua → oh-game → oh-discord → discord-rich-presence 1.1.0 →
-  uuid 0.8.2 → getrandom 0.2.17`; (2) `libz-sys` clang (via `oh-replay`'s
-  flate2 `zlib` feature — see `.agents/skills/lib-flate2.md`); plus a latent (3):
-  `lua-src`/`luajit-src` (LuaJIT C) would need a wasm C compiler.
+**Evidence (the spike):** a throwaway crate (record the *recipe*, not the temp
+path) with `mlua = { version = "0.10", features = ["luau", "vendored"] }` + a
+`main.rs` that runs a Luau script (`lua.load(<source string>)` from an
+in-memory chunk). `cargo build --target wasm32-unknown-emscripten` (clean ≈30 s)
+then `node target/wasm32-unknown-emscripten/debug/luau-emsdk-spike.js` printed:
 
-**Toolchain requirement (the bottom line):** Luau **cannot** build on
-`wasm32-unknown-unknown` at all (no libc/stdlib; would require
-**emscripten/emsdk**). The viable path is **`wasm32-wasip1` + wasi-sdk**
-(clang++ + wasi-libc + libc++). In this environment: node v24.13.0 (node:wasi
-present); `wasmtime`/`wasmer` **not** installed; `emcc`/`emsdk`/`wasi-sdk`
-**not** installed; host clang 22.1.8 at `C:\Program Files\LLVM`. wasi-sdk
-prebuilt releases were **not reachable here** (an environment limitation, not a
-code limitation) — so the Luau gate is **toolchain-gated**, not yet PASS/FAIL on
-compatibility. See `.agents/skills/lib-web-stack.md` for the full matrix.
+```
+PASS: luau spike ok; continue_sum=12 floordiv(7/2)=3 sort='1,2,3,5,8,9' fmt='07-x-3.5' pcall_err=[string "src\main.rs:95:21"]:56: boom double(21)=42
+```
+
+and exited **0**. Debug `.wasm` ≈ 15,732 KB. The negative path (a failing
+assert) prints `FAIL: ...` and exits 1.
+
+**Versions:** mlua 0.10.5 (`features = ["luau","vendored"]`), mlua-sys 0.6.8,
+luau0-src 0.12.3+luau663, rust 1.97.1, target `wasm32-unknown-emscripten`;
+emsdk 6.0.12 (emcc 6.0.12, clang 24, node 24.19.0, python 3.13.3).
+
+**Mandatory build recipe** (every env var is required):
+
+- `EMSDK=<emsdk>`, `EM_CONFIG=<emsdk>\.emscripten`
+- `CC_wasm32_unknown_emscripten=<emsdk>\upstream\emscripten\emcc.exe`
+- `CXX_wasm32_unknown_emscripten=<emsdk>\upstream\emscripten\em++.exe`
+- `AR_wasm32_unknown_emscripten=<emsdk>\upstream\bin\llvm-ar.exe`
+- `CXXFLAGS_wasm32_unknown_emscripten=-fwasm-exceptions` ← **the key one**
+- `PATH` must contain a dir with `emcc.bat`/`em++.bat` **name shims** (rustc's
+  emscripten link step and the `cc` crate's archiver look for the `.bat` names;
+  emsdk 6.0.12 ships only `emcc.exe`/`em++.exe`) **plus**
+  `<emsdk>\upstream\emscripten`, `<emsdk>\upstream\bin`, `<emsdk>\node\...`
+- crate `.cargo/config.toml`:
+
+  ```toml
+  [target.wasm32-unknown-emscripten]
+  rustflags = ["-C", "link-arg=-sDEFAULT_TO_CXX"]
+  ```
+
+- `mlua = { version = "0.10", features = ["luau", "vendored"] }` — `vendored`
+  is **REQUIRED** for wasm32 (`mlua-sys/build/find_normal.rs` panics without it).
+
+**Why `-fwasm-exceptions` is mandatory:** rustc hard-links the emscripten
+target with `WASM_EXCEPTIONS` (`-fwasm-exceptions`; it is an internal emcc
+setting, NOT overridable from the CLI — `-sWASM_EXCEPTIONS=0` is rejected),
+while `luau0-src` compiles Luau C++ with a bare `-fexceptions` (it has an
+explicit emscripten branch adding exactly that) which in clang 24 selects
+**legacy JS exception handling** → undefined `__resumeException` /
+`llvm_eh_typeid_for` at link. Compiling all C++ with `-fwasm-exceptions`
+aligns it with the link. **Treat this as the rule for ALL C++ in this target.**
+
+**Staleness trap:** `mlua-sys`'s build script declares no
+`rerun-if-env-changed` for the compiler env vars → after changing
+`CXXFLAGS_wasm32_unknown_emscripten` you must run `cargo clean -p mlua-sys`
+once (else stale JS-EH objects resurface as link errors).
+
+**Caveats (record all):**
+
+- Luau **string interpolation** `` `{x}` `` is **INERT** — `LANG_STRING_INTERPO`
+  is not enabled in the vendored Luau (verified: `"hello {name}!"` stayed
+  literal). **Immaterial for the current corpus**: a repo-wide scan of the 42
+  shipped `.lua` files found NO interpolation (backticks appear only inside
+  comments).
+- `lua.load(<source string>)` (in-memory) **WORKS** — that is the path we need
+  (`.lua` bytes from the vfs). `load_from_file`/file ops are assumed broken
+  (mlua's own `// TODO: figure out why emscripten fails on file operations`).
+- JIT/codegen is excluded (`luau0-src` panics on emscripten if codegen is
+  enabled) — OH does not use it.
+- This proves Luau runs on the emscripten target under **node**; running the
+  same artifact **in a real browser** is still unproven (a 26c item).
+
+See `.agents/skills/lib-web-stack.md` for the broader web-stack matrix.

@@ -705,7 +705,7 @@ burden** of the VFS refactor explicitly. `26-wasm-web.md` is the record; the
 decisive milestone is **running a representative game session in a browser**,
 NOT `cargo check --target wasm32-unknown-unknown`.
 
-### D-028a — Web Lua runtime (Luau): conditional yes
+### D-028a — Web Lua runtime (Luau): verified YES on `wasm32-unknown-emscripten`
 
 - **Decision:** Luau (mlua `luau`) on web only; desktop stays LuaJIT-locked.
   Acceptable ONLY if script behavior is part of the compatibility contract
@@ -733,13 +733,59 @@ NOT `cargo check --target wasm32-unknown-unknown`.
   purely a missing wasm C++ toolchain, not a Lua/Luau compatibility question.**
   The viable path is **`wasm32-wasip1` + wasi-sdk** (clang++ + wasi-libc +
   libc++); the alternative is **emscripten/emsdk** for `wasm32-unknown-unknown`.
-  wasi-sdk / emsdk were not reachable in this environment (env limitation, not a
-  code limitation).
-- **Status:** decided — **now explicitly toolchain-gated.** Lane 26b must own
-  provisioning + acceptance of the wasm C++ toolchain (wasi-sdk for
-  `wasm32-wasip1`, or emscripten) before the Luau go/no-go can reach a
-  compatibility PASS/CONDITIONAL PASS/FAIL. Skill: `.agents/skills/lib-mlua.md`
-  §WASM; `.agents/skills/lib-web-stack.md`.
+   wasi-sdk / emsdk were not reachable in this environment (env limitation, not a
+   code limitation).
+- **26b gate evidence (2026-10-16): PASS on `wasm32-unknown-emscripten`.**
+  emsdk 6.0.12 was provisioned and the compile-and-execute probe now **PASSES**
+  on the **emscripten** target (superseding the "toolchain-gated / needs
+  wasi-sdk" wording above — the viable target is emscripten, not
+  `wasm32-wasip1`). A throwaway spike crate (record the *recipe*, not the temp
+  path) with `mlua = { version = "0.10", features = ["luau", "vendored"] }` + a
+  `main.rs` running a Luau script (`lua.load(<source string>)`, in-memory chunk
+  — the path we need, since `.lua` bytes come from the vfs): `cargo build
+  --target wasm32-unknown-emscripten` (clean ≈30 s) then
+  `node target/wasm32-unknown-emscripten/debug/luau-emsdk-spike.js` printed
+  `PASS: luau spike ok; ...` and exited **0** (Debug `.wasm` ≈ 15,732 KB; a
+  failing assert prints `FAIL: ...` and exits 1). Versions: mlua 0.10.5,
+  mlua-sys 0.6.8, luau0-src 0.12.3+luau663, rust 1.97.1, target
+  `wasm32-unknown-emscripten`; emsdk 6.0.12 (emcc 6.0.12, clang 24, node
+  24.19.0, python 3.13.3). **Mandatory build recipe** (every env var required):
+  `EMSDK`/`EM_CONFIG`; `CC_wasm32_unknown_emscripten=emcc.exe`,
+  `CXX_wasm32_unknown_emscripten=em++.exe`,
+  `AR_wasm32_unknown_emscripten=llvm-ar.exe`;
+  `CXXFLAGS_wasm32_unknown_emscripten=-fwasm-exceptions` (the key one); `PATH`
+  must contain a dir with `emcc.bat`/`em++.bat` **name shims** (rustc's link
+  step + the `cc` archiver look for the `.bat` names; emsdk 6.0.12 ships only
+  `.exe`) plus `<emsdk>\upstream\emscripten`, `<emsdk>\upstream\bin`,
+  `<emsdk>\node\...`; crate `.cargo/config.toml`
+  `[target.wasm32-unknown-emscripten] rustflags = ["-C","link-arg=-sDEFAULT_TO_CXX"]`;
+  and `vendored` is REQUIRED (mlua-sys `find_normal.rs` panics without it).
+  **Why `-fwasm-exceptions` is mandatory:** rustc hard-links the emscripten
+  target with `WASM_EXCEPTIONS` (an internal emcc setting, not CLI-overridable
+  — `-sWASM_EXCEPTIONS=0` is rejected), while `luau0-src` compiles Luau C++ with
+  a bare `-fexceptions` which in clang 24 selects **legacy JS exception
+  handling** → undefined `__resumeException`/`llvm_eh_typeid_for` at link;
+  compiling all C++ with `-fwasm-exceptions` aligns it with the link (the rule
+  for ALL C++ in this target). **Staleness trap:** `mlua-sys` declares no
+  `rerun-if-env-changed` for the compiler env vars → after changing
+  `CXXFLAGS_wasm32_unknown_emscripten` run `cargo clean -p mlua-sys` once.
+  **Caveats (record all):** (1) Luau **string interpolation** `` `{x}` `` is
+  **INERT** (`LANG_STRING_INTERPO` not enabled in the vendored Luau —
+  `"hello {name}!"` stayed literal); immaterial for the current corpus — a
+  repo-wide scan of the 42 shipped `.lua` files found NO interpolation
+  (backticks only inside comments). (2) `lua.load(<source string>)` (in-memory)
+  WORKS (the path we need); `load_from_file`/file ops are assumed broken (mlua's
+  own `// TODO: figure out why emscripten fails on file operations`). (3)
+  JIT/codegen is excluded (`luau0-src` panics on emscripten if codegen is
+  enabled) — OH does not use it. (4) This proves Luau runs under **node**;
+  running the same artifact **in a real browser** is still unproven (a 26c
+  item).
+- **Status:** decided — **verified YES** on `wasm32-unknown-emscripten` (26b
+  gate PASS, 2026-10-16, independently verified by the supervisor), with the
+  mandatory recipe + the interpolation / `load_from_file` caveats above. The
+  earlier "toolchain-gated, needs wasi-sdk/emscripten" wording is superseded.
+  Lane 26b is complete; the remaining open item is **browser execution** (26c).
+  Skill: `.agents/skills/lib-mlua.md` §WASM; `.agents/skills/lib-web-stack.md`.
 
 ### D-028b — Web replay compression (miniz_oxide): yes, with a clearer replay contract
 
