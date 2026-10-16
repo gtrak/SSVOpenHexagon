@@ -80,3 +80,26 @@ first). The 9-zone grid is the first (already in flight as 025f).
 - Orchestrator sweep: done (above). D-032 recorded (platform-neutral input).
 - 025f in flight (the grid — the first FIX).
 - 28a/28b: not started (worker-sized).
+
+## Verification log (orchestrator — the 9-zone grid claim)
+
+Before dispatching the FIX, the claim behind it was verified in BOTH
+directions (the D-014 rule applied to a decision, not just a report):
+
+- **C++: the grid is UNGATED.** In `MenuGame::update()` (starts
+  `MenuGame.cpp:2510`) the state-dependent blocks are at :2647/:2679/:2702
+  (`state ==` tests) and the event switch at :2875; the
+  `if(window.getFingerDownCount() == 1)` grid block sits at **:2802**, i.e.
+  a TOP-LEVEL statement reachable in every state — including
+  `ETLPNewBoot`/`ETLPNew` (name entry).
+- **Port: the handlers exist.** `oh-menu/src/menu_game.rs:1578`
+  `ok_action()` already implements the `ETLPNewBoot | ETLPNew` arm:
+  `create_profile_from_entered()` → `play_sound_override("openHexagon.ogg")`
+  → `change_state_to(States::SMain)`. So the port has the *action*, and only
+  the *dispatch* (the grid that calls it) was missing — which is why
+  entering a name on the phone did nothing: the sole device caller was a
+  keyboard Enter that Gboard's Done key never sends.
+
+This is the ideal outcome for a deviation fix: the C++ reference is
+unambiguous, the port's handler is already 1:1, and the missing piece is a
+faithful transcription of one block (plus its finger seam).
