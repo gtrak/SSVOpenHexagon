@@ -34,6 +34,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use oh_render::graphics::DrawTarget;
+use oh_render::input::InputState;
 
 /// C++ `window->setGameState(...)`'s target (two states in practice).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,6 +68,19 @@ pub trait GameState {
     /// `ssvu::Delegate` default — `MenuGame` registers nothing; `HexagonGame`
     /// registers `postUpdate`, HexagonGame.cpp:331).
     fn on_post_update(&self) {}
+
+    /// C++ `GameState::refreshInput(mInputState)` (GameState.hpp:54-57 →
+    /// `inputManager.refresh`, Manager.hpp:46-58) — ONCE per frame, BEFORE
+    /// the timer's update burst (the `GameEngine::runUpdate` head,
+    /// GameEngine.hpp:84). Default: no input manager (the fake-state tests
+    /// and the headless path).
+    fn refresh_input(&self, _input: &InputState) {}
+
+    /// C++ `GameState::updateInput(mInputState, mFT)` (GameState.hpp:49-52 →
+    /// `inputManager.update`, Manager.hpp:32-45) — per timer tick, BEFORE
+    /// the state's `update` (the `GameEngine::updateFromTimer` body,
+    /// GameEngine.hpp:44-49). Default: no input manager.
+    fn update_input(&self, _input: &InputState, _ft: f32) {}
 }
 
 /// C++ `ssvs::GameEngine`'s state pointer + `stop` / `isRunning`
@@ -124,14 +138,36 @@ impl GameEngine {
     ///
     /// (The C++ also runs `gameState->updateInput(*inputState, mFT)` first
     /// when an `InputState` is attached — GameEngine.hpp:44-48; the port's
-    /// states consume input inside their own update: the game through its
-    /// joystick/renderer seams, the menu through the (not-yet-ported)
-    /// SSVStart input manager.)
+    /// windowed loop drives that through [`Self::update_input`], the same
+    /// current-state routing.)
     pub fn update_from_timer(&self, ft: f32) {
         let state = self
             .state()
             .expect("game state set (C++ GameEngine::assert(isValid()))");
         state.update_from_timer(ft);
+    }
+
+    /// C++ `GameEngine::runUpdate`'s head (GameEngine.hpp:84) →
+    /// `GameState::refreshInput` (GameState.hpp:54-57) — the CURRENT
+    /// state's input-manager refresh, once per frame, before the timer's
+    /// update burst (the windowed loop's frame order,
+    /// `oh_app::windowed::frame`).
+    pub fn refresh_input(&self, input: &InputState) {
+        let state = self
+            .state()
+            .expect("game state set (C++ GameEngine::assert(isValid()))");
+        state.refresh_input(input);
+    }
+
+    /// C++ `GameEngine::updateFromTimer`'s input head (GameEngine.hpp:44-48)
+    /// → `GameState::updateInput` (GameState.hpp:49-52) — the CURRENT
+    /// state's input-manager update, per timer tick, BEFORE that tick's
+    /// `update_from_timer` (the windowed loop's frame order).
+    pub fn update_input(&self, input: &InputState, ft: f32) {
+        let state = self
+            .state()
+            .expect("game state set (C++ GameEngine::assert(isValid()))");
+        state.update_input(input, ft);
     }
 
     /// C++ `GameEngine::drawFromTimer()` (GameEngine.hpp:52-56, reached via

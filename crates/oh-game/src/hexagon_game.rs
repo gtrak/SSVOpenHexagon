@@ -2063,6 +2063,133 @@ impl<S: SharedStore> HexagonGame<S> {
         self.est().must_take_screenshot = value;
     }
 
+    // -- keyboard-input trigger actions (issue 010b) ------------------------
+    // The C++ bind bodies registered in the `HexagonGame` constructor
+    // (`HexagonGame.cpp:349-460`): the windowed input manager (oh-app,
+    // issue 010b) invokes these from the `Config::getTrigger(Tid::...)`
+    // callbacks. Headless runs never invoke them (no input manager exists
+    // there — the `updateInput` keyboard comment at `HGUpdate.cpp` / this
+    // crate's `update_input` is the only reader of `input_impl_*`).
+
+    /// C++ `add2StateInput(game, getTrigger(Tid::RotateCCW), inputImplCCW)`
+    /// (`HexagonGame.cpp:358` + SSVStart `Utils/Input.hpp:209-219`).
+    pub fn set_input_impl_ccw(&self, value: bool) {
+        self.est().input_impl_ccw = value;
+    }
+
+    /// C++ `add2StateInput(..., Tid::RotateCW, inputImplCW)`.
+    pub fn set_input_impl_cw(&self, value: bool) {
+        self.est().input_impl_cw = value;
+    }
+
+    /// C++ `add2StateInput(..., Tid::Focus, inputFocused)`.
+    pub fn set_input_focused(&self, value: bool) {
+        self.est().input_focused = value;
+    }
+
+    /// C++ `add2StateInput(..., Tid::Swap, inputSwap)`.
+    pub fn set_input_swap(&self, value: bool) {
+        self.est().input_swap = value;
+    }
+
+    /// C++ `inputImplCCW` (test access — the replay-leak check: live input
+    /// sets this even during a replay; `update_input` must not read it
+    /// then, `must_replay_input` branch).
+    #[must_use]
+    pub fn get_input_impl_ccw(&self) -> bool {
+        self.est().input_impl_ccw
+    }
+
+    /// C++ `debugPause` (test access — the `Tid::Pause` body's flag).
+    #[must_use]
+    pub fn debug_pause(&self) -> bool {
+        self.est().debug_pause
+    }
+
+    /// C++ `imguiLuaConsoleHasInput()` (`HexagonGame.cpp:270-274`) — the
+    /// public form of the `notInConsole` gate
+    /// (`HexagonGame.cpp:367-375`).
+    #[must_use]
+    pub fn lua_console_has_input(&self) -> bool {
+        self.imgui_lua_console_has_input()
+    }
+
+    /// C++ `Tid::ForceRestart` body (`HexagonGame.cpp:385-387`).
+    pub fn trigger_force_restart(&self) {
+        self.st().status.must_state_change = StateChange::MustRestart;
+    }
+
+    /// C++ `Tid::Restart` body (`HexagonGame.cpp:389-397`).
+    pub fn trigger_restart(&self) {
+        let (ignore, has_died) = {
+            let g = self.st();
+            let e = self.est();
+            (e.death_input_ignore, g.status.has_died)
+        };
+        if ignore <= 0.0_f32 && has_died {
+            self.st().status.must_state_change = StateChange::MustRestart;
+        }
+    }
+
+    /// C++ `Tid::Replay` body (`HexagonGame.cpp:399-407`).
+    pub fn trigger_replay(&self) {
+        let (ignore, has_died) = {
+            let g = self.st();
+            let e = self.est();
+            (e.death_input_ignore, g.status.has_died)
+        };
+        if (ignore <= 0.0_f32 && has_died) || self.in_replay() {
+            self.st().status.must_state_change = StateChange::MustReplay;
+        }
+    }
+
+    /// C++ `Tid::Screenshot` body (`HexagonGame.cpp:409-410`):
+    /// `mustTakeScreenshot = true` (consumed by the windowed `draw()`).
+    pub fn trigger_screenshot(&self) {
+        self.est().must_take_screenshot = true;
+    }
+
+    /// C++ hardcoded-Escape / `Tid::Exit` bind body
+    /// (`HexagonGame.cpp:379-383`): `goToMenu()` — the default-argument
+    /// call `goToMenu(true /*mSendScores*/, false /*mError*/)`
+    /// (HexagonGame.hpp:417).
+    pub fn trigger_go_to_menu(&self) {
+        self.go_to_menu(true, false);
+    }
+
+    /// C++ `Tid::LuaConsole` body (`HexagonGame.cpp:412-419`): the
+    /// debug-gated `ilcShowConsoleNext = true`.
+    pub fn trigger_lua_console(&self) {
+        self.set_ilc_show_console_next();
+    }
+
+    /// C++ `Tid::Pause` body (`HexagonGame.cpp:421-441`): the debug-gated
+    /// `debugPause` toggle + the `shouldPlayMusic` music pause/resume
+    /// (`shouldPlayMusic`, `HexagonGame.cpp:515-518`).
+    pub fn trigger_pause(&self) {
+        if !self.config().get_debug() {
+            return;
+        }
+        let should_play_music =
+            self.0.window && self.0.audio.is_some() && !self.config().get_no_music();
+        let audio = self.0.audio.clone();
+        let mut e = self.est();
+        e.debug_pause = !e.debug_pause;
+        if e.debug_pause {
+            if should_play_music {
+                audio
+                    .as_ref()
+                    .expect("shouldPlayMusic checked")
+                    .pause_music();
+            }
+        } else if !self.st().status.has_died && should_play_music {
+            audio
+                .as_ref()
+                .expect("shouldPlayMusic checked")
+                .resume_music();
+        }
+    }
+
     /// C++ `pbTextGrowth` (the PB-text size sawtooth driven by
     /// `updateText`).
     #[must_use]

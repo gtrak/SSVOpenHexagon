@@ -5,6 +5,12 @@
 //! `Window::create` degrades to a headless window without a display, and
 //! these tests inject a `Window::headless` so no display / GL / event loop
 //! is touched at all.
+//!
+//! Issue 010b: the input-manager wiring — scripted `InputState` sequences
+//! drive the menu binds (Enter → PLAY), the engine's `Tid::*` triggers
+//! (rotation flags, screenshot, force-restart, pause), and the
+//! replay no-leak invariant (the live manager sets the flags, but the
+//! replay's recorded input drives the movement).
 
 mod common;
 
@@ -14,7 +20,7 @@ use std::sync::{Arc, RwLock};
 
 use oh_app::game_state::{GameEngine, GameSlot, GameState};
 use oh_app::windowed::{frame, WindowedClient};
-use oh_config::Config;
+use oh_config::{Config, Key, TIME_STEP};
 use oh_menu::States;
 use oh_render::graphics::DrawTarget;
 use oh_render::timer::TimerStatic;
@@ -184,7 +190,17 @@ fn windowed_client() -> WindowedClient {
     let assets = Arc::new(
         oh_assets::Assets::new(common::release_dir(), false, false).expect("_RELEASE loads"),
     );
-    let config = Arc::new(RwLock::new(Config::default()));
+    // A returning player's config (C++ `first_time_playing = false`):
+    // the boot's first-time-tips dialogs (MenuGame.cpp:847-870) are what
+    // `setIgnoreAllInputs(1)` on boot; without the 13b key-event lane the
+    // ported menu can't close them, so the scripted-input tests boot as
+    // a returning player (the C++'s `init(false, pack, level)` for a
+    // non-first-time config leaves `ignoreInputs` at 0).
+    let config = Arc::new(RwLock::new({
+        let mut c = Config::default();
+        c.set_first_time_playing(false);
+        c
+    }));
     WindowedClient::build(
         Window::headless(1920, 1080),
         config,
@@ -297,4 +313,237 @@ fn boot_with_an_undecompressable_replay_points_the_window_at_the_menu() {
     // The C++ `gotoMenu` tail (main.cpp:476-480): `mg->init(false)` +
     // the menu state.
     assert!(client.menu.state() != States::LevelSelection);
+}
+
+// ---------------------------------------------------------------------
+// Issue 010b: the input-manager wiring — scripted `InputState` drives
+// the windowed loop through the real per-frame order
+// (`refresh_input` → N×(`update_input` + `update_from_timer`),
+// GameEngine.hpp:40-50/80-86; the fake window's `InputState` is the
+// C++'s `GameWindow::mInput`). The real keyboard stays MANUAL.
+// ---------------------------------------------------------------------
+
+/// One input frame: exactly one timer tick (`TIME_STEP` = `TIME_SLICE`
+/// = 0.25 FT — one `updateFromTimer` per frame, the C++'s 240 Hz at 60
+/// frames per second of frame time).
+fn tick(client: &mut WindowedClient) {
+    client.timer.set_frame_time(TIME_STEP);
+    client.tick_self();
+}
+
+fn set_key(client: &mut WindowedClient, key: Key, down: bool) {
+    client
+        .window
+        .get_input_state_mut()
+        .set_key_pressed(key, down);
+}
+
+/// The menu's hardcoded Enter bind (MenuGame.cpp:959-961, `Type::Once`)
+/// drives `okAction` → the C++ `fnHGNewGame` (main.cpp:442-449) → the
+/// Game slot; holding Enter one more frame must not re-fire (the menu
+/// state is no longer active, and the game's `Tid::Restart` bind
+/// (kSpace/kEnter/bMiddle) is `hasDied`-gated — a no-op while alive).
+#[test]
+fn scripted_enter_key_starts_the_level_from_the_menu() {
+    let mut client = windowed_client();
+    client.boot(Some("cube"), Some("apeirogon"), None);
+    assert_eq!(client.engine.current(), GameSlot::Menu);
+    assert_eq!(client.menu.state(), States::LevelSelection);
+
+    set_key(&mut client, Key::ENTER, true);
+    tick(&mut client);
+
+    assert_eq!(
+        client.engine.current(),
+        GameSlot::Game,
+        "Enter → okAction → newGame → setGameState(Game)"
+    );
+
+    tick(&mut client);
+    assert_eq!(client.engine.current(), GameSlot::Game);
+
+    set_key(&mut client, Key::ENTER, false);
+}
+
+/// `Tid::RotateCCW` (HexagonGame.cpp:357, `add2StateInput` → `Type::Always`
+/// on/off): kA down sets `inputImplCCW`, release clears it; and the first
+/// movement key press starts the level (the C++ `mustStart` gate,
+/// `updateInput`: `if(!started && (!rotateToStart || inputImplCCW ||
+/// inputImplCW)) mustStart = true`).
+#[test]
+fn scripted_rotation_key_sets_the_impl_flag_and_starts_the_level() {
+    let mut client = windowed_client();
+    client.boot(Some("cube"), Some("apeirogon"), None);
+    client.menu.ok_action();
+    assert_eq!(client.engine.current(), GameSlot::Game);
+    assert!(!client.game.get_status().started);
+
+    set_key(&mut client, Key::A, true);
+    tick(&mut client);
+    assert!(client.game.get_input_impl_ccw(), "kA down → inputImplCCW");
+    // `mustStart` is set by this tick's `updateInput` (the `!started &&
+    // (!rotateToStart || inputImplCCW)` gate) and consumed by `start()` on
+    // the NEXT tick's update (update.rs:148-150 vs :639-643).
+    tick(&mut client);
+    assert!(
+        client.game.get_status().started,
+        "the movement key press starts the level"
+    );
+
+    set_key(&mut client, Key::A, false);
+    tick(&mut client);
+    assert!(!client.game.get_input_impl_ccw(), "kA released → cleared");
+}
+
+/// `Tid::Screenshot` (HexagonGame.cpp:408-410, `Type::Once`, the
+/// `notInConsole` gate): kF12 sets `mustTakeScreenshot` — consumed by the
+/// windowed `draw`'s screenshot within the same frame (the C++
+/// `HGGraphics.cpp:305-312` clears it after the save attempt), so the
+/// assertion drives the frame's UPDATE phase only (the loop's order minus
+/// the draw, `tick_fields`'s pre-draw half) and checks before the draw.
+#[test]
+fn scripted_screenshot_key_sets_must_take_screenshot() {
+    let mut client = windowed_client();
+    client.boot(Some("cube"), Some("apeirogon"), None);
+    client.menu.ok_action();
+    assert!(!client.game.must_take_screenshot());
+
+    set_key(&mut client, Key::F12, true);
+    {
+        let input = client.window.get_input_state();
+        client.engine.refresh_input(input);
+        client.engine.update_input(input, TIME_STEP);
+        client.engine.update_from_timer(TIME_STEP);
+    }
+    assert!(client.game.must_take_screenshot());
+
+    set_key(&mut client, Key::F12, false);
+    tick(&mut client);
+}
+
+/// `Tid::ForceRestart` (HexagonGame.cpp:385-387, `Type::Once`, NO
+/// `hasDied` gate): with no local profile active (the windowed
+/// composition's `NullProfiles` — the C++'s
+/// `!profiles->anyLocalProfileActive()` branch), `MustRestart` →
+/// `goToMenu(false, false)` → the engine back to the Menu slot
+/// (main.cpp:456-462's `fnGoToMenu` tail).
+#[test]
+fn scripted_force_restart_key_returns_to_the_menu() {
+    let mut client = windowed_client();
+    client.boot(Some("cube"), Some("apeirogon"), None);
+    client.menu.ok_action();
+    // Start the level first (the state change is consumed only once
+    // `status.started`).
+    set_key(&mut client, Key::A, true);
+    tick(&mut client);
+    set_key(&mut client, Key::A, false);
+    tick(&mut client);
+    assert!(client.game.get_status().started);
+
+    set_key(&mut client, Key::R, true);
+    tick(&mut client); // Once bind → mustStateChange = MustRestart → consumed in the same tick's update → goToMenu (no local profile)
+    tick(&mut client); // the `fnGoToMenu` flag is consumed at the start of the next game tick
+    set_key(&mut client, Key::R, false);
+
+    assert_eq!(client.engine.current(), GameSlot::Menu);
+    assert_eq!(client.menu.state(), States::LevelSelection);
+}
+
+/// `Tid::Pause` (HexagonGame.cpp:421-441): the debug-gated `debugPause`
+/// toggle — `Config::getDebug` is the C++ `getOfficial() ?
+/// debug().getDefault() : debug()` (Config.cpp:1117-1120), so the config
+/// needs `official = false` + `debug = true`; then kF2 toggles
+/// `debugPause` on and off (the `shouldPlayMusic` music half is the audio
+/// seam's; `NullAudio` makes it a no-op).
+#[test]
+fn scripted_pause_key_toggles_debug_pause() {
+    let assets = Arc::new(
+        oh_assets::Assets::new(common::release_dir(), false, false).expect("_RELEASE loads"),
+    );
+    let config = Arc::new(RwLock::new({
+        let mut c = Config::default();
+        c.set_first_time_playing(false);
+        c.set_official(false);
+        c.set_debug(true);
+        c
+    }));
+    let mut client = WindowedClient::build(
+        Window::headless(1920, 1080),
+        config,
+        assets,
+        &common::release_dir(),
+    )
+    .expect("windowed build");
+    client.boot(Some("cube"), Some("apeirogon"), None);
+    client.menu.ok_action();
+    assert!(!client.game.debug_pause());
+
+    set_key(&mut client, Key::F2, true);
+    tick(&mut client);
+    assert!(
+        client.game.debug_pause(),
+        "kF2 (debug config) → debugPause on"
+    );
+
+    set_key(&mut client, Key::F2, false);
+    tick(&mut client);
+    set_key(&mut client, Key::F2, true);
+    tick(&mut client);
+    assert!(!client.game.debug_pause(), "second kF2 → debugPause off");
+    set_key(&mut client, Key::F2, false);
+}
+
+/// The menu's `Tid::Down` bind (MenuGame.cpp:940-957, `Type::Once`):
+/// kS moves the LevelSelection's selection to the next level.
+#[test]
+fn scripted_down_key_navigates_the_level_selection() {
+    let mut client = windowed_client();
+    client.boot(Some("cube"), Some("apeirogon"), None);
+    let initial = client.menu.selected_level_id().clone();
+
+    set_key(&mut client, Key::S, true);
+    tick(&mut client);
+    set_key(&mut client, Key::S, false);
+
+    assert_eq!(client.engine.current(), GameSlot::Menu);
+    assert_ne!(
+        client.menu.selected_level_id(),
+        initial,
+        "kS (Tid::Down) moves the selection"
+    );
+}
+
+/// Replay no-leak (the task's critical invariant): during a replay, the
+/// live window's input still feeds the input manager (the C++'s
+/// `GameState::updateInput` runs every frame — GameEngine.hpp:40-50), so
+/// `inputImplCCW` follows the live kA — but the movement comes from the
+/// replay's recorded input (the `mustReplayInput` branch skips
+/// `updateInput`, update.rs:160-185), so the level plays the fixture's
+/// `alwaysSpinRight` and NOT the live key.
+#[test]
+fn replay_run_ignores_live_input_for_movement() {
+    let mut client = windowed_client();
+    let assets = Arc::new(
+        oh_assets::Assets::new(common::release_dir(), false, false).expect("_RELEASE loads"),
+    );
+    let replay = live_compressed_replay_path(&assets);
+    client.boot(None, None, Some(&replay));
+    assert_eq!(client.engine.current(), GameSlot::Game);
+    assert!(client.game.in_replay());
+
+    set_key(&mut client, Key::A, true);
+    for _ in 0..8 {
+        tick(&mut client);
+    }
+    assert!(client.game.in_replay());
+    assert!(
+        client.game.get_input_impl_ccw(),
+        "the live manager still sets the flag (the C++ runs the binds in replay too)"
+    );
+    assert_eq!(
+        client.game.get_input_movement(),
+        1,
+        "the movement stays the replay's (alwaysSpinRight → right), NOT the live kA"
+    );
+    set_key(&mut client, Key::A, false);
 }

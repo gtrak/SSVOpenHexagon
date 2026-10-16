@@ -10,6 +10,12 @@
 //! Modules:
 //! - `input` — `ssvs::Input::InputState` (per-key/button pressed bitsets over
 //!   the exact SFML `Keyboard::Key` / `Mouse::Button` integers).
+//! - `input_manager` — the SSVStart input runtime over `InputState` + the
+//!   `oh-config` `Trigger`/`Combo` model (issue 010b): `Type` / `Mode`,
+//!   `combo_is_down` (`Combo.inl`), `Bind` (the `released` latch, the
+//!   on/off callbacks, the priority) and `Manager` (per-frame refresh +
+//!   per-tick update, the `processedInput`, `refreshTriggers`, the ignore
+//!   flags).
 //! - `draw` — `sf::Vertex` / `sf::PrimitiveType` / `sf::RenderStates` + the
 //!   `hg::Utils::FastVertexVector` batch the game's draw code feeds.
 //! - `view` — `sf::View` + `ssvs::Camera` (world↔screen, pan/zoom/turn/skew).
@@ -40,6 +46,7 @@ pub mod font;
 pub mod gl;
 pub mod graphics;
 pub mod input;
+pub mod input_manager;
 pub mod shader;
 pub mod text_draw;
 pub mod texture;
@@ -69,6 +76,7 @@ pub use graphics::{
     TrailParticleUpdateParams,
 };
 pub use input::InputState;
+pub use input_manager::{combo_is_down, Bind, Manager, Mode, Type};
 pub use oh_config::{Button, Key};
 pub use oh_math::hg::color::Color;
 pub use oh_math::ssvs::vector2::Vec2;

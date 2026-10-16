@@ -30,21 +30,26 @@ human can play.
 
 1. Port the SSVStart input system into `oh-render` (or a spot mirroring the
    codebase's seam structure — same crate as `input.rs`): `Combo` (key+button
-   set, `==`/subset semantics from `Combo.hpp/.inl`), `Bind` (multiple
-   combos, `Bind::update`/`pressed`/`released` semantics from
-   `Bind.hpp/.inl`), `Trigger` (bind + `Type::Once/Continuous`,
-   `refresh()` from the input state, the `fire`/`tick` callbacks), and the
-   `Manager` (per-frame refresh + dispatch — read
-   `extlibs/SSVStart/include/SSVStart/GameSystem/GameWindow.hpp`'s
-   `processInput`/refresh order and cite it). Unit tests over a synthetic
-   `InputState` for: combo matching, once-vs-continuous, key-release
-   transitions, multi-combo binds.
-2. Wire the binds: load `Config::getBinds()` (oh-config) into the trigger
-   set the same way C++ `HexagonGame`/`MenuGame` `addTidInput`/menu
-   `addInput` do (cite the C++ registration sites). The windowed loop feeds
-   the real `InputState`; headless keeps the replay-input path
-   (`must_replay_input`) EXACTLY as landed — input from the live window MUST
-   NOT leak into headless/replay runs.
+   set, `==`/subset semantics from `Combo.hpp/.inl`), `Trigger` (a
+   `std::vector<Combo>` — Trigger.hpp:16-51; NO type/callbacks on it),
+   `Bind` (the trigger + `Type` — `Always`/`Once`, NOT `Once`/`Continuous`
+   (Enums.hpp:12-16) — + `Mode` + the on/off (fire/tick) callbacks + the
+   release latch; `Bind::update`/`refresh` semantics from `Bind.hpp/.inl`),
+   and the `Manager` (per-frame refresh + dispatch — the per-frame order is
+   `GameEngine::runUpdate` (GameEngine.hpp:80-86: `refreshInput` ONCE per
+   frame, before the timer burst) + `GameEngine::updateFromTimer`
+   (GameEngine.hpp:40-50: each tick's `updateInput` BEFORE the state's
+   `update`), via `GameState::updateInput`/`refreshInput`
+   (GameState.hpp:49-57); `GameWindow` has no `processInput`). Unit tests
+   over a synthetic `InputState` for: combo matching, Always-vs-Once,
+   key-release transitions, multi-combo binds.
+2. Wire the binds: read the live `Config::getTrigger(tid)` at each
+   registration (the C++'s `HexagonGame`/`MenuGame` `addTidInput`/menu
+   `addInput` sites — HexagonGame.cpp:349-460, MenuGame.cpp:912-1033) into
+   the trigger set, so rebind / `refreshBinds` re-point the binds without
+   re-registration. The windowed loop feeds the real `InputState`; headless
+   keeps the replay-input path (`must_replay_input`) EXACTLY as landed —
+   input from the live window MUST NOT leak into headless/replay runs.
 3. Connect the engine's `Tid::*` triggers (issue 09's `updateInput`) and the
    MenuGame's actions so that pressing the real keys drives
    restart/pause/screenshot/replay/menu navigation. `Tid::Screenshot` sets

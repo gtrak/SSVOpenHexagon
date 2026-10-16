@@ -30,6 +30,7 @@ fn make_menu() -> (MenuGame, Rc<RecordingAudio>) {
         cb,
         None,
         None,
+        None,
         Rc::new(LinearFontHeight),
     );
     (menu, audio)
@@ -101,6 +102,7 @@ fn load_command_line_level_matches_pack_name_not_id() {
         config,
         Rc::new(NoopNetwork),
         audio,
+        None,
         None,
         None,
         None,

@@ -32,8 +32,8 @@ use crate::layout::{
 };
 use crate::menu;
 use crate::seams::{
-    AudioSink, LevelInfo, MenuAssets, MenuConfig, NetEvent, NetworkClient, NewGameCallback,
-    RichPresenceCallback, TriggerRefreshCallback,
+    AudioSink, IgnoreInputsCallback, LevelInfo, MenuAssets, MenuConfig, NetEvent, NetworkClient,
+    NewGameCallback, RichPresenceCallback, TriggerRefreshCallback,
 };
 use crate::states::{DialogInputState, PackChange, States};
 
@@ -144,6 +144,7 @@ pub struct Shared {
     new_game: Option<NewGameCallback>,
     trigger_refresh: Option<TriggerRefreshCallback>,
     rich_presence: Option<RichPresenceCallback>,
+    ignore_inputs_cb: Option<IgnoreInputsCallback>,
     font: Rc<dyn crate::layout::FontHeightOracle>,
 }
 
@@ -157,6 +158,7 @@ impl Shared {
         new_game: Option<NewGameCallback>,
         trigger_refresh: Option<TriggerRefreshCallback>,
         rich_presence: Option<RichPresenceCallback>,
+        ignore_inputs_cb: Option<IgnoreInputsCallback>,
         font: Rc<dyn crate::layout::FontHeightOracle>,
     ) -> Self {
         // C++ ctor default state is `LoadingScreen`.
@@ -223,6 +225,7 @@ impl Shared {
             new_game,
             trigger_refresh,
             rich_presence,
+            ignore_inputs_cb,
             font,
         }
     }
@@ -262,10 +265,16 @@ impl Shared {
         self.audio.play_sound(asset_id);
     }
 
-    /// C++ `setIgnoreAllInputs(presses)` — `ignoreInputs = presses` (0 clears
-    /// the input-ignore on game + joystick; else holds it).
+    /// C++ `setIgnoreAllInputs(presses)` — `ignoreInputs = presses` (0
+    /// clears the input-ignore on game + joystick; else holds it).
     pub fn set_ignore_all_inputs(&mut self, presses: u32) {
         self.ignore_inputs = presses;
+        // C++ `game.ignoreAllInputs(presses != 0)` (MenuGame.cpp:3393-3400 →
+        // Manager.hpp:78-81). The `Joystick::ignoreAllPresses` half is the
+        // unported joystick (NoJoystick seam).
+        if let Some(cb) = &self.ignore_inputs_cb {
+            cb(presses != 0);
+        }
     }
 
     /// C++ `isEnteringText()`.
@@ -984,6 +993,7 @@ impl MenuGame {
         new_game: Option<NewGameCallback>,
         trigger_refresh: Option<TriggerRefreshCallback>,
         rich_presence: Option<RichPresenceCallback>,
+        ignore_inputs: Option<IgnoreInputsCallback>,
         font: Rc<dyn crate::layout::FontHeightOracle>,
     ) -> Self {
         let shared = Shared::new(
@@ -994,6 +1004,7 @@ impl MenuGame {
             new_game,
             trigger_refresh,
             rich_presence,
+            ignore_inputs,
             font.clone(),
         );
         let shared = Rc::new(RefCell::new(shared));
@@ -1085,6 +1096,42 @@ impl MenuGame {
     #[must_use]
     pub fn config(&self) -> Rc<dyn MenuConfig> {
         self.shared.borrow().config().clone()
+    }
+
+    #[must_use]
+    pub fn assets(&self) -> Rc<dyn MenuAssets> {
+        self.shared.borrow().assets().clone()
+    }
+
+    /// C++ `changePackAction(direction)` (the `Tid::NextPack`/
+    /// `Tid::PreviousPack` bind bodies, MenuGame.cpp:940-957) → the
+    /// pack-selection logic in `Shared`.
+    pub fn change_pack_action(&self, direction: i32) {
+        self.shared.borrow_mut().change_pack_action(direction);
+    }
+
+    /// C++ `isEnteringText()` (the input-gate half of the editable
+    /// `Tid::Exit` bind, MenuGame.cpp:989-997).
+    #[must_use]
+    pub fn is_entering_text(&self) -> bool {
+        self.shared.borrow().is_entering_text()
+    }
+
+    /// C++ `Tid::Escape` `Type::Always` bind body (MenuGame.cpp:965-971):
+    /// `if(state != States::MOpts) exitTimer += mFT`. The
+    /// `exitTimer > 20 → window.stop()` consumer (MenuGame.cpp:2852) is the
+    /// unported `MenuGame::draw` lane (issue 13b) — the timer accumulates.
+    pub fn add_exit_timer(&self, ft: f32) {
+        if self.state() == States::MOpts {
+            return;
+        }
+        self.shared.borrow_mut().exit_timer += ft;
+    }
+
+    /// C++ `Tid::Escape` `Type::Always` bind's off half (MenuGame.cpp:971):
+    /// `exitTimer = 0`.
+    pub fn reset_exit_timer(&self) {
+        self.shared.borrow_mut().exit_timer = 0.0;
     }
 
     /// C++ `getCurrentMenu()` (state → menu).

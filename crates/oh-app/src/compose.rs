@@ -460,7 +460,29 @@ pub fn compose_with(
     window: bool,
     profiles: Arc<dyn Profiles + 'static>,
 ) -> Composed {
-    let config = Arc::new(RwLock::new(Config::default()));
+    compose_with_config(
+        assets,
+        root,
+        window,
+        profiles,
+        Arc::new(RwLock::new(Config::default())),
+    )
+}
+
+/// `compose_with` with the engine's `Config` supplied by the caller — the
+/// C++'s single process-global `hg::Config` (one `Config` shared by the
+/// game and the menu; the windowed composition passes its shared
+/// `Arc<RwLock<Config>>` so the menu's config writes — e.g. the debug
+/// toggle the `Tid::Pause` trigger body reads — reach the engine).
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn compose_with_config(
+    assets: Arc<oh_assets::Assets>,
+    root: PathBuf,
+    window: bool,
+    profiles: Arc<dyn Profiles + 'static>,
+    config: Arc<RwLock<Config>>,
+) -> Composed {
     // Heap-pinned before the `SharedLua` capture (see the `lua` field docs
     // on `Composed`): the host's `SharedLua` points at this box's slot.
     let lua = Box::new(LuaContext::new());

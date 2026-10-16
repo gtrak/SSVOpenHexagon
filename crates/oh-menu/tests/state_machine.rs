@@ -37,6 +37,7 @@ fn make_menu() -> (MenuGame, NewGameLog) {
         cb,
         None,
         None,
+        None,
         Rc::new(LinearFontHeight),
     );
     (menu, recorded)

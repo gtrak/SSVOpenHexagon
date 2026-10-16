@@ -436,6 +436,28 @@ impl Trigger {
         Self { combos }
     }
 
+    /// One bound key, one combo — the C++ `addInput({{k::X}}, ...)`
+    /// hardcoded-trigger shape (MenuGame.cpp:945,959,999; HexagonGame.cpp:
+    /// 377-381).
+    #[must_use]
+    pub fn key(key: Key) -> Self {
+        let mut c = Combo::new();
+        c.add_key(key);
+        Self { combos: vec![c] }
+    }
+
+    /// One combo of several keys (ALL must be pressed — `Combo::isDown`
+    /// requires every combo key, Combo.inl:18-20) — the C++
+    /// `{{k::LAlt, k::Enter}}` shape (MenuGame.cpp:993-994).
+    #[must_use]
+    pub fn keys(keys: &[Key]) -> Self {
+        let mut c = Combo::new();
+        for k in keys {
+            c.add_key(*k);
+        }
+        Self { combos: vec![c] }
+    }
+
     /// C++ `getCombos()` (const).
     #[must_use]
     pub fn get_combos(&self) -> &[Combo] {

@@ -98,7 +98,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, RwLock};
 
-use oh_config::{Config, TIME_SLICE, TIME_STEP};
+use oh_config::{Config, Key, Tid, Trigger, TIME_SLICE, TIME_STEP};
 use oh_game::hexagon_game::HexagonGame;
 use oh_game::seams::NullProfiles;
 use oh_lua::api::state::GameApiState;
@@ -109,6 +109,8 @@ use oh_render::batching::GlBatchUploader;
 use oh_render::draw::{RenderStates, Vertex};
 use oh_render::font::{Font, Text};
 use oh_render::graphics::DrawTarget;
+use oh_render::input::InputState;
+use oh_render::input_manager::{Manager, Mode, Type};
 use oh_render::texture::Sprite;
 use oh_render::timer::TimerStatic;
 use oh_render::types::RectangleShape;
@@ -117,7 +119,7 @@ use oh_render::window::Window;
 use oh_render::GlParts;
 
 use crate::bridge::AppDraw;
-use crate::compose::compose_with;
+use crate::compose::compose_with_config;
 use crate::game_state::{GameEngine, GameSlot, GameState};
 
 /// The C++ `hg::Audio` (main.cpp:392-401) is not ported (issue 17 owns
@@ -133,14 +135,27 @@ impl AudioSink for NoopAudio {
 /// `MenuConfig` over the REAL `oh_config::Config` (the C++ menu reads
 /// `hg::Config` directly; the port's seam is the same object the engine
 /// composition uses — one `Config`, shared by `Arc<RwLock<...>>`).
+/// C++ `MenuGame::refreshBinds()`' input-manager half as a fill-in slot
+/// (`WindowedClient::build` fills it after the menu + both managers
+/// exist; the menu's "RESET CONFIG" / "reset binds" items call through
+/// it — menu.rs:145,219).
+type RefreshBindsSlot = Rc<RefCell<Option<Box<dyn Fn()>>>>;
+
 pub struct ConfigMenuAdapter {
     config: Arc<RwLock<Config>>,
+    /// C++ `MenuGame::refreshBinds()` (MenuGame.cpp:3373-3387) — the
+    /// input-manager half, filled by `WindowedClient::build` (the options'
+    /// "RESET CONFIG" / "reset binds" items call it, menu.rs:145,219).
+    refresh_binds: RefreshBindsSlot,
 }
 
 impl ConfigMenuAdapter {
     #[must_use]
-    pub fn new(config: Arc<RwLock<Config>>) -> Self {
-        Self { config }
+    pub fn new(config: Arc<RwLock<Config>>, refresh_binds: RefreshBindsSlot) -> Self {
+        Self {
+            config,
+            refresh_binds,
+        }
     }
 }
 
@@ -313,11 +328,20 @@ impl MenuConfig for ConfigMenuAdapter {
             .reset_binds_to_defaults();
     }
     fn refresh_binds(&self) {
-        // C++ `MenuGame::refreshBinds()` (MenuGame.cpp:3373-3387): the
-        // trigger-refresh loop (`game.refreshTrigger` + `fnHGTriggerRefresh`)
-        // is the unported SSVStart input manager (module docs), and
-        // `Config::loadAllJoystickBinds` (Config.hpp:228) is unported —
-        // no-op.
+        // C++ `MenuGame::refreshBinds()` (MenuGame.cpp:3373-3387) — the
+        // per-trigger `game.refreshTrigger` + `fnHGTriggerRefresh` loop over
+        // BOTH input managers (issue 010b); the
+        // `Config::loadAllJoystickBinds()` tail is the unported joystick
+        // (NoJoystick seam) — documented no-op.
+        if let Some(f) = self.refresh_binds.borrow().as_ref() {
+            f();
+        }
+    }
+    fn fullscreen(&self) -> bool {
+        self.config
+            .read()
+            .expect("config poisoned")
+            .get_fullscreen()
     }
     fn set_fullscreen(&self, value: bool) {
         // C++ `Config::setFullscreen(window, value)` (MenuGame.cpp:1374-1379)
@@ -921,6 +945,10 @@ struct GameSlotAdapter {
     /// adapter, so it cannot be captured directly; the `WindowedClient`
     /// fills the slot before `boot` and keeps the engine alive).
     engine_slot: Rc<RefCell<Option<Rc<GameEngine>>>>,
+    /// The C++ `HexagonGame::game` member's `ssvs::Input::Manager`
+    /// (GameState.hpp:64-75) — the engine keyboard binds
+    /// (HexagonGame.cpp:349-460, registered in `WindowedClient::build`).
+    input_manager: Rc<RefCell<Manager>>,
 }
 
 impl GameState for GameSlotAdapter {
@@ -956,6 +984,18 @@ impl GameState for GameSlotAdapter {
         // — the D-020 bridge (`bridge::draw`).
         crate::bridge::draw(&self.game, &mut self.app_draw.borrow_mut(), target);
     }
+
+    fn refresh_input(&self, input: &InputState) {
+        // C++ `GameState::refreshInput` (GameState.hpp:54-57 →
+        // `inputManager.refresh`, Manager.hpp:46-58).
+        self.input_manager.borrow_mut().refresh(input);
+    }
+
+    fn update_input(&self, input: &InputState, ft: f32) {
+        // C++ `GameState::updateInput` (GameState.hpp:49-52 →
+        // `inputManager.update`, Manager.hpp:32-45).
+        self.input_manager.borrow_mut().update(input, ft);
+    }
 }
 
 /// The C++ `mg->getGame()` `GameState` (main.cpp:461/479/505/532): the
@@ -963,6 +1003,10 @@ impl GameState for GameSlotAdapter {
 /// ported (module docs: MenuGame draw).
 struct MenuSlotAdapter {
     menu: Rc<MenuGame>,
+    /// The C++ `MenuGame::game` member's `ssvs::Input::Manager` — the menu
+    /// keyboard binds (MenuGame.cpp:912-1018, registered in
+    /// `WindowedClient::build`).
+    input_manager: Rc<RefCell<Manager>>,
 }
 
 impl GameState for MenuSlotAdapter {
@@ -978,8 +1022,470 @@ impl GameState for MenuSlotAdapter {
         // TODO(issue-13-menu-draw)
     }
 
+    fn refresh_input(&self, input: &InputState) {
+        self.input_manager.borrow_mut().refresh(input);
+    }
+
+    fn update_input(&self, input: &InputState, ft: f32) {
+        self.input_manager.borrow_mut().update(input, ft);
+    }
+
     // C++ `MenuGame` registers no `onPostUpdate` (only `onUpdate` /
     // `onDraw`, MenuGame.cpp:257-259) — the trait default (empty delegate).
+}
+
+/// The inverse of the C++ `static_cast<int>(Tid)` (HexagonGame.cpp:355,
+/// MenuGame.cpp:919) — the 16 keyboard bind ids 0..=15 (`Tid` is
+/// `#[repr(i32)]`, `TriggersCount = 16` excluded).
+fn tid_from_i32(v: i32) -> Option<Tid> {
+    match v {
+        0 => Some(Tid::RotateCCW),
+        1 => Some(Tid::RotateCW),
+        2 => Some(Tid::Focus),
+        3 => Some(Tid::Select),
+        4 => Some(Tid::Exit),
+        5 => Some(Tid::ForceRestart),
+        6 => Some(Tid::Restart),
+        7 => Some(Tid::Replay),
+        8 => Some(Tid::Screenshot),
+        9 => Some(Tid::Swap),
+        10 => Some(Tid::Up),
+        11 => Some(Tid::Down),
+        12 => Some(Tid::NextPack),
+        13 => Some(Tid::PreviousPack),
+        14 => Some(Tid::LuaConsole),
+        15 => Some(Tid::Pause),
+        _ => None,
+    }
+}
+
+/// C++ `HexagonGame`'s keyboard bind registrations (HexagonGame.cpp:349-460)
+/// — into the GAME state's manager (the C++ registers into its own
+/// `ssvs::GameState game` member; the port's `GameSlotAdapter` owns the
+/// manager). `trigger_of` reads the LIVE config triggers (`Config::getTrigger`,
+/// the C++'s `Config::getTrigger(tid)` at every registration —
+/// HexagonGame.cpp:352-356), so the rebind / `refreshBinds` paths
+/// re-point the binds without re-registration.
+fn register_engine_binds(
+    mgr: &mut Manager,
+    game: &Rc<HexagonGame<GameApiState>>,
+    config: &Arc<RwLock<Config>>,
+) {
+    let trigger_of = |tid: Tid| config.read().expect("config poisoned").trigger_copy(tid);
+
+    // `add2StateInput(game, getTrigger(Tid::X), inputImplX)`
+    // (HexagonGame.cpp:357-360; SSVStart `Utils/Input.hpp:209-219`):
+    // `Type::Always` on/off closures over the impl flags.
+    let mut two_state = |tid: Tid, set: fn(&HexagonGame<GameApiState>, bool)| {
+        let g_on = game.clone();
+        let g_off = game.clone();
+        mgr.add_input(
+            trigger_of(tid),
+            move |_ft| set(&g_on, true),
+            move |_ft| set(&g_off, false),
+            Type::Always,
+            tid as i32,
+            Mode::Overlap,
+        );
+    };
+    two_state(
+        Tid::RotateCCW,
+        HexagonGame::<GameApiState>::set_input_impl_ccw,
+    );
+    two_state(
+        Tid::RotateCW,
+        HexagonGame::<GameApiState>::set_input_impl_cw,
+    );
+    two_state(Tid::Focus, HexagonGame::<GameApiState>::set_input_focused);
+    two_state(Tid::Swap, HexagonGame::<GameApiState>::set_input_swap);
+
+    // The `notInConsole` wrapper (HexagonGame.cpp:367-375): the action runs
+    // only when `imguiLuaConsoleHasInput()` is false.
+    let not_in_console = |g: Rc<HexagonGame<GameApiState>>,
+                          action: fn(&HexagonGame<GameApiState>)| {
+        move |_ft| {
+            if !g.lua_console_has_input() {
+                action(&g);
+            }
+        }
+    };
+
+    // Hardcoded Escape (HexagonGame.cpp:377-381): `goToMenu()` — the
+    // default-argument call `goToMenu(true, false)`
+    // (HexagonGame.hpp:417). C++ default `mTriggerID = -1`
+    // (GameState.hpp:70).
+    {
+        let g = game.clone();
+        mgr.add_input(
+            Trigger::key(Key::ESCAPE),
+            not_in_console(g, HexagonGame::<GameApiState>::trigger_go_to_menu),
+            |_| {},
+            Type::Always,
+            -1,
+            Mode::Overlap,
+        );
+    }
+    {
+        let g = game.clone();
+        mgr.add_input(
+            trigger_of(Tid::Exit),
+            not_in_console(g, HexagonGame::<GameApiState>::trigger_go_to_menu),
+            |_| {},
+            Type::Always,
+            Tid::Exit as i32,
+            Mode::Overlap,
+        );
+    }
+    {
+        let g = game.clone();
+        mgr.add_input(
+            trigger_of(Tid::ForceRestart),
+            not_in_console(g, HexagonGame::<GameApiState>::trigger_force_restart),
+            |_| {},
+            Type::Once,
+            Tid::ForceRestart as i32,
+            Mode::Overlap,
+        );
+    }
+    {
+        let g = game.clone();
+        mgr.add_input(
+            trigger_of(Tid::Restart),
+            not_in_console(g, HexagonGame::<GameApiState>::trigger_restart),
+            |_| {},
+            Type::Once,
+            Tid::Restart as i32,
+            Mode::Overlap,
+        );
+    }
+    {
+        let g = game.clone();
+        mgr.add_input(
+            trigger_of(Tid::Replay),
+            not_in_console(g, HexagonGame::<GameApiState>::trigger_replay),
+            |_| {},
+            Type::Once,
+            Tid::Replay as i32,
+            Mode::Overlap,
+        );
+    }
+    {
+        let g = game.clone();
+        mgr.add_input(
+            trigger_of(Tid::Screenshot),
+            not_in_console(g, HexagonGame::<GameApiState>::trigger_screenshot),
+            |_| {},
+            Type::Once,
+            Tid::Screenshot as i32,
+            Mode::Overlap,
+        );
+    }
+    // Tid::LuaConsole (HexagonGame.cpp:412-419) — NOT console-gated (the
+    // debug gate is the body's, `set_ilc_show_console_next`).
+    {
+        let g = game.clone();
+        mgr.add_input(
+            trigger_of(Tid::LuaConsole),
+            move |_ft| g.trigger_lua_console(),
+            |_| {},
+            Type::Once,
+            Tid::LuaConsole as i32,
+            Mode::Overlap,
+        );
+    }
+    // Tid::Pause (HexagonGame.cpp:421-441) — NOT console-gated either.
+    {
+        let g = game.clone();
+        mgr.add_input(
+            trigger_of(Tid::Pause),
+            move |_ft| g.trigger_pause(),
+            |_| {},
+            Type::Once,
+            Tid::Pause as i32,
+            Mode::Overlap,
+        );
+    }
+}
+
+/// C++ `MenuGame::initInput()` (MenuGame.cpp:912-1018) — the menu keyboard
+/// binds, into the MENU state's manager (the C++ registers into
+/// `MenuGame::game`). Same live-`Config::getTrigger` reading as the engine
+/// registration (MenuGame.cpp:919-921).
+fn register_menu_binds(mgr: &mut Manager, menu: &Rc<MenuGame>, config: &Arc<RwLock<Config>>) {
+    let trigger_of = |tid: Tid| config.read().expect("config poisoned").trigger_copy(tid);
+
+    // C++ `if(!mouseHovering) leftAction()/rightAction()` (MenuGame.cpp:
+    // 923-938): the port's mouse-hover surface is issue 13b's menu-draw
+    // lane (the `mouseHovering` state is unported — no menu item tracking
+    // exists yet); the actions run unguarded.
+    {
+        let m = menu.clone();
+        mgr.add_input(
+            trigger_of(Tid::RotateCCW),
+            move |_ft| m.left_action(),
+            |_| {},
+            Type::Once,
+            Tid::RotateCCW as i32,
+            Mode::Overlap,
+        );
+    }
+    {
+        let m = menu.clone();
+        mgr.add_input(
+            trigger_of(Tid::RotateCW),
+            move |_ft| m.right_action(),
+            |_| {},
+            Type::Once,
+            Tid::RotateCW as i32,
+            Mode::Overlap,
+        );
+    }
+    // Hardcoded Up/Down (MenuGame.cpp:940-957) + the editable Tid::Up/Down.
+    {
+        let m = menu.clone();
+        mgr.add_input(
+            Trigger::key(Key::UP),
+            move |_ft| m.up_action(),
+            |_| {},
+            Type::Once,
+            -1,
+            Mode::Overlap,
+        );
+    }
+    {
+        let m = menu.clone();
+        mgr.add_input(
+            trigger_of(Tid::Up),
+            move |_ft| m.up_action(),
+            |_| {},
+            Type::Once,
+            Tid::Up as i32,
+            Mode::Overlap,
+        );
+    }
+    {
+        let m = menu.clone();
+        mgr.add_input(
+            Trigger::key(Key::DOWN),
+            move |_ft| m.down_action(),
+            |_| {},
+            Type::Once,
+            -1,
+            Mode::Overlap,
+        );
+    }
+    {
+        let m = menu.clone();
+        mgr.add_input(
+            trigger_of(Tid::Down),
+            move |_ft| m.down_action(),
+            |_| {},
+            Type::Once,
+            Tid::Down as i32,
+            Mode::Overlap,
+        );
+    }
+    {
+        let m = menu.clone();
+        mgr.add_input(
+            trigger_of(Tid::NextPack),
+            move |_ft| m.change_pack_action(1),
+            |_| {},
+            Type::Once,
+            Tid::NextPack as i32,
+            Mode::Overlap,
+        );
+    }
+    {
+        let m = menu.clone();
+        mgr.add_input(
+            trigger_of(Tid::PreviousPack),
+            move |_ft| m.change_pack_action(-1),
+            |_| {},
+            Type::Once,
+            Tid::PreviousPack as i32,
+            Mode::Overlap,
+        );
+    }
+    // `add2StateInput(game, getTrigger(Tid::Focus), focusHeld, ...)`
+    // (MenuGame.cpp:956-957 + SSVStart `Utils/Input.hpp:209-219`).
+    {
+        let m_on = menu.clone();
+        let m_off = menu.clone();
+        mgr.add_input(
+            trigger_of(Tid::Focus),
+            move |_ft| m_on.set_focus_held(true),
+            move |_ft| m_off.set_focus_held(false),
+            Type::Always,
+            Tid::Focus as i32,
+            Mode::Overlap,
+        );
+    }
+    // Hardcoded Enter (MenuGame.cpp:959-961).
+    {
+        let m = menu.clone();
+        mgr.add_input(
+            Trigger::key(Key::ENTER),
+            move |_ft| m.ok_action(),
+            |_| {},
+            Type::Once,
+            -1,
+            Mode::Overlap,
+        );
+    }
+    // Hardcoded Escape `Type::Always` (MenuGame.cpp:963-971): the
+    // `exitTimer` accumulation; the `exitTimer > 20 → window.stop()`
+    // consumer (MenuGame.cpp:2852) is the unported `MenuGame::draw` lane
+    // (issue 13b) — the timer accumulates only.
+    {
+        let m_on = menu.clone();
+        let m_off = menu.clone();
+        mgr.add_input(
+            Trigger::key(Key::ESCAPE),
+            move |ft| m_on.add_exit_timer(ft),
+            move |_ft| m_off.reset_exit_timer(),
+            Type::Always,
+            -1,
+            Mode::Overlap,
+        );
+    }
+    // Hardcoded Escape `Type::Once` (MenuGame.cpp:973-975).
+    {
+        let m = menu.clone();
+        mgr.add_input(
+            Trigger::key(Key::ESCAPE),
+            move |_ft| m.exit_action(),
+            |_| {},
+            Type::Once,
+            -1,
+            Mode::Overlap,
+        );
+    }
+    // Editable Tid::Exit (MenuGame.cpp:989-997): the `isEnteringText()`
+    // guard + `exitAction()`.
+    {
+        let m = menu.clone();
+        mgr.add_input(
+            trigger_of(Tid::Exit),
+            move |_ft| {
+                if !m.is_entering_text() {
+                    m.exit_action();
+                }
+            },
+            |_| {},
+            Type::Once,
+            Tid::Exit as i32,
+            Mode::Overlap,
+        );
+    }
+    // Editable Tid::Screenshot (MenuGame.cpp:999-1001):
+    // `mustTakeScreenshot = true` — the C++ consumer is `MenuGame::draw`
+    // (issue 13b, unported).
+    mgr.add_input(
+        trigger_of(Tid::Screenshot),
+        move |_ft| {
+            // TODO(010b-menu-screenshot): C++ `mustTakeScreenshot = true`
+            // (MenuGame.cpp:1000) — the menu's screenshot consumer is the
+            // unported `MenuGame::draw` (issue 13b).
+        },
+        |_| {},
+        Type::Once,
+        Tid::Screenshot as i32,
+        Mode::Overlap,
+    );
+    // Hardcoded LAlt+Enter (MenuGame.cpp:1003-1013): the fullscreen toggle
+    // (`Config::setFullscreen(window, !getFullscreen())` — the port's
+    // `MenuConfig::set_fullscreen` seam) + `game.ignoreNextInputs()` +
+    // `.setPriorityUser(-1000)`.
+    {
+        let cfg = menu.config().clone();
+        let idx = mgr.add_input(
+            Trigger::keys(&[Key::L_ALT, Key::ENTER]),
+            move |_ft| cfg.set_fullscreen(!cfg.fullscreen()),
+            |_| {},
+            Type::Once,
+            -1,
+            Mode::Overlap,
+        );
+        // C++ `.setPriorityUser(-1000)` (MenuGame.cpp:1012): an `int` into
+        // a `std::size_t` wraps to `usize::MAX - 999`.
+        mgr.set_priority_user(idx, (usize::MAX - 999) as u64);
+        // C++ `game.ignoreNextInputs()` (MenuGame.cpp:1008): after this
+        // action, the rest of the frame's binds are skipped
+        // (Manager.hpp:40-43).
+        mgr.set_ignore_next_on_fire(idx);
+    }
+    // Hardcoded Backspace (MenuGame.cpp:1015-1017).
+    {
+        let m = menu.clone();
+        mgr.add_input(
+            Trigger::key(Key::BACKSPACE),
+            move |_ft| m.erase_action(),
+            |_| {},
+            Type::Once,
+            -1,
+            Mode::Overlap,
+        );
+    }
+    // Hardcoded F1 (MenuGame.cpp:1019-1021): `addRemoveFavoriteLevel()` —
+    // the favorites-drawer half is the unported 13b detail.
+    mgr.add_input(
+        Trigger::key(Key::F1),
+        move |_ft| {
+            // TODO(010b-menu-favorite): C++ `addRemoveFavoriteLevel()`
+            // (MenuGame.cpp:1020) — the favorites toggle is the unported
+            // issue 13b detail.
+        },
+        |_| {},
+        Type::Once,
+        -1,
+        Mode::Overlap,
+    );
+    // Hardcoded F2 (MenuGame.cpp:1023-1025): `switchToFromFavoriteLevels()`.
+    mgr.add_input(
+        Trigger::key(Key::F2),
+        move |_ft| {
+            // TODO(010b-menu-favorites-toggle): C++
+            // `switchToFromFavoriteLevels()` (MenuGame.cpp:1024) — the
+            // favorites view switch is the unported issue 13b detail.
+        },
+        |_| {},
+        Type::Once,
+        -1,
+        Mode::Overlap,
+    );
+    // Hardcoded F3/F4 (MenuGame.cpp:1027-1033): `reloadAssets(false/true)`
+    // → the `MenuAssets::reload_assets` seam.
+    {
+        let m = menu.clone();
+        mgr.add_input(
+            Trigger::key(Key::F3),
+            move |_ft| {
+                let assets = m.assets().clone();
+                let id = m.selected_level_id();
+                assets.reload_assets(false, &id);
+            },
+            |_| {},
+            Type::Once,
+            -1,
+            Mode::Overlap,
+        );
+    }
+    {
+        let m = menu.clone();
+        mgr.add_input(
+            Trigger::key(Key::F4),
+            move |_ft| {
+                let assets = m.assets().clone();
+                let id = m.selected_level_id();
+                assets.reload_assets(true, &id);
+            },
+            |_| {},
+            Type::Once,
+            -1,
+            Mode::Overlap,
+        );
+    }
 }
 
 /// The C++ `mainClient` windowed client: the window + the `GameEngine`
@@ -1038,12 +1544,16 @@ impl WindowedClient {
         // ------------------------------------------------------------------
         // C++ main.cpp:413-421 — the engine (`window` = true). The profile
         // editor surface is issue 17 (`NullProfiles`), the audio / client
-        // / steam / discord null equivalents are the composition's.
-        let composed = compose_with(
+        // / steam / discord null equivalents are the composition's. The
+        // shared `Config` is the C++'s single process-global `hg::Config`
+        // (menu writes reach the engine — e.g. the debug toggle the
+        // `Tid::Pause` body reads, HexagonGame.cpp:421-441).
+        let composed = compose_with_config(
             assets.clone(),
             base_dir.to_path_buf(),
             true, /* window */
             Arc::new(NullProfiles),
+            config.clone(),
         );
 
         // The C++ `initText` fonts (HexagonGame.cpp:289-290:
@@ -1068,6 +1578,21 @@ impl WindowedClient {
         let game = Rc::new(composed.game.clone());
         let engine_slot: Rc<RefCell<Option<Rc<GameEngine>>>> = Rc::new(RefCell::new(None));
 
+        // ------------------------------------------------------------------
+        // C++ `HexagonGame::game` / `MenuGame::game` — the two
+        // `ssvs::Input::Manager`s (GameState.hpp:64-75) and the keyboard
+        // binds (issue 010b): the engine's (HexagonGame.cpp:349-460, below)
+        // and the menu's (MenuGame.cpp:912-1018, registered after the menu
+        // object exists). The C++ registers them in the objects'
+        // constructors; the port registers them here, where the windowed
+        // composition owns both states.
+        let game_manager: Rc<RefCell<Manager>> = Rc::new(RefCell::new(Manager::new()));
+        let menu_manager: Rc<RefCell<Manager>> = Rc::new(RefCell::new(Manager::new()));
+        {
+            let mut gm = game_manager.borrow_mut();
+            register_engine_binds(&mut gm, &game, &config);
+        }
+
         // C++ main.cpp:442-449 — `fnHGNewGame`: `hg.newGame(...)` +
         // `window->setGameState(hg.getGame())`.
         let new_game_cb: Option<NewGameCallback> = {
@@ -1089,13 +1614,30 @@ impl WindowedClient {
             ))
         };
 
-        // C++ main.cpp:436-440 — `fnHGTriggerRefresh`: `hg.refreshTrigger`
-        // is the unported SSVStart input manager (module docs) — the
-        // wired closure documents the no-op.
-        let trigger_refresh_cb: Option<TriggerRefreshCallback> =
-            Some(Box::new(|_trigger, _bind_id| {
-                // TODO(input-manager): C++ main.cpp:439 `hg.refreshTrigger`
-            }));
+        // C++ main.cpp:436-440 — `fnHGTriggerRefresh` (`hg.refreshTrigger`
+        // → `HexagonGame::refreshTrigger`, HexagonGame.cpp:467-470) + the
+        // menu-side `game.refreshTrigger` half of the rebind callback
+        // (MenuGame.cpp:1233-1240). The ported seam passes (name, id) in
+        // place of the trigger value (menu.rs:263) — the value is re-read
+        // from the shared `Config` (the same object the menu's
+        // `KeyboardBindControl` rebinds, oh-config `rebind_trigger`).
+        let trigger_refresh_cb: Option<TriggerRefreshCallback> = {
+            let config = config.clone();
+            let menu_manager = menu_manager.clone();
+            let game_manager = game_manager.clone();
+            Some(Box::new(move |_name, bind_id| {
+                let Some(tid) = tid_from_i32(bind_id) else {
+                    return;
+                };
+                let trigger = config.read().expect("config poisoned").trigger_copy(tid);
+                menu_manager
+                    .borrow_mut()
+                    .refresh_triggers(&trigger, bind_id);
+                game_manager
+                    .borrow_mut()
+                    .refresh_triggers(&trigger, bind_id);
+            }))
+        };
 
         // C++ main.cpp:451-454 — `fnHGUpdateRichPresenceCallbacks`:
         // `hg.updateRichPresenceCallbacks()` is Steam (issue 20, absent) —
@@ -1104,16 +1646,59 @@ impl WindowedClient {
             // TODO(issue-20): C++ main.cpp:453 `hg.updateRichPresenceCallbacks`
         }));
 
+        // C++ `MenuGame::refreshBinds()`' input-manager half (the options'
+        // "RESET CONFIG" / "reset binds" items, menu.rs:145,219 →
+        // MenuGame.cpp:1175,1213 → :3373-3387) — filled AFTER the menu +
+        // managers exist (the slot breaks the menu↔adapter cycle).
+        let refresh_binds_slot: RefreshBindsSlot = Rc::new(RefCell::new(None));
+
         let menu = Rc::new(MenuGame::new(
             Rc::new(RealMenuAssets::from_arc(assets)),
-            Rc::new(ConfigMenuAdapter::new(config.clone())),
+            Rc::new(ConfigMenuAdapter::new(
+                config.clone(),
+                refresh_binds_slot.clone(),
+            )),
             Rc::new(NoopNetwork),
             Rc::new(NoopAudio),
             new_game_cb,
             trigger_refresh_cb,
             rich_presence_cb,
+            {
+                let menu_manager = menu_manager.clone();
+                Some(Box::new(move |ignore| {
+                    // C++ `setIgnoreAllInputs`' `game.ignoreAllInputs` half
+                    // (MenuGame.cpp:3389-3402) → the menu state's manager.
+                    menu_manager.borrow_mut().ignore_all_inputs(ignore);
+                }))
+            },
             Rc::new(LinearFontHeight),
         ));
+
+        // C++ `MenuGame::initInput()` (MenuGame.cpp:912-1018) — the menu
+        // keyboard binds, into the menu state's manager.
+        {
+            register_menu_binds(&mut menu_manager.borrow_mut(), &menu, &config);
+        }
+
+        // Fill the `refreshBinds` slot (both managers, every trigger —
+        // C++ `MenuGame::refreshBinds`, MenuGame.cpp:3373-3387; the
+        // `Config::loadAllJoystickBinds()` tail is the unported joystick
+        // — documented no-op).
+        {
+            let config = config.clone();
+            let menu_manager = menu_manager.clone();
+            let game_manager = game_manager.clone();
+            *refresh_binds_slot.borrow_mut() = Some(Box::new(move || {
+                for i in 0..=15_i32 {
+                    let Some(tid) = tid_from_i32(i) else {
+                        continue;
+                    };
+                    let trigger = config.read().expect("config poisoned").trigger_copy(tid);
+                    menu_manager.borrow_mut().refresh_triggers(&trigger, i);
+                    game_manager.borrow_mut().refresh_triggers(&trigger, i);
+                }
+            }));
+        }
 
         // ------------------------------------------------------------------
         // The two `GameState` adapters + the `GameEngine` switcher
@@ -1121,13 +1706,17 @@ impl WindowedClient {
         // `-p -l` path sets NO state in the C++; the port's documented
         // deviation, module docs).
         let return_to_menu = Arc::new(AtomicU8::new(0));
-        let menu_adapter: Rc<dyn GameState> = Rc::new(MenuSlotAdapter { menu: menu.clone() });
+        let menu_adapter: Rc<dyn GameState> = Rc::new(MenuSlotAdapter {
+            menu: menu.clone(),
+            input_manager: menu_manager.clone(),
+        });
         let game_adapter: Rc<dyn GameState> = Rc::new(GameSlotAdapter {
             game: game.clone(),
             menu: menu.clone(),
             app_draw: app_draw.clone(),
             return_to_menu: return_to_menu.clone(),
             engine_slot: engine_slot.clone(),
+            input_manager: game_manager.clone(),
         });
         let engine = Rc::new(GameEngine::new(menu_adapter, game_adapter));
         // The C++'s `window` pointer exists before the callbacks are wired
@@ -1265,6 +1854,14 @@ impl WindowedClient {
         Self::tick_fields(window, timer, &self.engine, &self.menu)
     }
 
+    /// A [`Self::tick`] driven by the client's own window + timer — the
+    /// windowed input tests' driver (`tick` takes them as arguments; this
+    /// borrows them from the client instead — no `&self`/`&mut self`
+    /// conflict on the same field).
+    pub fn tick_self(&mut self) {
+        Self::tick_fields(&mut self.window, &mut self.timer, &self.engine, &self.menu)
+    }
+
     /// The frame body over the client's pieces (the `tick` wrapper is the
     /// `&self` convenience; `run` calls this with the moved-out fields).
     fn tick_fields(
@@ -1293,10 +1890,16 @@ impl WindowedClient {
         // (Closed → `window.close()`; the C++'s per-event
         // `gameEngine->handleEvent` is the documented no-op, module docs).
         // C++ `gameEngine->runUpdate();` (GameWindow.hpp:133 →
-        // GameEngine.hpp:80-86): `refreshInput` (the documented
-        // input-manager gap) → `timer->runUpdate()` (N×`updateFromTimer` on
-        // the CURRENT state) → `onPostUpdate`.
-        timer.run_update(|ft| engine.update_from_timer(ft));
+        // GameEngine.hpp:80-86): `refreshInput(mInput)` (ONCE per frame,
+        // before the burst) → `timer->runUpdate()` (N×`updateFromTimer`,
+        // each = the current state's `updateInput` + `update`,
+        // GameEngine.hpp:40-50 / GameState.hpp:49-57) → `onPostUpdate`.
+        let input = window.get_input_state();
+        engine.refresh_input(input);
+        timer.run_update(|ft| {
+            engine.update_input(input, ft);
+            engine.update_from_timer(ft);
+        });
         engine.on_post_update();
         // C++ `gameEngine->runDraw();` + `renderWindow.display();`
         // (GameWindow.hpp:141-143) — the current state's `draw`, then the
@@ -1372,7 +1975,7 @@ pub fn create_window(config: &Config) -> Window {
     window
 }
 
-/// The C++ `GameWindow::run` per-frame body (GameWindow.hpp:117-150) as a
+/// C++ `GameWindow::run`'s per-frame body (GameWindow.hpp:117-150) as a
 /// free function over the composition's pieces — the state-switching
 /// tests drive THIS with fake states + the real [`TimerStatic`] (the
 /// spec's §5 harness); [`WindowedClient::tick`] is the client-level
@@ -1396,9 +1999,15 @@ pub fn frame(
     if let Some(gl) = window.gl() {
         gl.clear(COLOR_TRANSPARENT); // C++ `this->clear()` (GameWindow.hpp:126)
     }
-    // C++ `runUpdate` (GameEngine.hpp:80-86) — `refreshInput` is the
-    // documented input-manager gap (module docs).
-    timer.run_update(|ft| engine.update_from_timer(ft));
+    // C++ `runUpdate` (GameEngine.hpp:80-86): `refreshInput(mInput)` ONCE
+    // per frame, then the burst (each tick = `updateInput` + `update`,
+    // GameEngine.hpp:40-50 / GameState.hpp:49-57).
+    let input = window.get_input_state();
+    engine.refresh_input(input);
+    timer.run_update(|ft| {
+        engine.update_input(input, ft);
+        engine.update_from_timer(ft);
+    });
     engine.on_post_update();
     // C++ `runDraw` (GameEngine.hpp:89-94).
     engine.draw(target);

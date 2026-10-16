@@ -40,6 +40,13 @@ pub type TriggerRefreshCallback = Box<dyn Fn(&str, i32)>;
 /// `fnHGUpdateRichPresenceCallbacks()` — C++ `std::function<void()>`.
 pub type RichPresenceCallback = Box<dyn Fn()>;
 
+/// `MenuGame::setIgnoreAllInputs`'s `game.ignoreAllInputs(bool)` half
+/// (MenuGame.cpp:3389-3402 → `ssvs::Input::Manager::ignoreAllInputs`,
+/// Manager.hpp:78-81) — the windowed composition wires it to the menu
+/// state's input manager. The C++ `Joystick::ignoreAllPresses` half is the
+/// unported joystick (NoJoystick seam).
+pub type IgnoreInputsCallback = Box<dyn Fn(bool)>;
+
 /// A level as `MenuGame` consumes it (name/author/style/difficulty for the
 /// selection screens and `set_index`).
 #[derive(Debug, Clone)]
@@ -259,6 +266,9 @@ pub trait MenuConfig {
     fn refresh_binds(&self);
 
     // --- resolution
+    /// `window->getFullscreen()` (the LAlt+Enter toggle's read half,
+    /// MenuGame.cpp:1006-1007; the ported value lives in the config).
+    fn fullscreen(&self) -> bool;
     /// `Config::setFullscreen(window, b)`.
     fn set_fullscreen(&self, value: bool);
     /// `Config::setCurrentResolution(w, h)` (the `"<w>x<h>"` items).
@@ -898,6 +908,9 @@ impl MenuConfig for FakeConfig {
     }
     fn refresh_binds(&self) {
         self.inner.borrow_mut().refresh_binds_log += 1;
+    }
+    fn fullscreen(&self) -> bool {
+        self.inner.borrow().fullscreen
     }
     fn set_fullscreen(&self, value: bool) {
         self.inner.borrow_mut().fullscreen = value;

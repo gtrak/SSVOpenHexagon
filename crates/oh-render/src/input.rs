@@ -115,6 +115,28 @@ impl InputState {
         self.fingers.iter().filter(|b| **b).count()
     }
 
+    // ---- mutable accessors (the C++ non-const `getFingers()` / `getKeys()`
+    // / `getBtns()`, InputState.hpp:58-79) — the input manager's
+    // per-frame `processedInput` writes through these (Combo.inl:35-36) ----
+
+    /// C++ `getFingers()` (non-const overload).
+    #[must_use]
+    pub fn get_fingers_mut(&mut self) -> &mut [bool; FINGER_COUNT] {
+        &mut self.fingers
+    }
+
+    /// C++ `getKeys()` (non-const overload).
+    #[must_use]
+    pub fn get_keys_mut(&mut self) -> &mut [bool; KEY_BITS] {
+        &mut self.keys
+    }
+
+    /// C++ `getBtns()` (non-const overload).
+    #[must_use]
+    pub fn get_btns_mut(&mut self) -> &mut [bool; BTN_BITS] {
+        &mut self.btns
+    }
+
     // ---- mutators (C++ `operator[]` non-const overloads) --------------------
 
     /// C++ `inputState[mKey] = true/false` (from `KeyPressed` /
