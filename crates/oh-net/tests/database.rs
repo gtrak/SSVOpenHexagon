@@ -254,6 +254,40 @@ fn is_login_token_valid_real_clock() {
 }
 
 #[test]
+fn u64_columns_round_trip_the_top_bit_set_values() {
+    // The C++ `sqlite_orm` binds every integer with
+    // `sqlite3_bind_int64(..., static_cast<int64_t>(val))` and reads back
+    // `static_cast<T>(sqlite3_column_int64(...))` — a `u64` with the top
+    // bit set round-trips through a NEGATIVE `INTEGER` cell. The port
+    // performs the same bit-cast (the server's `randomUInt64` login
+    // tokens are full-range, so `u64::MAX` must work end to end).
+    let (mut db, _dir) = open_temp_db();
+    let now = now_epoch_seconds();
+    db.add_login_token(&token(1, now, u64::MAX)).unwrap();
+    assert!(
+        db.is_login_token_valid(u64::MAX).unwrap(),
+        "the top-bit-set token round-trips"
+    );
+
+    // The same for `users.steamId` (the C++ `uint64_t steamId`).
+    let user = User {
+        id: 0,
+        steam_id: u64::MAX,
+        name: "topbit".into(),
+        password_hash: vec![0u8; 32],
+    };
+    db.add_user(&user).unwrap();
+    assert!(db.any_user_with_steam_id(u64::MAX).unwrap());
+    assert_eq!(
+        db.get_user_with_steam_id(u64::MAX)
+            .unwrap()
+            .unwrap()
+            .steam_id,
+        u64::MAX
+    );
+}
+
+#[test]
 fn add_login_token_and_remove_all_for_user() {
     // C++ `addLoginToken` (:162-167), `removeAllLoginTokensForUser`
     // (:154-159). The schema gives `loginTokens.userId` a UNIQUE

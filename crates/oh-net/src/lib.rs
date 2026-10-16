@@ -18,6 +18,7 @@
 //! | `database` | `Online/Database.hpp` / `Online/Database.cpp` (SQLite, `rusqlite` — D-004) |
 //! | `leaderboard_cache` | `Core/LeaderboardCache.hpp` / `Core/LeaderboardCache.cpp` |
 //! | `client` | `Core/HexagonClient.hpp` / `Core/HexagonClient.cpp` (the pull-model online client) |
+//! | `server` | `Core/HexagonServer.hpp` / `Core/HexagonServer.cpp` (issue 18 — the authoritative game server) |
 //!
 //! The mapping (file/struct/function → Rust, with citations) is
 //! `.agents/plans/001-rust-port/mapping/networking.md`; the byte-exact
@@ -29,5 +30,6 @@ pub mod db_records;
 pub mod leaderboard_cache;
 pub mod packet;
 pub mod protocol;
+pub mod server;
 pub mod shared;
 pub mod sodium;

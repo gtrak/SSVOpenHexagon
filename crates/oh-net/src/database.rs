@@ -148,7 +148,7 @@ impl Database {
     pub fn add_user(&mut self, user: &User) -> Result<i64, rusqlite::Error> {
         self.conn.execute(
             "INSERT INTO \"users\" (\"steamId\", \"name\", \"passwordHash\") VALUES (?1, ?2, ?3)",
-            params![user.steam_id, user.name, user.password_hash],
+            params![bind_u64(user.steam_id), user.name, user.password_hash],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -196,7 +196,7 @@ impl Database {
             .prepare(
                 "SELECT \"id\", \"steamId\", \"name\", \"passwordHash\" FROM \"users\" WHERE \"steamId\" = ?1 AND \"name\" = ?2",
             )?
-            .query_map(params![steam_id, name], row_to_user)?
+            .query_map(params![bind_u64(steam_id), name], row_to_user)?
             .collect::<Result<_, _>>()?;
         Ok(single_user(&users))
     }
@@ -242,7 +242,11 @@ impl Database {
     pub fn add_login_token(&mut self, login_token: &LoginToken) -> Result<i64, rusqlite::Error> {
         self.conn.execute(
             "INSERT INTO \"loginTokens\" (\"userId\", \"timestamp\", \"token\") VALUES (?1, ?2, ?3)",
-            params![login_token.user_id, login_token.timestamp, login_token.token],
+            params![
+                login_token.user_id,
+                bind_u64(login_token.timestamp),
+                bind_u64(login_token.token)
+            ],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -279,7 +283,7 @@ impl Database {
         let tokens: Vec<LoginToken> = self
             .conn
             .prepare("SELECT \"id\", \"userId\", \"timestamp\", \"token\" FROM \"loginTokens\" WHERE \"token\" = ?")?
-            .query_map(params![token], row_to_login_token)?
+            .query_map(params![bind_u64(token)], row_to_login_token)?
             .collect::<Result<_, _>>()?;
         if tokens.is_empty() || tokens.len() > 1 {
             return Ok(false);
@@ -331,7 +335,7 @@ impl Database {
             Ok(ProcessedScore {
                 position: 0, // filled in the loop, as the C++ index is
                 user_name: row.get(0)?,
-                score_timestamp: row.get(1)?,
+                score_timestamp: read_u64(row, 1)?,
                 score_value: row.get(2)?,
             })
         })?;
@@ -361,7 +365,7 @@ impl Database {
             .query_row(
                 "SELECT \"id\", \"levelValidator\", \"timestamp\", \"userSteamId\", \"value\" \
                  FROM \"scores\" WHERE \"userSteamId\" = ?1 AND \"levelValidator\" = ?2",
-                params![user_steam_id, level_validator],
+                params![bind_u64(user_steam_id), level_validator],
                 row_to_score,
             )
             .optional()?;
@@ -386,8 +390,8 @@ impl Database {
                      \"userSteamId\" = ?3, \"value\" = ?4 WHERE \"id\" = ?5",
                     params![
                         level_validator,
-                        timestamp,
-                        user_steam_id,
+                        bind_u64(timestamp),
+                        bind_u64(user_steam_id),
                         value,
                         existing.id
                     ],
@@ -419,9 +423,9 @@ impl Database {
         let mut rows = stmt.query_map(params![level_validator], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                row.get::<_, u64>(1)?,
+                read_u64(row, 1)?,
                 row.get::<_, f64>(2)?,
-                row.get::<_, u64>(3)?,
+                read_u64(row, 3)?,
             ))
         })?;
         for (index, row) in rows.by_ref().enumerate() {
@@ -527,7 +531,7 @@ pub fn is_login_token_timestamp_valid(lt: &LoginToken, now: SystemTime) -> bool 
 fn row_to_user(row: &rusqlite::Row) -> rusqlite::Result<User> {
     Ok(User {
         id: row.get(0)?,
-        steam_id: row.get(1)?,
+        steam_id: read_u64(row, 1)?,
         name: row.get(2)?,
         password_hash: row.get(3)?,
     })
@@ -537,8 +541,8 @@ fn row_to_login_token(row: &rusqlite::Row) -> rusqlite::Result<LoginToken> {
     Ok(LoginToken {
         id: row.get(0)?,
         user_id: row.get(1)?,
-        timestamp: row.get(2)?,
-        token: row.get(3)?,
+        timestamp: read_u64(row, 2)?,
+        token: read_u64(row, 3)?,
     })
 }
 
@@ -546,8 +550,8 @@ fn row_to_score(row: &rusqlite::Row) -> rusqlite::Result<Score> {
     Ok(Score {
         id: row.get(0)?,
         level_validator: row.get(1)?,
-        timestamp: row.get(2)?,
-        user_steam_id: row.get(3)?,
+        timestamp: read_u64(row, 2)?,
+        user_steam_id: read_u64(row, 3)?,
         value: row.get(4)?,
     })
 }
@@ -567,11 +571,11 @@ fn select_users(
             .prepare(&format!(
                 "{USERS_SELECT} WHERE \"steamId\" = ?1 AND \"name\" = ?2"
             ))?
-            .query_map(params![sid, n], row_to_user)?
+            .query_map(params![bind_u64(sid), n], row_to_user)?
             .collect(),
         (Some(sid), None) => conn
             .prepare(&format!("{USERS_SELECT} WHERE \"steamId\" = ?"))?
-            .query_map(params![sid], row_to_user)?
+            .query_map(params![bind_u64(sid)], row_to_user)?
             .collect(),
         (None, Some(n)) => conn
             .prepare(&format!("{USERS_SELECT} WHERE \"name\" = ?"))?
@@ -587,6 +591,24 @@ fn select_users(
 /// C++ `query.empty() → nullopt; query.size() > 1 → nullopt (integrity
 /// error); SSVOH_ASSERT(size == 1) → query[0]` (`Database.cpp:137-150`,
 /// `185-200`).
+/// C++'s `sqlite_orm` binds EVERY integer with
+/// `sqlite3_bind_int64(stmt, i, static_cast<int64_t>(val))` and reads back
+/// with `static_cast<T>(sqlite3_column_int64(...))` — so a `u64` value is
+/// stored in the `INTEGER` cell as its SIGNED `i64` bit pattern (a `u64`
+/// with the top bit set round-trips through a negative cell). rusqlite
+/// refuses to bind a `u64` > `i64::MAX` at all ("out of range integral
+/// type conversion attempted"), so the port performs the same bit-cast:
+/// bind `x as i64`, read `i64 as u64`. (The C++'s `randomUInt64` login
+/// tokens are full-range — this is load-bearing for
+/// `add_login_token`/`is_login_token_valid`.)
+fn bind_u64(v: u64) -> i64 {
+    v as i64
+}
+
+fn read_u64(row: &rusqlite::Row, idx: usize) -> rusqlite::Result<u64> {
+    Ok(row.get::<_, i64>(idx)? as u64)
+}
+
 fn single_user(users: &[User]) -> Option<User> {
     if users.is_empty() {
         return None;

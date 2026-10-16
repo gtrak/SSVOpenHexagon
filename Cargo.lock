@@ -1469,10 +1469,12 @@ dependencies = [
  "oh-lua",
  "oh-math",
  "oh-menu",
+ "oh-net",
  "oh-render",
  "oh-replay",
  "oh-rng",
  "signal-hook",
+ "tempfile",
 ]
 
 [[package]]
@@ -1551,6 +1553,8 @@ dependencies = [
 name = "oh-net"
 version = "0.1.0"
 dependencies = [
+ "oh-assets",
+ "oh-data",
  "oh-replay",
  "rusqlite",
  "sodiumoxide",

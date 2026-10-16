@@ -10,6 +10,12 @@ edition.workspace = true
 # oh-net also needs oh-replay's `ReplayFile`/`CompressedReplayFile`
 # packet forms for `CTSPReplay`/`CTSPCompressedReplay`.
 oh-replay = { path = "../oh-replay" }
+# The server (issue 18, src/server.rs) validates replays against the level
+# registry: the C++ `HexagonServer` takes an `HGAssets&` — the port shares
+# the composition's `Arc<oh_assets::Assets>` (the light registry: no game
+# engine, no Lua).
+oh-assets = { path = "../oh-assets" }
+oh-data = { path = "../oh-data" }
 # libsodium bindings — see .agents/skills/lib-libsodium.md for the exact
 # primitive mapping (crypto_kx, crypto_secretbox(_open)_easy,
 # crypto_generichash, randombytes).

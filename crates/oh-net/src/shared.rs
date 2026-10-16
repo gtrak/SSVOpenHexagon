@@ -50,6 +50,10 @@
 //!   `messageLength` is larger; out-of-bounds write when smaller). The port
 //!   zero-pads up to `messageLength` and truncates to it.
 //!
+//! String fields decode to ANY byte sequence (the C++ `std::string` holds
+//! raw bytes; the unchecked wrap is byte-exact — the `passwordHash` fields
+//! are raw 32-byte digests, see `Reader::string`).
+//!
 //! See `.agents/plans/001-rust-port/mapping/networking.md` for the full
 //! C++→Rust mapping.
 
@@ -776,8 +780,22 @@ impl<'a> Reader<'a> {
         if !self.valid {
             return None;
         }
-        match self.p.read_str() {
-            Some(v) => Some(v),
+        // C++ `extractInto(std::string)` (Shared.cpp:130-172): the u32-BE
+        // length, then the raw bytes — `std::string` holds ANY byte sequence
+        // (no UTF-8 validation). The `passwordHash` fields are the raw
+        // 32-byte `sodiumHash` digests (rarely valid UTF-8), so the port
+        // reads the bytes and wraps them `from_utf8_unchecked` —
+        // byte-exact, the same documented choice the client makes when it
+        // builds the wire string (`client.rs:604-613`).
+        let len = match self.p.read_u32() {
+            Some(v) => v,
+            None => {
+                self.valid = false;
+                return None;
+            }
+        };
+        match self.p.take(len as usize) {
+            Some(bytes) => Some(unsafe { String::from_utf8_unchecked(bytes.to_vec()) }),
             None => {
                 self.valid = false;
                 None

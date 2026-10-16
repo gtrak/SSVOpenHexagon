@@ -41,6 +41,10 @@ oh-menu = { path = "../oh-menu" }
 signal-hook = "0.3"
 oh-replay = { path = "../oh-replay" }
 oh-rng = { path = "../oh-rng" }
+# Issue 18 milestone 4: the `-server` wiring (`dispatch.rs::main_server`
+# — the C++ `mainServer`, main.cpp:197-242) over the ported
+# `HexagonServer` + the `Database`/`ReplayExecutor` composition.
+oh-net = { path = "../oh-net" }
 
 [features]
 # D-023/D-024: forward onto oh-lua so the `open-hexagon` binary's
@@ -50,3 +54,4 @@ oh-rng = { path = "../oh-rng" }
 produce-lua-metadata = ["oh-lua/produce-lua-metadata"]
 
 [dev-dependencies]
+tempfile = { workspace = true }

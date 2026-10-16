@@ -871,3 +871,54 @@ fn negative_stc_unknown_type() {
         other => panic!("expected PInvalid, got {other:?}"),
     }
 }
+
+// ---- the raw-byte string fields (issue 18 interop) ----
+
+/// C++ `std::string` holds raw bytes: the `passwordHash` wire field is the
+/// raw 32-byte `sodiumHash` digest (a BLAKE2b output — almost never valid
+/// UTF-8). The encode side carries it byte-exactly (the client wraps the
+/// digest `from_utf8_unchecked`, `client.rs:604-613`); the decode side must
+/// read it back byte-exactly (no UTF-8 validation — the C++
+/// `extractInto(std::string)` never validates, `Shared.cpp:130-172`).
+#[test]
+fn raw_byte_password_hash_round_trips() {
+    // The C++'s exact field value: the keyed-BLAKE2b digest of the
+    // salted password (`HexagonClient.cpp:799-811`, `Sodium.cpp:62-74`).
+    let digest = sodium_hash(b"saltpassword");
+    assert!(
+        std::str::from_utf8(&digest).is_err(),
+        "the fixture digest is NOT valid UTF-8"
+    );
+    let pwhash = unsafe { String::from_utf8_unchecked(digest.to_vec()) };
+
+    let mut p = Packet::new();
+    make_client_to_server_packet(
+        &mut p,
+        &ClientToServer::CTSPRegister {
+            steam_id: STEAM_ID,
+            name: NAME.to_string(),
+            password_hash: pwhash.clone(),
+        },
+    );
+
+    let mut q = Packet::new();
+    q.append(p.data());
+    let mut error = String::new();
+    let got = decode_client_to_server_packet(None, &mut q, &mut error);
+    match got {
+        ClientToServer::CTSPRegister {
+            steam_id,
+            name,
+            password_hash,
+        } => {
+            assert_eq!(steam_id, STEAM_ID);
+            assert_eq!(name, NAME);
+            assert_eq!(
+                password_hash.as_bytes(),
+                &digest[..],
+                "the raw 32-byte digest must round-trip byte-exactly"
+            );
+        }
+        other => panic!("expected CTSPRegister, got {other:?} (error: {error:?})"),
+    }
+}
