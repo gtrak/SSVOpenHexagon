@@ -14,7 +14,7 @@ Decisions log: `.agents/plans/001-rust-port/DECISIONS.md`
 | # | Title | Depends | State | Commit | Notes |
 |---|---|---|---|---|---|
 | 01 | Workspace scaffold, C++ test-port, `oh-math`+`oh-rng` | — | LANDED | 43659e33 | gate green (4/4); 36 tests; skills lib-pcg.md+lib-ssvutils.md landed |
-| 02 | `oh-replay` byte-exact + zlib + packet codec | 01 | SPECD | — | `issue-002-impl.md` written; oracle pins ready |
+| 02 | `oh-replay` byte-exact + zlib + packet codec | 01 | LANDED | (early lane; row was stale-OPEN-clobbered by a later tracker rewrite — restored 2026-10) | `crates/oh-replay` (compress/packet/lib) byte-exact: HEX/CZHEX/PHEX oracle pins LANDED in the mapping table; consumed by every determinism test + the parity corpus + the online stack; its tests run in the workspace gate every run |
 | 03 | `oh-data`: structs + comment-tolerant JSON loaders | 01 | LANDED | ec166f35 | gate 4/4; 17 tests incl. real _RELEASE parse; discrimination-verified; skills pending |
 | 04 | `oh-config`: all keys, binds, joystick | 01 | LANDED | b354e40d | gate 4/4; 20 tests incl. real config.json (101 keys) + all overrides; discrimination-verified |
 | 05 | `oh-assets`: pack/level discovery + asset registry | 01,03 | LANDED | cfa5c896 | gate 4/4; 17 tests; counts independently re-derived (8 packs, 9 cube levels, 57 music+style, 37 levels) |
