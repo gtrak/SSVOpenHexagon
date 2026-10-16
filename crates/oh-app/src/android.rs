@@ -163,8 +163,7 @@ fn extract_asset_file(
         .map_err(|e| format!("asset read({path:?}): {e}"))?;
     let local = base_dir.join(path);
     if let Some(parent) = local.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("create_dir_all({parent:?}): {e}"))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("create_dir_all({parent:?}): {e}"))?;
     }
     let partial = local.with_extension("oh_partial");
     std::fs::write(&partial, &bytes).map_err(|e| format!("write({partial:?}): {e}"))?;

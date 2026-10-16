@@ -304,13 +304,7 @@ impl TextRenderer {
                 if g.width > 0 && g.height > 0 {
                     let left = pen_x + g.xmin as f32;
                     let top = baseline - (g.ymin as f32 + g.height as f32);
-                    quads.push((
-                        g,
-                        left,
-                        top,
-                        left + g.width as f32,
-                        top + g.height as f32,
-                    ));
+                    quads.push((g, left, top, left + g.width as f32, top + g.height as f32));
                 }
                 pen_x += g.advance_width;
             }
@@ -371,7 +365,9 @@ impl TextRenderer {
             }
             // Pass 2: the fill.
             for (g, x0, y0, x1, y1) in &quads {
-                self.draw_quad(gl, *g, *x0, *y0, *x1, *y1, fill, position, origin, scale, rotation);
+                self.draw_quad(
+                    gl, *g, *x0, *y0, *x1, *y1, fill, position, origin, scale, rotation,
+                );
             }
 
             gl.bind_vertex_array(None);
@@ -571,10 +567,22 @@ mod tests {
     fn transform_matches_the_font_text_math() {
         // Identity: no position / origin / scale / rotation → unchanged.
         let p = Vec2::new(3.0, 4.0);
-        let t = transform(p, Vec2::new(0.0, 0.0), Vec2::new(0.0, 0.0), Vec2::new(1.0, 1.0), 0.0);
+        let t = transform(
+            p,
+            Vec2::new(0.0, 0.0),
+            Vec2::new(0.0, 0.0),
+            Vec2::new(1.0, 1.0),
+            0.0,
+        );
         assert!((t.x - 3.0).abs() < 1e-6 && (t.y - 4.0).abs() < 1e-6);
         // Scale 2x: (3,4) → (6,8).
-        let t = transform(p, Vec2::new(0.0, 0.0), Vec2::new(0.0, 0.0), Vec2::new(2.0, 2.0), 0.0);
+        let t = transform(
+            p,
+            Vec2::new(0.0, 0.0),
+            Vec2::new(0.0, 0.0),
+            Vec2::new(2.0, 2.0),
+            0.0,
+        );
         assert!((t.x - 6.0).abs() < 1e-6 && (t.y - 8.0).abs() < 1e-6);
         // 90° rotation (SFML degrees): (1,0) → (0,1).
         let t = transform(

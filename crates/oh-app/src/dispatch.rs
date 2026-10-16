@@ -375,7 +375,8 @@ mod tests {
         let root = tempfile::tempdir().expect("root");
         let exe = root.path().join("target").join("debug");
         std::fs::create_dir_all(&exe).expect("exe dir");
-        std::fs::create_dir_all(root.path().join("_RELEASE").join("Assets")).expect("_RELEASE/Assets");
+        std::fs::create_dir_all(root.path().join("_RELEASE").join("Assets"))
+            .expect("_RELEASE/Assets");
         let cwd = tempfile::tempdir().expect("cwd");
         assert_eq!(
             resolve_game_root(cwd.path(), &exe),
@@ -389,7 +390,8 @@ mod tests {
         let root = tempfile::tempdir().expect("root");
         let cwd = root.path().join("run").join("here");
         std::fs::create_dir_all(&cwd).expect("cwd");
-        std::fs::create_dir_all(root.path().join("_RELEASE").join("Assets")).expect("_RELEASE/Assets");
+        std::fs::create_dir_all(root.path().join("_RELEASE").join("Assets"))
+            .expect("_RELEASE/Assets");
         let exe = tempfile::tempdir().expect("exe dir");
         assert_eq!(
             resolve_game_root(&cwd, exe.path()),
