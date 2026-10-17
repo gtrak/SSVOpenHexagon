@@ -465,6 +465,21 @@ impl Composed {
     }
 }
 
+/// Arms the engine's `fnGoToMenu` callback to record the C++
+/// `mError` argument it receives (`main.cpp:456-462` app-level callback;
+/// unset in the C++ headless tests, settable here as the observable).
+/// `allow(dead_code)`: each test binary compiles this module separately
+/// and not all of them observe the menu-return callback.
+#[allow(dead_code)]
+pub fn capture_go_to_menu(game: &HexagonGame<GameApiState>) -> Arc<std::sync::Mutex<Option<bool>>> {
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let seen2 = seen.clone();
+    game.set_fn_go_to_menu(Arc::new(move |m_error: bool| {
+        *seen2.lock().expect("go_to_menu callback poisoned") = Some(m_error);
+    }));
+    seen
+}
+
 /// Builds the composition for one engine instance (C++ test: one
 /// `HexagonGame` per `doTest` call, all sharing one `HGAssets`), with the
 /// C++ test's seam defaults: `TestProfiles`, `NullReplayStore`,

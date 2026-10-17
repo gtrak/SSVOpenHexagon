@@ -312,8 +312,19 @@ impl<S: SharedStore> HexagonGame<S> {
                         if g.level_status.score_overridden {
                             let name = g.level_status.score_override.clone();
                             // C++ `lua.readVariable<float>(levelStatus.scoreOverride)`
-                            // (a plain read: it throws when absent; the port
-                            // runs the same Lippincott behavior and skips).
+                            // — a PLAIN read (not `runLuaFunctionIfExists`):
+                            // a missing/`nil` variable throws
+                            // `VariableDoesntExistException` OUT of
+                            // `update()`, and the SSVStart timer chain has no
+                            // try/catch (`GameEngine::updateFromTimer` →
+                            // `GameState::update`), so the C++ terminates the
+                            // process on a broken level. The port keeps its
+                            // documented, safer deviation instead (deviations.md
+                            // K5 / 029m 29s1 — matching the C++ would mean
+                            // crashing on a level-authoring bug): `host_error`
+                            // (print + `go_to_menu(false, true)` unless
+                            // debug) + skip the custom-score update for this
+                            // frame; the frame continues.
                             match self.0.script_host.read_variable_f32(&name) {
                                 Ok(v) => self.st().status.update_custom_score(v),
                                 Err(msg) => self.host_error("readVariable", &msg, false),

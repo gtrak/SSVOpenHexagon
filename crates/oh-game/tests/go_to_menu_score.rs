@@ -47,10 +47,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use oh_config::{Jdir, Jid};
-use oh_game::seams::{Joystick, NoJoystick, Profiles, ReplayStore};
+use oh_game::seams::{Joystick, NoJoystick, PcgCosmeticRng, Profiles, ReplayStore};
 use oh_replay::CompressedReplayFile;
 
-use common::{compose_with, release_dir, TestProfiles};
+use common::{capture_go_to_menu, compose_with, release_dir, TestProfiles};
 
 const PACK: &str = "ohvrvanilla_vittorio_romeo_cube_1";
 const LEVEL: &str = "ohvrvanilla_vittorio_romeo_cube_1_apeirogon";
@@ -128,20 +128,6 @@ impl Joystick for ExitRisingJoystick {
     }
 }
 
-/// Arms the engine's `fnGoToMenu` callback to record the C++
-/// `mError` argument it receives (`main.cpp:456-462` app-level callback;
-/// unset in the C++ headless tests, settable here as the observable).
-fn capture_go_to_menu(
-    game: &oh_game::hexagon_game::HexagonGame<oh_lua::api::state::GameApiState>,
-) -> Arc<Mutex<Option<bool>>> {
-    let seen = Arc::new(Mutex::new(None));
-    let seen2 = seen.clone();
-    game.set_fn_go_to_menu(Arc::new(move |m_error: bool| {
-        *seen2.lock().expect("go_to_menu callback poisoned") = Some(m_error);
-    }));
-    seen
-}
-
 #[test]
 fn joystick_exit_go_to_menu_sends_the_score() {
     let assets = Arc::new(
@@ -159,6 +145,7 @@ fn joystick_exit_go_to_menu_sends_the_score() {
         Arc::new(TestProfiles),
         store.clone(),
         joy,
+        Arc::new(PcgCosmeticRng::new()),
     );
     let seen = capture_go_to_menu(&c.game);
 
@@ -210,6 +197,7 @@ fn death_restart_prompt_go_to_menu_matches_the_cpp() {
         Arc::new(NoLocalProfiles),
         store.clone(),
         Arc::new(NoJoystick),
+        Arc::new(PcgCosmeticRng::new()),
     );
     let seen = capture_go_to_menu(&c.game);
 
@@ -275,6 +263,7 @@ fn m_error_path_does_not_send_the_score() {
         Arc::new(TestProfiles),
         store.clone(),
         Arc::new(NoJoystick),
+        Arc::new(PcgCosmeticRng::new()),
     );
     let seen = capture_go_to_menu(&c.game);
 

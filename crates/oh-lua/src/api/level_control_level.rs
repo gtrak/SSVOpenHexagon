@@ -28,9 +28,12 @@ pub(crate) fn register(ctx: &LuaContext, state: &State, shared: SharedLua) -> Re
             }
             // C++ raw string, verbatim: `"if (type(" + mVar + R"( ) ~=
             // "number") then\n<8 tabs>error("Score override must be a number
-            // value")\n<9 tabs>end\n)"`.
+            // value")\n<9 tabs>end\n)"`. (The lone `)` right after the
+            // variable closes `type(`; the `if (` paren closes after
+            // "number" — a second `)` there was a Lua syntax error on
+            // every call, diverging from the C++ splice.)
             let code = format!(
-                "if (type({variable}) ) ~= \"number\") then\n\t\t\t\t\t\t\t\t\terror(\"Score override must be a number value\")\n\t\t\t\t\t\t\t\t\tend\n"
+                "if (type({variable} ) ~= \"number\") then\n\t\t\t\t\t\t\t\t\terror(\"Score override must be a number value\")\n\t\t\t\t\t\t\t\t\tend\n"
             );
             // C++: on `runtime_error`, print + `goToMenu(false, true)` unless
             // debug mode.
