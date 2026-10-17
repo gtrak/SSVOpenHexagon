@@ -823,6 +823,31 @@ same commit — issue 28's standing rule):
 Operator directive also: after the fixes, **finish the wasm branch**.
 
 ## D-035 — No worktrees for lanes; single-writer discipline (operator directive)
+**AMENDED (operator directive, 2026-10-17): lanes run in PERSISTENT WORKTREES.**
+The single-shared-checkout rule below is superseded for parallel lanes. One
+stable branch + worktree per lane (`tools/lane-worktree.sh create <lane>` →
+`../oh-lanes/<lane>`, branch `lane/<lane>`), giving each lane its own files and
+its own index. The operator's reason: the earlier worktree pain came from
+*ephemeral* worktrees whose refs were deleted while lanes were live (four
+dangling-commit recoveries); a **persistent** branch/worktree per lane has
+neither that failure mode nor the shared-index hazard (an orchestrator
+`git add -A` once swept a lane's staged edits and deleted
+`build/copyArtifacts.bash` from the C++ reference tree).
+
+Disciplines that make it safe:
+- one writer per worktree; a lane never touches the main checkout;
+- the orchestrator lands a lane by squash/cherry-pick on master (D-025) and only
+  then may remove the worktree — `lane-worktree.sh remove` REFUSES unless the
+  branch is merged, and nothing is force-deleted while a lane is alive;
+- each lane gets its own `CARGO_TARGET_DIR` (separate worktrees have different
+  absolute source paths, so a shared target dir would thrash cargo's
+  fingerprints), with `CARGO_PROFILE_*_DEBUG=0` because the main target/ is 63 GB
+  of mostly debug info and three of those would fill the disk;
+- prefer targeted `cargo test -p <crate>` while lanes run; the orchestrator runs
+  the authoritative full gate when the tree is quiescent.
+
+The original text follows for the record.
+
 
 Operator directive (2026-10-16): **do not use worktrees going forward.**
 Workers run in the main checkout. Consequences, which the orchestrator must

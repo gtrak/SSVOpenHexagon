@@ -81,3 +81,37 @@ mid-change.**
 - Do not rewrite `.agents/audits/*.md`: those are committed audit reports, and
   the audit is a hypothesis to be checked against code, not a source of truth.
   When code and audit disagree, **code wins** — say so, and correct the record.
+
+## 8. Parallel lanes run in PERSISTENT WORKTREES (D-035, amended)
+
+Lanes may run 2-3 at a time, each in its own stable branch + worktree — never in
+the main checkout. Create/join one with `tools/lane-worktree.sh`:
+
+```
+tools/lane-worktree.sh create <lane>     # branch lane/<lane> + ../oh-lanes/<lane>
+tools/lane-worktree.sh env <lane>        # prints the exports + cd you must use
+```
+
+Rules that make parallelism safe:
+
+- **Your worktree is yours.** Your own files, your own index. (This is why
+  `git add -A` is no longer a cross-lane hazard — but still commit explicit paths
+  where practical.)
+- **Your own target dir**, plus `CARGO_PROFILE_DEV_DEBUG=0` /
+  `CARGO_PROFILE_TEST_DEBUG=0` and `CARGO_PROFILE_DEV_INCREMENTAL=false`
+  (`env` prints them). Separate worktrees have different absolute source paths, so
+  a *shared* target dir would thrash cargo's fingerprints into full rebuilds; and
+  the main `target/` is 63 GB of mostly debug info, so three of those would fill
+  the disk.
+- **Never remove or force-clean a worktree or branch.** Branches are persistent and
+  the orchestrator lands them (squash, per D-025). `lane-worktree.sh remove`
+  refuses unless the branch is merged — that refusal is deliberate; do not work
+  around it. Never `cargo clean` a directory that is not yours.
+- **Prefer targeted checks** (`cargo test -p <crate>`, `cargo clippy -p <crate>`)
+  while other lanes are running; the full gate is the orchestrator's job at
+  quiescent points. A cold first build in a fresh worktree is expected to be slow.
+- **If you see a compile error or a failing test in a file you do not own, it is
+  not yours** — another lane is mid-edit in its own worktree, and your worktree
+  cannot see their uncommitted work anyway. Do not "fix" it; re-run, and if it
+  persists in *your* files, report it.
+- Report disk pressure rather than deleting anything.
