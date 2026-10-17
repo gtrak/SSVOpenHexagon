@@ -1,0 +1,29 @@
+[package]
+name = "oh-web"
+description = "The emscripten (web) entry crate (issue 26c sub-goal 4b, D-029): the wasm32-unknown-emscripten BINARY that boots the engine in a browser - the canvas + oh-render's emscripten backend (WebGL2 via the emscripten_webgl_* C API) + the request_animation_frame loop + a #[wasm_bindgen] status() probe (the boot skeleton; the engine content/Lua/menu composition is sub-goals 5/6)"
+version.workspace = true
+edition.workspace = true
+
+# The web stack (the 26c.1/26c.2 verified pins - D-029; no version bumps):
+# `wasm-bindgen` must be a BIN crate (a cdylib links as an Emscripten side
+# module with no JS loader -> undefined `__wbindgen_*`) plus the
+# `-Clink-arg=-sWASM_BINDGEN` link flag (the root .cargo/config.toml's
+# [target.wasm32-unknown-emscripten] table, the verbatim 26c.1/26c.2
+# recipe); emcc then runs the wasm-bindgen CLI itself over the linked wasm.
+# `js-sys` / `web-sys`: the browser console + the page's
+# `<canvas id="c">` lookup (the DOM events + the rAF loop themselves live in
+# oh-render's emscripten backend, which carries the wider web-sys feature
+# set - the features here are the ones THIS crate's own code touches).
+[dependencies]
+oh-render = { path = "../oh-render" }
+wasm-bindgen = "0.2.129"
+js-sys = "0.3.106"
+web-sys = { version = "0.3.106", features = [
+  "Window",
+  "Document",
+  "Element",
+  "HtmlCanvasElement",
+  "WebGl2RenderingContext",
+  "console",
+  "Performance",
+] }

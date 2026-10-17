@@ -33,3 +33,50 @@ rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
 # (x86_64 Android stays 4KB-page — no 16KB rustflags needed here.)
 [target.x86_64-linux-android]
 linker = "x86_64-linux-android28-clang"
+
+# Issue 26c (sub-goal 4b) — Emscripten (web) target: the VERBATIM
+# 26c.1/26c.2 build recipe (DECISIONS.md D-029, .agents/skills/lib-web-stack.md
+# §"26c.1 — Emscripten target (verified)" + §"26c.2 — Luau + wasm-bindgen +
+# glow in one emscripten module (verified)"). Consumed by the `oh-web`
+# binary (the wasm32-unknown-emscripten web entry — the whole app in ONE
+# module: Lua + engine + web-sys + glow, D-029; `winit` is dropped on the
+# web path, the loop is a plain `request_animation_frame`).
+#
+# - emsdk 6.0.x ships emcc.exe (no emcc.bat); point the linker at it
+#   explicitly.
+# - `-sWASM_BINDGEN`: wasm-bindgen as a BIN crate — emcc runs the
+#   wasm-bindgen CLI itself over the linked wasm (Emscripten >= 6.0.10;
+#   this box: 6.0.12). The CLI comes from ~/.cargo/bin (on the build PATH).
+# - `-sDEFAULT_TO_CXX` (the 26c.2 MANDATORY gotcha #1): emcc's linker
+#   driver does NOT auto-link the C++ EH runtime for the mixed Rust+C++
+#   module (Luau's objects leave `__gxx_wasm_personality_v0`,
+#   `__cxa_throw`, ... undefined). Linking with `-fwasm-exceptions` is NOT
+#   needed — emscripten 6.0.x's prebuilt libcxxabi already provides those
+#   symbols.
+# - `-sMAX/MIN_WEBGL_VERSION=2` (the 26c.1 MANDATORY gotcha): without them
+#   emscripten logs "WebGL 2 requested but only WebGL 1 is supported" and
+#   `emscripten_webgl_create_context` returns 0.
+# - MODULARIZE + EXPORT_ES6: the artifacts are a loadable ES module
+#   (`oh-web.js` default-exports the Module factory) + `oh-web.wasm`.
+# - The 26c.2 MANDATORY gotcha #2 lives in the CODE, not here: `main()`
+#   calls `__wasm_call_ctors()` as its FIRST statement (the wasm-bindgen
+#   glue registers `main` via `addOnInit`, which runs BEFORE emscripten's
+#   `wasmExports['__wasm_call_ctors']()` — otherwise the C++ static
+#   initializers (Luau's `kSizeClassConfig`) never run and Luau traps on a
+#   silent divide-by-zero).
+# Target-scoped: zero effect on the desktop / android builds. (Deliberately
+# NO `[build] target` line — the desktop gate keeps its host default.)
+[target.wasm32-unknown-emscripten]
+linker = "emcc.exe"
+rustflags = [
+  "-Cpanic=abort",
+  "-Cllvm-args=-enable-emscripten-cxx-exceptions=0",
+  "-Crelocation-model=static",
+  "-Clink-arg=-sDEFAULT_TO_CXX",
+  "-Clink-arg=-sWASM_BINDGEN",
+  "-Clink-arg=-Wno-experimental",
+  "-Clink-arg=-sMODULARIZE",
+  "-Clink-arg=-sEXPORT_ES6",
+  "-Clink-arg=-sMAX_WEBGL_VERSION=2",
+  "-Clink-arg=-sMIN_WEBGL_VERSION=2",
+]

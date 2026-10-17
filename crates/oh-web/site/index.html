@@ -1,0 +1,62 @@
+<!doctype html>
+<!--
+  oh-web (issue 26c sub-goal 4b, D-029) - the browser page for the
+  emscripten boot skeleton.
+
+  SERVE (static, no build step): copy the two build artifacts next to this
+  file, then serve THIS folder:
+
+      Copy-Item ..\..\..\target\wasm32-unknown-emscripten\debug\oh-web.js,`
+                 ..\..\..\target\wasm32-unknown-emscripten\debug\oh_web.wasm .
+      python -m http.server 8000
+
+  (Artifact names: the loader is `oh-web.js` (MODULARIZE + EXPORT_ES6,
+  default-exports the Module factory) but emcc names the wasm after the
+  object file - `oh_web.wasm` (underscore); the loader's locateFile looks
+  for exactly `oh_web.wasm` beside `oh-web.js`.)
+
+  URL: http://localhost:8000/
+  (Any static file server works - the page is plain ES-module + two files.)
+
+  Expected browser console (the 26c.1/26c.2 evidence shape):
+      oh-web: boot started (after __wasm_call_ctors)
+      oh-web: canvas found (640x480)
+      oh-web: WebGL2 context live - GL 3.0 (...) (glow-ok)
+      oh-web: render loop starting (request_animation_frame)
+      oh-web: first frame rendered
+      oh-web: module loaded
+      status booted=true;glow=true;frames=N   (N grows ~60x/second)
+  The 640x480 canvas animates (a slow orange <-> slate clear sweep).
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>SSVOpenHexagon (web)</title>
+    <style>
+      body { background: #111; color: #ddd; font-family: monospace; margin: 16px; }
+      canvas { display: block; border: 1px solid #444; }
+      #status { margin-top: 8px; }
+    </style>
+  </head>
+  <body>
+    <!-- The canvas oh-web's emscripten backend looks up: id "c" (the 26c.1
+         selector contract - oh-render's GlBackend also sets its 640x480
+         size at context creation). -->
+    <canvas id="c" width="640" height="480"></canvas>
+    <div id="status">booting</div>
+    <script type="module">
+      // MODULARIZE + EXPORT_ES6 (the 26c.1 recipe): the default export is
+      // the Module factory; it resolves once the wasm + the wasm-bindgen
+      // glue (including Rust main via addOnInit) have initialized.
+      import Module from "./oh-web.js";
+      const mod = await Module();
+      console.log("oh-web: module loaded");
+      // Poll the #[wasm_bindgen] status() probe into the page + console.
+      setInterval(() => {
+        const s = mod.status();
+        document.getElementById("status").textContent = "status: " + s;
+        console.log("status " + s);
+      }, 2000);
+    </script>
+  </body>
+</html>
