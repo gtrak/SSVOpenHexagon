@@ -156,6 +156,17 @@ use crate::bridge::AppDraw;
 use crate::compose::compose_with_config;
 use crate::game_state::{GameEngine, GameSlot, GameState};
 
+/// Issue 014b — the egui console overlay's lazy slot (`None` until the first
+/// shown frame — `crate::lua_console_ui`'s module docs: Gates). The type is
+/// aliased so the `WindowedClient`'s field + the `tick_fields` param exist on
+/// every platform; on emscripten the console is OFF (sub-goal 4A, 26c §5) —
+/// `lua_console_ui` is `#[cfg(not(target_os = "emscripten"))]`, so the slot
+/// degrades to the unit `()`.
+#[cfg(not(target_os = "emscripten"))]
+type IlcSlot = Rc<RefCell<Option<crate::lua_console_ui::IlcConsole>>>;
+#[cfg(target_os = "emscripten")]
+type IlcSlot = ();
+
 /// The C++ `hg::Audio` (main.cpp:392-401) is not ported (issue 17 owns
 /// the audio port; the engine is composed with a `None` audio). The
 /// menu's audio calls go through this no-op sink.
@@ -1722,8 +1733,10 @@ pub struct WindowedClient {
     /// the first shown frame — `crate::lua_console_ui`'s module docs:
     /// Gates). Shared by the per-event hook (the C++'s
     /// `Imgui::processEvent` feed, HexagonGame.cpp:335) and the frame
-    /// bodies (`tick_fields`'s post-update / draw halves).
-    ilc: Rc<RefCell<Option<crate::lua_console_ui::IlcConsole>>>,
+    /// bodies (`tick_fields`'s post-update / draw halves). On emscripten
+    /// the console is OFF (sub-goal 4A, 26c §5) — the slot is `()` and the
+    /// hook / the frame's console halves are gated off.
+    ilc: IlcSlot,
     /// C++ `steamManager` (main.cpp:251) — the composition's Steam manager
     /// (issue 020): shared with the engine (the `steam_manager` seam) and
     /// driving the menu's `MenuGame::init`-lifecycle calls
@@ -1825,9 +1838,21 @@ impl WindowedClient {
         // C++ main.cpp:264-269 — `discordManager.emplace()` (only when NOT
         // headless; the windowed path is always non-headless).
         let discord = discord.unwrap_or_else(|| {
-            Arc::new(oh_discord::DiscordManager::new(
-                oh_discord::IpcDiscordCore::new(oh_discord::DISCORD_APP_ID),
-            )) as Arc<dyn oh_discord::Discord>
+            // Native: the real IPC manager; web (emscripten): the no-SDK
+            // `NoDiscordCore` (sub-goal 3 — `IpcDiscordCore` is
+            // `#[cfg(not(target_os = "emscripten"))]`; the web vertical
+            // slice has no Discord, 26c §5).
+            #[cfg(not(target_os = "emscripten"))]
+            {
+                Arc::new(oh_discord::DiscordManager::new(
+                    oh_discord::IpcDiscordCore::new(oh_discord::DISCORD_APP_ID),
+                )) as Arc<dyn oh_discord::Discord>
+            }
+            #[cfg(target_os = "emscripten")]
+            {
+                Arc::new(oh_discord::DiscordManager::new(oh_discord::NoDiscordCore))
+                    as Arc<dyn oh_discord::Discord>
+            }
         });
 
         let composed = compose_with_config(
@@ -2032,6 +2057,14 @@ impl WindowedClient {
             }));
         }
 
+        // Issue 014b — the egui console slot (native: the lazy `None` until
+        // the first shown frame; emscripten: OFF, the degenerate `()` —
+        // sub-goal 4A, 26c §5).
+        #[cfg(not(target_os = "emscripten"))]
+        let ilc = Rc::new(RefCell::new(None));
+        #[cfg(target_os = "emscripten")]
+        let ilc = ();
+
         Ok(Self {
             window,
             engine: engine.clone(),
@@ -2045,7 +2078,7 @@ impl WindowedClient {
             interrupt: Arc::new(AtomicBool::new(false)),
             _app_draw: app_draw,
             composed,
-            ilc: Rc::new(RefCell::new(None)),
+            ilc,
         })
     }
 
@@ -2157,7 +2190,11 @@ impl WindowedClient {
     /// replaces the handler);
     /// on registration failure the default SIGINT (terminate) stays in
     /// force — the pre-port behavior (the C++'s `std::signal` would return
-    /// `SIG_ERR` likewise).
+    /// `SIG_ERR` likewise). Desktop only — the web loop is a plain
+    /// `request_animation_frame` (no signal handler, sub-goal 4A); the
+    /// `interrupt` flag is still created (the loop head's gate stays
+    /// behavior-identical) but is never set on emscripten.
+    #[cfg(not(target_os = "emscripten"))]
     pub fn install_sigint(&self) {
         let _ = signal_hook::flag::register(
             signal_hook::consts::signal::SIGINT,
@@ -2199,6 +2236,7 @@ impl WindowedClient {
     /// construction, main.cpp:251 — drops LAST, as the C++'s scope
     /// teardown does; `composed` — the `LuaContext` — drops after the
     /// states' `Rc<HexagonGame>` clones).
+    #[cfg(not(target_os = "emscripten"))]
     pub fn run(self) {
         // Declaration order = reverse drop order: `steam` first ⇒
         // dropped last (the C++'s teardown — the manager's `Drop` is the
@@ -2250,6 +2288,42 @@ impl WindowedClient {
         // returns).
     }
 
+    /// Emscripten (sub-goal 5A): drive the emscripten `Window::run` (the
+    /// `request_animation_frame` loop — D-029; the winit event loop's web
+    /// replacement). The egui console hook is OFF on web (sub-goal 4A, 26c §5)
+    /// — the `IlcSlot` is the degenerate `()` and the frame body's console
+    /// halves are gated off, so the loop is the plain `on_frame` drive. Drop
+    /// order matches the desktop [`Self::run`].
+    #[cfg(target_os = "emscripten")]
+    pub fn run(self) {
+        let WindowedClient {
+            steam: _steam,
+            discord: _discord,
+            composed,
+            window,
+            engine,
+            timer,
+            menu,
+            game,
+            config,
+            engine_slot: _engine_slot,
+            interrupt,
+            _app_draw,
+            ilc,
+        } = self;
+        let _ = &composed; // keep it alive until the end of the scope
+        let mut timer = timer;
+        // `move`: the emscripten `Window::run`'s `on_frame` is `'static`
+        // (the rAF loop outlives this function — D-029), so the closure
+        // owns the captured pieces (the desktop `run_with_event_hook`'s
+        // `on_frame` is not `'static` and borrows them instead).
+        window.run(move |window| {
+            Self::tick_fields(
+                window, &mut timer, &engine, &menu, &interrupt, &game, &config, &ilc,
+            )
+        });
+    }
+
     /// One frame — the C++ `GameWindow::run` body (GameWindow.hpp:117-150)
     /// with the port's target + exit translation (module docs).
     pub fn tick(&self, window: &mut Window, timer: &mut TimerStatic) {
@@ -2287,8 +2361,11 @@ impl WindowedClient {
     /// `#[allow]`: the C++'s frame body genuinely needs all eight pieces
     /// (the two states' frame halves + the console's post-update/draw
     /// halves + the phase timers) — a context struct would just hide the
-    /// C++'s parameter list (cf. `HexagonGame::new`'s allow).
+    /// C++'s parameter list (cf. `HexagonGame::new`'s allow). On emscripten
+    /// the console + SIGINT halves are gated off (sub-goal 4A), so the
+    /// `interrupt` / `game` / `config` / `ilc` params are unused there.
     #[allow(clippy::too_many_arguments)]
+    #[cfg_attr(target_os = "emscripten", allow(unused_variables))]
     fn tick_fields(
         window: &mut Window,
         timer: &mut TimerStatic,
@@ -2297,7 +2374,7 @@ impl WindowedClient {
         interrupt: &AtomicBool,
         game: &Rc<HexagonGame<GameApiState>>,
         config: &Arc<RwLock<Config>>,
-        ilc: &Rc<RefCell<Option<crate::lua_console_ui::IlcConsole>>>,
+        ilc: &IlcSlot,
     ) {
         // C++ `while(gameEngine->isRunning())` loop head (GameWindow.hpp:
         // 121) — the SIGINT flag (the safe port of the C++ handler, main
@@ -2307,7 +2384,11 @@ impl WindowedClient {
         // ends the port's winit loop (the C++'s loop condition is the
         // engine's `isRunning()`; the port's is `window.open`). Observed
         // here, the C++'s `isRunning()` condition reads the handler's
-        // `running = false` at the same loop-head position.
+        // `running = false` at the same loop-head position. Desktop only —
+        // the web loop is a plain `request_animation_frame` (no signal
+        // handler, sub-goal 4A); the `interrupt` flag is never set on
+        // emscripten, so this gate is absent there (behavior-identical).
+        #[cfg(not(target_os = "emscripten"))]
         if interrupt.load(Ordering::SeqCst) {
             let mut out = |line: &str| println!("{line}");
             Self::sigint_stop(
@@ -2360,7 +2441,9 @@ impl WindowedClient {
         // D-022 — `crate::lua_console_ui`'s module docs: the per-frame
         // order + the C++'s one-frame `wantCapture*` lag). The C++ runs
         // it INSIDE `HexagonGame::postUpdate` (HexagonGame.cpp:331), so
-        // the game-state gate is the C++'s state gate.
+        // the game-state gate is the C++'s state gate. OFF on emscripten
+        // (sub-goal 4A, 26c §5 — the console is desktop-only).
+        #[cfg(not(target_os = "emscripten"))]
         if engine.current() == GameSlot::Game {
             crate::lua_console_ui::frame_post_update(window, game, config, ilc);
         }
@@ -2382,7 +2465,9 @@ impl WindowedClient {
             engine.draw(&mut target);
             // C++ `drawImguiLuaConsole` (HGGraphics.cpp:318-336) — the
             // console's GL paint, the C++ `draw()`'s LAST step
-            // (HGGraphics.cpp:315), after the game's own draw.
+            // (HGGraphics.cpp:315), after the game's own draw. OFF on
+            // emscripten (sub-goal 4A, 26c §5 — the console is desktop-only).
+            #[cfg(not(target_os = "emscripten"))]
             if engine.current() == GameSlot::Game {
                 crate::lua_console_ui::frame_draw(window, game, ilc);
             }
@@ -2432,6 +2517,7 @@ impl WindowedClient {
 /// [`WindowedClient::build`]; tests pass a `Window::headless` instead (the
 /// spec's "real windowed run = MANUAL").
 #[must_use]
+#[cfg_attr(target_os = "emscripten", allow(unused_variables))]
 pub fn create_window(config: &Config, base_dir: &Path) -> Window {
     let logical_w = config.get_width() as f32;
     let logical_h = config.get_height() as f32;
@@ -2461,15 +2547,20 @@ pub fn create_window(config: &Config, base_dir: &Path) -> Window {
     // `setIcon` (re-applied on `onRecreation` — no port hook: the port's
     // window is never recreated at runtime, module docs: the Icon bullet).
     // The decode is the screenshot's `png` dependency (`Image::load_png`
-    // — the C++'s stb-based `loadFromFile`, always RGBA8).
-    let icon_path = base_dir.join("Assets/icon.png");
-    match oh_render::Image::load_png(&icon_path) {
-        Ok(icon) => {
-            window.set_icon(&icon);
-        }
-        Err(_) => {
-            // C++ main.cpp:318 (the C++'s `::main` channel).
-            println!("[::main] Failed to load icon image");
+    // — the C++'s stb-based `loadFromFile`, always RGBA8). OFF on
+    // emscripten (sub-goal 4A, 26c §5 — a browser canvas has no window
+    // icon; the tab's favicon is the PAGE's, not the canvas's).
+    #[cfg(not(target_os = "emscripten"))]
+    {
+        let icon_path = base_dir.join("Assets/icon.png");
+        match oh_render::Image::load_png(&icon_path) {
+            Ok(icon) => {
+                window.set_icon(&icon);
+            }
+            Err(_) => {
+                // C++ main.cpp:318 (the C++'s `::main` channel).
+                println!("[::main] Failed to load icon image");
+            }
         }
     }
 

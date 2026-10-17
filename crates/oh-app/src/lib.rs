@@ -42,11 +42,10 @@ pub mod args;
 pub mod bridge;
 pub mod camera;
 // The `mainClient` entry (issue 15 step (b)) loads content through
-// `oh_vfs::RealFs`, which is `#[cfg(not(target_arch = "wasm32"))]` (the web
-// content path is `MemoryVfs` / in-memory bytes — sub-goal 4B). So the
-// client + its dispatch + the `-printLuaDocs` entry do not COMPILE for
-// emscripten yet; the web client lands in the `oh-web` crate (sub-goal 4B).
-#[cfg(not(target_os = "emscripten"))]
+// `oh_vfs::RealFs` — now `#[cfg(not(target_os = "unknown"))]` (emscripten has
+// a real libc + in-memory FS, so `RealFs` compiles there too). So the client
+// COMPILES for emscripten (sub-goal 5A); only the `-server` / `-printLuaDocs`
+// entries (`dispatch` / `print_lua_docs`) stay desktop-only (sub-goal 4A).
 pub mod client;
 pub mod compose;
 #[cfg(not(target_os = "emscripten"))]
@@ -64,8 +63,7 @@ pub mod menu_draw;
 pub mod print_lua_docs;
 pub mod steam;
 // The windowed loop (issue 15 step (c)) drives `oh_render::window::Window`
-// through the winit event loop + the egui console hook; both are
-// desktop-only (sub-goal 4A). The web client's windowed composition lands
-// in the `oh-web` crate (sub-goal 4B).
-#[cfg(not(target_os = "emscripten"))]
+// (which now has an emscripten backend — sub-goal 1), so it COMPILES for
+// emscripten (sub-goal 5A). Only the egui console overlay (the `lua_console_ui`
+// hook) and the SIGINT handler are desktop-only (sub-goal 4A, 26c §5).
 pub mod windowed;

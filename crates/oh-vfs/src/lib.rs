@@ -22,8 +22,10 @@
 //!
 //! **wasm:** the trait + `MemoryVfs` + the error/entry types are pure and
 //! compile for `wasm32-unknown-unknown`; `RealFs` (which uses `std::fs`) is
-//! `#[cfg(not(target_arch = "wasm32"))]`-gated, so its `std::fs` use does not
-//! break the wasm build.
+//! `#[cfg(not(target_os = "unknown"))]`-gated — it compiles for
+//! `wasm32-unknown-emscripten` (emscripten has a real libc + in-memory FS, so
+//! `std::fs` works) but stays excluded for `wasm32-unknown-unknown` (no libc),
+//! so its `std::fs` use does not break the pure-wasm build.
 //!
 //! C++ semantics mirrored here (see `.agents/skills/lib-assets.md`):
 //! - `is_dir` / `is_file` are the C++ `Path::isFolder()` / `isFile()`
@@ -146,15 +148,16 @@ pub trait Vfs: Send + Sync + std::fmt::Debug {
 /// `root` moves from a `PathBuf` field in `Assets` / a `&Path` param in
 /// `Config` into this handle.
 ///
-/// `#[cfg(not(target_arch = "wasm32"))]`: it uses `std::fs`, which does not
-/// exist on `wasm32-unknown-unknown`.
-#[cfg(not(target_arch = "wasm32"))]
+/// `#[cfg(not(target_os = "unknown"))]`: it uses `std::fs`, which does not
+/// exist on `wasm32-unknown-unknown` (no libc) — but emscripten has a real
+/// libc + in-memory FS, so `RealFs` compiles there too.
+#[cfg(not(target_os = "unknown"))]
 #[derive(Debug, Clone)]
 pub struct RealFs {
     root: std::path::PathBuf,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_os = "unknown"))]
 impl RealFs {
     /// Construct a `RealFs` rooted at `root` (the resolved game root /
     /// CWD-equivalent, i.e. the `_RELEASE` directory on native).
@@ -164,7 +167,7 @@ impl RealFs {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_os = "unknown"))]
 impl Vfs for RealFs {
     fn read(&self, path: &str) -> VfsResult<Vec<u8>> {
         let p = self.root.join(path);

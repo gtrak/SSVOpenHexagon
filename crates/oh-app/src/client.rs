@@ -125,6 +125,21 @@ pub fn main_client(
     // (C++ main.cpp:468-470): the first leftover arg containing `.ohr.z`.
     let compressed_replay_filename = get_first_compressed_replay_filename_from_args(args);
     if !headless {
+        // C++ main.cpp:264-269 — `discordManager.emplace()` (the windowed
+        // path is always non-headless). Native: the real IPC manager; web
+        // (emscripten): the no-SDK `NoDiscordCore` (sub-goal 3 —
+        // `IpcDiscordCore` is `#[cfg(not(target_os = "emscripten"))]`; the
+        // web vertical slice has no Discord, 26c §5).
+        #[cfg(not(target_os = "emscripten"))]
+        let discord: Option<Arc<dyn oh_discord::Discord>> =
+            Some(Arc::new(oh_discord::DiscordManager::new(
+                oh_discord::IpcDiscordCore::new(oh_discord::DISCORD_APP_ID),
+            )) as Arc<dyn oh_discord::Discord>);
+        #[cfg(target_os = "emscripten")]
+        let discord: Option<Arc<dyn oh_discord::Discord>> = Some(Arc::new(
+            oh_discord::DiscordManager::new(oh_discord::NoDiscordCore),
+        )
+            as Arc<dyn oh_discord::Discord>);
         // C++ main.cpp:297-332 (window + config setters + timer),
         // :413-463 (engine `window` = true + MenuGame + the four
         // fnHG*/fnGoToMenu links), :471-537 (the boot dispatch —
@@ -140,17 +155,16 @@ pub fn main_client(
             assets,
             base_dir,
             steam.clone(),
-            // C++ main.cpp:264-269 — `discordManager.emplace()` (the windowed
-            // path is always non-headless): the real IPC manager.
-            Some(Arc::new(oh_discord::DiscordManager::new(
-                oh_discord::IpcDiscordCore::new(oh_discord::DISCORD_APP_ID),
-            )) as Arc<dyn oh_discord::Discord>),
+            discord,
         ) {
             Ok(client) => {
                 // C++ main.cpp:334-350 — the SIGINT handler (the safe
                 // port: `signal-hook`'s flag register over the client's
                 // `interrupt` flag; the loop head performs the handler's
                 // actions — `windowed.rs` module docs, the SIGINT bullet).
+                // Desktop only — the web loop is a plain
+                // `request_animation_frame` (no signal handler, sub-goal 4A).
+                #[cfg(not(target_os = "emscripten"))]
                 client.install_sigint();
                 client.boot(
                     cli_level_pack,
