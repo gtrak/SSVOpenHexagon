@@ -32,8 +32,9 @@ use crate::layout::{
 };
 use crate::menu;
 use crate::seams::{
-    AudioSink, IgnoreInputsCallback, LevelInfo, MenuAssets, MenuConfig, MenuTouch, MenuWindow,
-    NetEvent, NetworkClient, NewGameCallback, RichPresenceCallback, TriggerRefreshCallback,
+    AudioSink, IgnoreInputsCallback, LevelInfo, MenuAssets, MenuConfig, MenuJoystick, MenuTouch,
+    MenuWindow, NetEvent, NetworkClient, NewGameCallback, RichPresenceCallback,
+    TriggerRefreshCallback,
 };
 use crate::states::{DialogInputState, PackChange, States};
 
@@ -145,6 +146,12 @@ pub struct Shared {
     /// (the 9-zone grid's `getFingerDownCount` / `getFingerDownPositions`
     /// data, MenuGame.cpp:2802-2835).
     touch: Rc<dyn MenuTouch>,
+    /// 29j1 — the C++ `Joystick` global's menu-side surface (the
+    /// `MenuGame::update` joystick block, MenuGame.cpp:2643-2784, + the
+    /// `setIgnoreAllInputs` `ignoreAllPresses` half, :3402); the
+    /// composition backs it with the shared `oh_config::joystick`
+    /// machine (seams::MenuJoystick's docs).
+    joystick: Rc<dyn MenuJoystick>,
     /// issue 025g — the C++ ctor's `window` reference's size half
     /// (MenuGame.hpp:111 — the C++ `MenuGame::getWindowWidth()` /
     /// `getWindowHeight()`, MenuGame.cpp:3350-3357, read
@@ -169,6 +176,7 @@ impl Shared {
         network: Rc<dyn NetworkClient>,
         audio: Rc<dyn AudioSink>,
         touch: Rc<dyn MenuTouch>,
+        joystick: Rc<dyn MenuJoystick>,
         window: Rc<dyn MenuWindow>,
         new_game: Option<NewGameCallback>,
         trigger_refresh: Option<TriggerRefreshCallback>,
@@ -244,6 +252,7 @@ impl Shared {
             network,
             audio,
             touch,
+            joystick,
             window,
             new_game,
             trigger_refresh,
@@ -276,6 +285,12 @@ impl Shared {
         &self.touch
     }
 
+    /// 29j1 — the C++ `Joystick` global's menu-side seam.
+    #[must_use]
+    pub fn joystick(&self) -> &Rc<dyn MenuJoystick> {
+        &self.joystick
+    }
+
     /// The C++ ctor's `window` reference's size half (`seams::MenuWindow`'s
     /// docs — issue 025g): the actual current window size the C++ reads
     /// live from `window.getRenderWindow().getSize()`.
@@ -306,11 +321,15 @@ impl Shared {
     pub fn set_ignore_all_inputs(&mut self, presses: u32) {
         self.ignore_inputs = presses;
         // C++ `game.ignoreAllInputs(presses != 0)` (MenuGame.cpp:3393-3400 →
-        // Manager.hpp:78-81). The `Joystick::ignoreAllPresses` half is the
-        // unported joystick (NoJoystick seam).
+        // Manager.hpp:78-81) — the keyboard half via the composition's
+        // callback; the `Joystick::ignoreAllPresses(presses != 0)` half
+        // (MenuGame.cpp:3397/:3402, 29j1) latches the shared machine so
+        // no rising edge fires while the boot screens / dialogs hold the
+        // input-ignore gate (C++ order: game half first).
         if let Some(cb) = &self.ignore_inputs_cb {
             cb(presses != 0);
         }
+        self.joystick.ignore_all_presses(presses != 0);
     }
 
     /// C++ `isEnteringText()`.
@@ -1035,6 +1054,7 @@ impl MenuGame {
         network: Rc<dyn NetworkClient>,
         audio: Rc<dyn AudioSink>,
         touch: Rc<dyn MenuTouch>,
+        joystick: Rc<dyn MenuJoystick>,
         window: Rc<dyn MenuWindow>,
         new_game: Option<NewGameCallback>,
         trigger_refresh: Option<TriggerRefreshCallback>,
@@ -1048,6 +1068,7 @@ impl MenuGame {
             network,
             audio,
             touch,
+            joystick,
             window,
             new_game,
             trigger_refresh,
@@ -1838,6 +1859,17 @@ impl MenuGame {
 
         let menu = self.current_menu();
 
+        // C++ `Joystick::update(Config::getJoystickDeadzone())`
+        // (MenuGame.cpp:2643) — the per-frame controller poll through the
+        // `MenuJoystick` seam (29j1 — the shared `oh_config::joystick`
+        // machine; the game state's
+        // `updateInput_UpdateJoystickControls` is the OTHER feeder, the
+        // two states are mutually exclusive, so the machine is fed
+        // exactly once per frame, exactly like the C++). Cloned out of
+        // `shared` so the dispatch below can re-borrow freely.
+        let joy = self.shared.borrow().joystick.clone();
+        joy.update(self.config().joystick_deadzone());
+
         {
             let mut s = self.shared.borrow_mut();
             while let Some(ev) = net.poll_event() {
@@ -1848,9 +1880,37 @@ impl MenuGame {
                 cb();
             }
 
-            // Joystick / focus: `focusHeld` is driven by the app layer via
-            // `set_focus_held`; mirror the previous-frame value.
-            s.was_focus_held = s.focus_held;
+            // C++ `focusHeld` block (MenuGame.cpp:2645-2679), verbatim —
+            // the app-layer keyboard trigger keeps feeding `focus_held`
+            // through `set_focus_held` (the C++ `add2StateInput(Focus)`),
+            // and the controller's focus button now ORs into it (the C++
+            // `Joystick::pressed(Jid::Focus)`, MenuGame.cpp:2650-2653,
+            // the `MenuJoystick` seam's `pressed_focus`, 29j1). The
+            // `quickPackFoldStretch` arms (MenuGame.cpp:2663/:2669 →
+            // :4563) are the unported 13b draw-lane fold animation —
+            // documented no-op.
+            if s.state == States::LevelSelection
+                && !s.is_favorite_levels()
+                && s.pack_change_state == PackChange::Rest
+            {
+                if !s.focus_held {
+                    s.focus_held = joy.pressed_focus();
+                }
+                if s.focus_held && !s.was_focus_held {
+                    if s.lvl_slct.current_index != 0 {
+                        s.set_index(0);
+                    }
+                    // C++ `quickPackFoldStretch()` (MenuGame.cpp:2663) —
+                    // the unported 13b fold animation.
+                } else if !s.focus_held && s.was_focus_held {
+                    // C++ `quickPackFoldStretch()` (MenuGame.cpp:2669) —
+                    // the unported 13b fold animation.
+                }
+                s.was_focus_held = s.focus_held;
+            } else {
+                s.was_focus_held = false;
+                s.focus_held = false;
+            }
 
             s.touch_delay = (s.touch_delay - ft).max(0.0);
             s.dialog_box_delay = (s.dialog_box_delay - ft).max(0.0);
@@ -1867,6 +1927,52 @@ impl MenuGame {
 
         if let Some(m) = menu {
             m.update();
+        }
+
+        // C++ `MenuGame::update`'s joystick `risingEdge` dispatch
+        // (MenuGame.cpp:2737-2784) — the controller's menu control
+        // (29j1): pack change, the stick/dpad menu navigation, select /
+        // exit. Outside the `borrow_mut` block above: the action methods
+        // re-borrow `shared` (the touch-grid note below). The three
+        // favorites/screenshot arms keep the C++'s structure with the
+        // SAME documented no-ops the keyboard path's F1 / F2 /
+        // `Tid::Screenshot` binds carry (the unported issue 13b
+        // favorites view + the menu screenshot's draw-lane consumer,
+        // menu_draw's `mustTakeScreenshot`-always-false note).
+        {
+            if joy.rising_edge(oh_config::Jid::NextPack) {
+                self.change_pack_action(1);
+            } else if joy.rising_edge(oh_config::Jid::PreviousPack) {
+                self.change_pack_action(-1);
+            }
+
+            // TODO(010b-menu-favorite): C++ `addRemoveFavoriteLevel()`
+            // (MenuGame.cpp:2747) — the favorites toggle is the unported
+            // issue 13b detail (the F1 keyboard bind's marker).
+            // TODO(010b-menu-favorites-toggle): C++
+            // `switchToFromFavoriteLevels()` (MenuGame.cpp:2752) — the
+            // favorites view switch is the unported issue 13b detail
+            // (the F2 keyboard bind's marker).
+            // TODO(010b-menu-screenshot): C++ `mustTakeScreenshot = true`
+            // (MenuGame.cpp:2783) — the menu's screenshot consumer is the
+            // unported `MenuGame::draw` lane (the `Tid::Screenshot`
+            // keyboard bind's marker).
+
+            if joy.rising_edge_dir(oh_config::Jdir::Left) {
+                self.left_action();
+            } else if joy.rising_edge_dir(oh_config::Jdir::Right) {
+                self.right_action();
+            } else if joy.rising_edge_dir(oh_config::Jdir::Up) {
+                self.up_action();
+            } else if joy.rising_edge_dir(oh_config::Jdir::Down) {
+                self.down_action();
+            }
+
+            if joy.rising_edge(oh_config::Jid::Select) {
+                self.ok_action();
+            } else if joy.rising_edge(oh_config::Jid::Exit) {
+                self.exit_action();
+            }
         }
 
         // C++ `MenuGame::update` 9-zone touch grid (MenuGame.cpp:2802-2835)

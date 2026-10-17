@@ -24,7 +24,8 @@ use std::rc::Rc;
 
 use oh_menu::layout::{refresh_view, LinearFontHeight};
 use oh_menu::{
-    FakeAssets, FakeConfig, FakeWindow, MenuGame, NoopNetwork, NoopTouch, RecordingAudio, States,
+    FakeAssets, FakeConfig, FakeWindow, MenuGame, NoMenuJoystick, NoopNetwork, NoopTouch,
+    RecordingAudio, States,
 };
 
 /// The phone fixture: the config resolution (1024×768-ish — the probe's
@@ -39,6 +40,7 @@ fn phone_menu() -> (MenuGame, Rc<FakeWindow>) {
         Rc::new(NoopNetwork),
         RecordingAudio::new(),
         Rc::new(NoopTouch),
+        Rc::new(NoMenuJoystick),
         window.clone(),
         None,
         None,
@@ -89,6 +91,7 @@ fn desktop_matching_window_unchanged() {
         Rc::new(NoopNetwork),
         RecordingAudio::new(),
         Rc::new(NoopTouch),
+        Rc::new(NoMenuJoystick),
         window.clone(),
         None,
         None,
@@ -142,6 +145,7 @@ fn center_tap_in_the_real_window_space_lands_in_ok_zone() {
         Rc::new(PhoneTouch {
             down: touch_down.clone(),
         }),
+        Rc::new(NoMenuJoystick),
         {
             let window = FakeWindow::new();
             window.set_size(1530.0, 678.0);

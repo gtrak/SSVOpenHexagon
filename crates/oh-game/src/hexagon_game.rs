@@ -618,6 +618,19 @@ impl<S: SharedStore> HexagonGame<S> {
             discord_attempt: 1,
         };
 
+        // C++ `HexagonGame` ctor's "Joystick binds" section (HexagonGame.cpp:
+        // 445-448) — `Config::loadAllJoystickBinds()`: load the 12 `j_*`
+        // config values into the shared `Joystick` machine (`Config.cpp:
+        // 1609-1615` → `Joystick::setJoystickBind` ×12). The desktop
+        // composition's `RealJoystick` poller then feeds this machine the
+        // controller's snapshot each frame (29j1); headless /
+        // no-controller runs stay inert (every query false — the C++'
+        // `isConnected(0) == false` state).
+        config
+            .read()
+            .expect("config poisoned")
+            .load_all_joystick_binds();
+
         Self(Arc::new(Inner {
             steam_manager,
             state: std::sync::OnceLock::new(),

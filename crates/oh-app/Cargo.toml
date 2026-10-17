@@ -80,6 +80,20 @@ glow = "0.17"
 # the `android.rs` entry module (issue 25b) consumes on the android target.
 winit = { version = "0.30", features = ["android-native-activity"] }
 
+[target.'cfg(not(any(target_os = "android", target_family = "wasm")))'.dependencies]
+# 29j1 — the desktop controller backend behind `RealJoystick`
+# (`src/joystick.rs`): the C++ `sf::Joystick` controller-0 poll's
+# replacement (the SFML read in `Core/Joystick.cpp::update`). Desktop
+# only — the Android / wasm targets keep the no-op `NoJoystick` /
+# `NoMenuJoystick` seams (the C++'s `isConnected(0) == false` state).
+# SYSTEM REQUIREMENT (Linux): the `libudev` system library (the
+# transitive `libudev-sys` build links it — `libudev-dev` at build
+# time; `.github/workflows/rust.yml`'s portability notes), and at
+# runtime hidraw device access for non-root users (the udev rule —
+# gilrs ships `60-gilrs.rules`). A failed open degrades to the
+# no-controller state (logged once), the C++ SFML no-pad behavior.
+gilrs = "0.11"
+
 [target.'cfg(target_os = "android")'.dependencies]
 # Issue 25b SG4: the APK asset extraction — the `AAssetManager` traversal
 # (`open_dir`/`open`) that copies the `_RELEASE` content tree out of the

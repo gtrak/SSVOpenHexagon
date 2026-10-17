@@ -8,8 +8,8 @@ use std::rc::Rc;
 
 use oh_menu::layout::LinearFontHeight;
 use oh_menu::{
-    FakeConfig, FakeWindow, MenuAssets, MenuConfig, MenuGame, NoopNetwork, NoopTouch,
-    RealMenuAssets, RecordingAudio,
+    FakeConfig, FakeWindow, MenuAssets, MenuConfig, MenuGame, NoMenuJoystick, NoopNetwork,
+    NoopTouch, RealMenuAssets, RecordingAudio,
 };
 
 fn release_dir() -> PathBuf {
@@ -36,6 +36,7 @@ fn menu_lists_every_pack_and_level() {
         Rc::new(NoopNetwork),
         RecordingAudio::new(),
         Rc::new(NoopTouch),
+        Rc::new(NoMenuJoystick),
         FakeWindow::new(),
         None,
         None,

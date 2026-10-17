@@ -44,6 +44,9 @@ fn debug_composed() -> (oh_app::compose::Composed, Arc<RwLock<Config>>) {
         // disk-silent (the composition's `root` is `_RELEASE` — a death
         // here must not write `Replays/` into the repo tree).
         Arc::new(oh_game::seams::NullReplayStore),
+        // 29j1 — the headless test's no-controller joystick (the
+        // `isConnected(0) == false` state).
+        Arc::new(oh_game::seams::NoJoystick),
     );
     (composed, config)
 }

@@ -348,11 +348,14 @@ impl ScriptHost for NoScriptHost {
     }
 }
 
-/// C++ `Joystick` global state (`Core/Joystick.hpp` — fed by the platform
-/// window in a later issue; `updateInput_UpdateJoystickControls` only runs
-/// when a window is present).
+/// C++ `Joystick` global state (`Core/Joystick.hpp` — the desktop
+/// composition feeds it from the controller backend, `oh_app::joystick::
+/// RealJoystick`; `updateInput_UpdateJoystickControls` only runs when a
+/// window is present; the headless / Android / test compositions keep the
+/// always-idle [`NoJoystick`]).
 pub trait Joystick: Send + Sync + 'static {
-    /// C++ `Joystick::update(deadzone)`.
+    /// C++ `Joystick::update(deadzone)` — the poll (the desktop backend
+    /// reads the controller here; the C++'s SFML poll is inside the call).
     fn update(&self, deadzone: f32);
     /// C++ `Joystick::pressed(Jdir::Left|Right)`.
     fn pressed_dir(&self, dir: Jdir) -> bool;
@@ -360,9 +363,14 @@ pub trait Joystick: Send + Sync + 'static {
     fn pressed_id(&self, id: Jid) -> bool;
     /// C++ `Joystick::risingEdge(Jid::Exit|ForceRestart|Restart|Replay)`.
     fn rising_edge_id(&self, id: Jid) -> bool;
+    /// C++ `sf::Joystick::isConnected(0) ?
+    /// sf::Joystick::getIdentification(0).vendorId : 0` (Config.cpp:1577-
+    /// 1581 — the `getJoystickBindName` vendor source).
+    fn vendor_id(&self) -> u32;
 }
 
-/// The always-idle joystick (no platform backend attached yet).
+/// The always-idle joystick (no controller connected — the C++'s
+/// `isConnected(0) == false` state: every query false, vendor id 0).
 pub struct NoJoystick;
 
 impl Joystick for NoJoystick {
@@ -375,6 +383,9 @@ impl Joystick for NoJoystick {
     }
     fn rising_edge_id(&self, _: Jid) -> bool {
         false
+    }
+    fn vendor_id(&self) -> u32 {
+        0
     }
 }
 

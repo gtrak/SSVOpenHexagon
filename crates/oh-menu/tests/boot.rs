@@ -8,8 +8,8 @@ use std::rc::Rc;
 use oh_menu::layout::LinearFontHeight;
 use oh_menu::seams::NewGameCallback;
 use oh_menu::{
-    FakeAssets, FakeConfig, FakeWindow, MenuAssets, MenuConfig, MenuGame, NoopNetwork, NoopTouch,
-    RecordingAudio, States,
+    FakeAssets, FakeConfig, FakeWindow, MenuAssets, MenuConfig, MenuGame, NoMenuJoystick,
+    NoopNetwork, NoopTouch, RecordingAudio, States,
 };
 
 fn make_menu() -> (MenuGame, Rc<RecordingAudio>) {
@@ -29,6 +29,7 @@ fn make_menu() -> (MenuGame, Rc<RecordingAudio>) {
         Rc::new(NoopNetwork),
         audio.clone(),
         Rc::new(NoopTouch),
+        Rc::new(NoMenuJoystick),
         FakeWindow::new(),
         cb,
         None,
@@ -106,6 +107,7 @@ fn load_command_line_level_matches_pack_name_not_id() {
         Rc::new(NoopNetwork),
         audio,
         Rc::new(NoopTouch),
+        Rc::new(NoMenuJoystick),
         FakeWindow::new(),
         None,
         None,
@@ -157,6 +159,7 @@ fn entered_text_fills_the_entered_str_and_ok_action_creates_the_profile() {
         Rc::new(NoopNetwork),
         audio,
         Rc::new(NoopTouch),
+        Rc::new(NoMenuJoystick),
         FakeWindow::new(),
         None,
         None,

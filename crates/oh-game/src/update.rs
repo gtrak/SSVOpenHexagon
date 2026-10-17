@@ -693,7 +693,11 @@ impl<S: SharedStore> HexagonGame<S> {
     }
 
     /// C++ `updateInput_UpdateJoystickControls()` (verbatim; the windowed
-    /// half — `NoJoystick` makes every query false until issue 10 feeds it).
+    /// half). The `Joystick` seam is the shared `oh_config::joystick`
+    /// machine: the desktop composition feeds it from the controller
+    /// backend (`oh_app::joystick::RealJoystick`, 29j1); the headless /
+    /// Android / test compositions keep `NoJoystick` (every query false —
+    /// the C++'s `isConnected(0) == false` state).
     fn update_input_update_joystick_controls(&self) {
         if !self.0.window {
             return;

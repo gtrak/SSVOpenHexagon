@@ -535,9 +535,10 @@ impl MenuConfig for ConfigMenuAdapter {
     fn refresh_binds(&self) {
         // C++ `MenuGame::refreshBinds()` (MenuGame.cpp:3373-3387) — the
         // per-trigger `game.refreshTrigger` + `fnHGTriggerRefresh` loop over
-        // BOTH input managers (issue 010b); the
-        // `Config::loadAllJoystickBinds()` tail is the unported joystick
-        // (NoJoystick seam) — documented no-op.
+        // BOTH input managers (issue 010b) + the `Config::
+        // loadAllJoystickBinds()` tail (MenuGame.cpp:3387) — the slot the
+        // windowed `build` fills (29j1: the tail re-feeds the shared
+        // `Joystick` machine with the re-bound `j_*` values).
         if let Some(f) = self.refresh_binds.borrow().as_ref() {
             f();
         }
@@ -2143,6 +2144,24 @@ impl WindowedClient {
             audio.set_music_volume(c.get_music_volume());
         }
 
+        // 29j1 — the C++ `Joystick` global's poller (the `sf::Joystick`
+        // controller-0 read): the desktop backend is gilrs
+        // (`crate::joystick::RealJoystick` — ONE object shared with the
+        // menu's `MenuJoystick` seam below; the engine's `Arc<dyn
+        // Joystick>` and the menu's `Rc<dyn MenuJoystick>` are two views
+        // of the same `Arc<RealJoystick>`); Android / wasm keep the
+        // no-op `NoJoystick` (the C++'s `isConnected(0) == false` state
+        // — the Android build's SFML has no gamepad backend in this
+        // port, documented in `crate::joystick`'s module docs).
+        #[cfg(not(any(target_os = "android", target_family = "wasm")))]
+        let joystick_concrete = std::sync::Arc::new(crate::joystick::RealJoystick::new());
+        #[cfg(not(any(target_os = "android", target_family = "wasm")))]
+        let joystick: std::sync::Arc<dyn oh_game::seams::Joystick + 'static> =
+            joystick_concrete.clone() as std::sync::Arc<dyn oh_game::seams::Joystick>;
+        #[cfg(any(target_os = "android", target_family = "wasm"))]
+        let joystick: std::sync::Arc<dyn oh_game::seams::Joystick + 'static> =
+            std::sync::Arc::new(oh_game::seams::NoJoystick);
+
         let composed = compose_with_config(
             assets.clone(),
             base_dir.to_path_buf(),
@@ -2170,7 +2189,20 @@ impl WindowedClient {
             Arc::new(crate::replay_store::RealReplayStore::new(
                 base_dir.to_path_buf(),
             )),
+            joystick.clone(),
         );
+
+        // 29j1 — the menu's `MenuJoystick` seam over the SAME shared
+        // poller (the C++'s one global `Joystick`; desktop: the
+        // `RealMenuJoystick` `Arc` view of the same `RealJoystick` the
+        // engine's seam wraps; Android / wasm: the no-op
+        // `NoMenuJoystick` — so both states observe one controller).
+        #[cfg(not(any(target_os = "android", target_family = "wasm")))]
+        let menu_joystick: Rc<dyn oh_menu::seams::MenuJoystick> =
+            Rc::new(crate::joystick::RealMenuJoystick::new(joystick_concrete));
+        #[cfg(any(target_os = "android", target_family = "wasm"))]
+        let menu_joystick: Rc<dyn oh_menu::seams::MenuJoystick> =
+            Rc::new(oh_menu::seams::NoMenuJoystick);
 
         // The C++ `initText` fonts (HexagonGame.cpp:289-290:
         // `Assets/OpenSquare-Regular.ttf` / `OpenSquare-Bold.ttf`).
@@ -2298,6 +2330,7 @@ impl WindowedClient {
                 config: config.clone(),
             }),
             menu_touch,
+            menu_joystick,
             Rc::new(MenuWindowSource {
                 size: render_size.clone(),
             }),
@@ -2323,8 +2356,10 @@ impl WindowedClient {
 
         // Fill the `refreshBinds` slot (both managers, every trigger —
         // C++ `MenuGame::refreshBinds`, MenuGame.cpp:3373-3387; the
-        // `Config::loadAllJoystickBinds()` tail is the unported joystick
-        // — documented no-op).
+        // `Config::loadAllJoystickBinds()` tail (MenuGame.cpp:3387) is now
+        // live — 29j1: after a rebind the 12 `j_*` values are re-loaded
+        // into the shared `Joystick` machine, exactly the C++ order
+        // (keyboard trigger refresh loop, then the joystick tail)).
         {
             let config = config.clone();
             let menu_manager = menu_manager.clone();
@@ -2338,6 +2373,13 @@ impl WindowedClient {
                     menu_manager.borrow_mut().refresh_triggers(&trigger, i);
                     game_manager.borrow_mut().refresh_triggers(&trigger, i);
                 }
+                // C++ `Config::loadAllJoystickBinds()` (MenuGame.cpp:3387 →
+                // Config.cpp:1609-1615) — re-feed the shared machine with
+                // the (possibly re-bound) `j_*` values.
+                config
+                    .read()
+                    .expect("config poisoned")
+                    .load_all_joystick_binds();
             }));
         }
 
@@ -2996,6 +3038,7 @@ mod tests {
             Rc::new(NoopNetwork),
             oh_menu::RecordingAudio::new(),
             Rc::new(NoopTouch),
+            Rc::new(oh_menu::NoMenuJoystick),
             oh_menu::FakeWindow::new(),
             None,
             None,
@@ -3089,6 +3132,7 @@ mod tests {
             Rc::new(NoopNetwork),
             oh_menu::RecordingAudio::new(),
             Rc::new(NoopTouch),
+            Rc::new(oh_menu::NoMenuJoystick),
             oh_menu::FakeWindow::new(),
             None,
             None,
@@ -3180,6 +3224,7 @@ mod tests {
             Rc::new(NoopNetwork),
             oh_menu::RecordingAudio::new(),
             Rc::new(NoopTouch),
+            Rc::new(oh_menu::NoMenuJoystick),
             oh_menu::FakeWindow::new(),
             None,
             None,
@@ -3287,6 +3332,7 @@ mod tests {
             Rc::new(NoopNetwork),
             oh_menu::RecordingAudio::new(),
             Rc::new(NoopTouch),
+            Rc::new(oh_menu::NoMenuJoystick),
             oh_menu::FakeWindow::new(),
             None,
             None,

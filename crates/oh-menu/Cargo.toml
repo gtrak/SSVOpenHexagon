@@ -7,5 +7,11 @@ edition.workspace = true
 [dependencies]
 oh-math = { path = "../oh-math" }
 oh-data = { path = "../oh-data" }
+# The `MenuJoystick` seam's `Jid` / `Jdir` query types (the C++
+# `Joystick::Jid` / `Joystick::Jdir`, Core/Joystick.hpp) — one spelling
+# per concept, the same `oh-config` enums the engine's `Joystick` seam
+# uses; oh-menu stays free of the machine itself (the composition backs
+# the seam with the shared `oh_config::joystick` state, 29j1).
+oh-config = { path = "../oh-config" }
 oh-menu-system = { path = "../oh-menu-system" }
 oh-assets = { path = "../oh-assets" }

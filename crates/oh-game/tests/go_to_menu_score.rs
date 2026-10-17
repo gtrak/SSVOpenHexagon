@@ -126,6 +126,9 @@ impl Joystick for ExitRisingJoystick {
     fn rising_edge_id(&self, id: Jid) -> bool {
         matches!(id, Jid::Exit) && self.flag.load(Ordering::SeqCst)
     }
+    fn vendor_id(&self) -> u32 {
+        0
+    }
 }
 
 #[test]

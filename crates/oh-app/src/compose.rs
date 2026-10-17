@@ -513,6 +513,7 @@ pub fn compose_with(
         None,                      // the headless composition's renderer (the C++'s `nullptr`)
         None, // the headless composition's audio (the C++'s `audio == nullptr`)
         Arc::new(NullReplayStore), // issue 029a1 — headless: disk-silent (the compose_with_config docs)
+        Arc::new(NoJoystick), // 29j1 — the headless composition's joystick (the C++'s no-controller / headless state)
     )
 }
 
@@ -547,6 +548,13 @@ pub fn compose_with(
 /// executor is the same `runReplayUntilDeathAndGetScore` path), so the
 /// no-op matches the C++ there (disk-silent) and keeps the headless
 /// determinism tests from writing files.
+///
+/// `joystick` — the engine's `Joystick` seam (29j1): the WINDOWED
+/// desktop composition passes the shared `crate::joystick::RealJoystick`
+/// (the gilrs poller — the C++ `sf::Joystick` controller-0 read; the
+/// same object the menu's `MenuJoystick` seam views, one global);
+/// the Android / wasm / headless compositions keep `NoJoystick` (the
+/// C++'s `isConnected(0) == false` / headless state).
 #[allow(clippy::too_many_arguments)]
 #[must_use]
 pub fn compose_with_config(
@@ -560,6 +568,7 @@ pub fn compose_with_config(
     renderer: Option<Arc<dyn Renderer + 'static>>,
     audio: Option<Arc<dyn Audio + 'static>>,
     replay_store: Arc<dyn ReplayStore + 'static>,
+    joystick: Arc<dyn oh_game::seams::Joystick + 'static>,
 ) -> Composed {
     // Heap-pinned before the `SharedLua` capture (see the `lua` field docs
     // on `Composed`): the host's `SharedLua` points at this box's slot.
@@ -575,7 +584,7 @@ pub fn compose_with_config(
         profiles,
         replay_store, // issue 029a1 — the C++ `death_saveReplay`'s filesystem half (the fn docs)
         host.clone() as Arc<dyn ScriptHost>,
-        Arc::new(NoJoystick),
+        joystick, // 29j1 — the C++ `Joystick` global's poller (the fn docs)
         Arc::new(PcgCosmeticRng::new()),
         window,
         renderer, // issue 25b SG5 (the window's touch sink) / the C++ headless `nullptr`

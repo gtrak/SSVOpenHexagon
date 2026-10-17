@@ -47,8 +47,9 @@ pub type RichPresenceCallback = Box<dyn Fn()>;
 /// `MenuGame::setIgnoreAllInputs`'s `game.ignoreAllInputs(bool)` half
 /// (MenuGame.cpp:3389-3402 → `ssvs::Input::Manager::ignoreAllInputs`,
 /// Manager.hpp:78-81) — the windowed composition wires it to the menu
-/// state's input manager. The C++ `Joystick::ignoreAllPresses` half is the
-/// unported joystick (NoJoystick seam).
+/// state's input manager. The C++ `Joystick::ignoreAllPresses` half runs
+/// inside `MenuGame::set_ignore_all_inputs` over the `MenuJoystick` seam
+/// (29j1).
 pub type IgnoreInputsCallback = Box<dyn Fn(bool)>;
 
 /// A level as `MenuGame` consumes it (name/author/style/difficulty for the
@@ -540,6 +541,64 @@ pub trait MenuTouch {
     /// recorded position (the C++'s unknown-position value, GameWindow
     /// .hpp:299-309).
     fn finger_down_positions(&self) -> Vec<Vec2>;
+}
+
+/// 29j1 — the C++ `Joystick` (Core/Joystick.hpp) MENU-side surface: the
+/// `MenuGame::update` joystick block (MenuGame.cpp:2643-2784 — the
+/// per-frame `Joystick::update`, the `focusHeld` OR-term
+/// `Joystick::pressed(Jid::Focus)`, and the `risingEdge` dispatch)
+/// plus the `MenuGame::setIgnoreAllInputs` `Joystick::ignoreAllPresses`
+/// half (MenuGame.cpp:3402).
+///
+/// One global machine, the C++'s one: the composition backs this seam
+/// with the SAME `oh_config::joystick` state the engine's `Joystick`
+/// seam (`oh_game::seams::Joystick`) queries — `MenuGame::update` and
+/// `HexagonGame::updateInput_UpdateJoystickControls` are mutually
+/// exclusive states, so the machine is fed exactly once per frame,
+/// exactly like the C++ (each state's `update` calls
+/// `Joystick::update(Config::getJoystickDeadzone())`).
+///
+/// The desktop / Android shipping composition feeds it from the
+/// controller backend (`oh_app::joystick::RealJoystick`); the tests and
+/// the headless paths keep [`NoMenuJoystick`] (no controller — every
+/// query false, the C++'s `isConnected(0) == false` state).
+pub trait MenuJoystick {
+    /// C++ `Joystick::update(Config::getJoystickDeadzone())`
+    /// (MenuGame.cpp:2643) — the per-frame poll.
+    fn update(&self, deadzone: f32);
+    /// C++ `Joystick::pressed(Joystick::Jid::Focus)` (the `focusHeld`
+    /// OR-term, MenuGame.cpp:2650-2653).
+    fn pressed_focus(&self) -> bool;
+    /// C++ `Joystick::risingEdge(Joystick::Jid::…)` (MenuGame.cpp:
+    /// 2737-2784: NextPack / PreviousPack / AddToFavorites /
+    /// FavoritesMenu / Select / Exit / Screenshot).
+    fn rising_edge(&self, jid: oh_config::Jid) -> bool;
+    /// C++ `Joystick::risingEdge(Joystick::Jdir::…)` (MenuGame.cpp:
+    /// 2756-2771: Left / Right / Up / Down).
+    fn rising_edge_dir(&self, jdir: oh_config::Jdir) -> bool;
+    /// C++ `Joystick::ignoreAllPresses(ignore)` — the
+    /// `MenuGame::setIgnoreAllInputs` half (MenuGame.cpp:3402): latch
+    /// every was-pressed flag so no rising edge fires while ignored.
+    fn ignore_all_presses(&self, ignore: bool);
+}
+
+/// The no-controller [`MenuJoystick`] (headless / the tests — the C++'
+/// `isConnected(0) == false` state: the poll is a no-op, every query
+/// false; `ignoreAllPresses` latches nothing to latch).
+pub struct NoMenuJoystick;
+
+impl MenuJoystick for NoMenuJoystick {
+    fn update(&self, _: f32) {}
+    fn pressed_focus(&self) -> bool {
+        false
+    }
+    fn rising_edge(&self, _: oh_config::Jid) -> bool {
+        false
+    }
+    fn rising_edge_dir(&self, _: oh_config::Jdir) -> bool {
+        false
+    }
+    fn ignore_all_presses(&self, _: bool) {}
 }
 
 /// issue 025g — the C++ ctor's `window` reference (MenuGame.hpp:111 —

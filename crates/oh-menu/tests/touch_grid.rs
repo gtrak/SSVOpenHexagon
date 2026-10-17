@@ -25,7 +25,8 @@ use oh_math::ssvs::Vec2;
 use oh_menu::layout::LinearFontHeight;
 use oh_menu::seams::MenuTouch;
 use oh_menu::{
-    FakeAssets, FakeConfig, FakeWindow, MenuAssets, MenuGame, NoopNetwork, RecordingAudio, States,
+    FakeAssets, FakeConfig, FakeWindow, MenuAssets, MenuGame, NoMenuJoystick, NoopNetwork,
+    RecordingAudio, States,
 };
 
 // ---------------------------------------------------------------------------
@@ -69,6 +70,7 @@ fn menu_with_touch(profiles: &[&str]) -> (MenuGame, Rc<RecordingAudio>, Rc<Finge
         Rc::new(NoopNetwork),
         audio.clone(),
         touch.clone(),
+        Rc::new(NoMenuJoystick),
         FakeWindow::new(),
         None,
         None,

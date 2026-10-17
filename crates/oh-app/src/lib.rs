@@ -35,6 +35,11 @@
 //! overlay (the C++ `postUpdate_ImguiLuaConsole`'s UI tail +
 //! `drawImguiLuaConsole` on the D-022 egui stack — the composition's
 //! windowed-only half; `oh-game` stays egui-free).
+//!
+//! 29j1: [`joystick`] (desktop-only) — the `RealJoystick` controller
+//! poller (the gilrs backend for the C++ `sf::Joystick` controller-0
+//! read) shared between the engine's `Joystick` seam and the menu's
+//! `MenuJoystick` seam; Android/wasm keep the no-op seams.
 
 #[cfg(target_os = "android")]
 pub mod android;
@@ -45,6 +50,8 @@ pub mod client;
 pub mod compose;
 pub mod dispatch;
 pub mod game_state;
+#[cfg(not(any(target_os = "android", target_family = "wasm")))]
+pub mod joystick;
 pub mod lifecycle;
 pub mod lua_console_ui;
 pub mod menu_draw;

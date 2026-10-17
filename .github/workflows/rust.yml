@@ -21,6 +21,19 @@ name: Rust gate
 #     oh-steam's `steam` feature is default-OFF (the C++ no-SDK build
 #     analogue, issue 20) and there is no oh-discord workspace member yet
 #     (issue 21) — so no per-OS SDK setup is required.
+#   * The desktop controller backend (29j1) — oh-app's `gilrs`
+#     dependency, cfg-gated to the non-Android/non-wasm targets (the C++'
+#     `sf::Joystick` controller-0 read; `NoJoystick` on Android/wasm) —
+#     pulls `libudev-sys` on LINUX ONLY (gilrs-core's `target_os =
+#     "linux"` dep): the gate's `cargo build/test --workspace` therefore
+#     needs the `libudev` system library at BUILD time on Linux
+#     (`libudev-dev` — present on the ubuntu-latest image; the defensive
+#     `apt-get` below mirrors the mingw pattern). Windows is untouched
+#     (no libudev in the Windows dep graph), and the runtime needs hidraw
+#     access — non-root users need a udev rule granting `/dev/hidraw*`
+#     (gilrs ships `60-gilrs.rules`); a failed open degrades to the
+#     no-controller state (logged once — the C++'s
+#     `isConnected(0) == false` behavior), never a crash.
 
 on: [push, pull_request]
 
@@ -37,6 +50,16 @@ jobs:
 
       - name: Install the pinned toolchain
         run: rustup toolchain install 1.97.1 --component clippy --component rustfmt
+
+      # 29j1 — the desktop controller backend (gilrs → libudev-sys on
+      # Linux only) needs the `libudev` system library at build time;
+      # ubuntu-latest ships it, the defensive install mirrors the mingw
+      # pattern in the cross-check job below. (The Windows gate job does
+      # not need it — libudev-sys is a Linux-only dep of gilrs-core.)
+      - name: libudev for the desktop controller backend (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          pkg-config --exists libudev || sudo apt-get install -y libudev-dev
 
       - name: Run the gate
         # git-bash on the windows runner / the default bash on ubuntu.

@@ -44,8 +44,8 @@ pub use oh_menu_system::{Category, Item, Menu};
 pub use real::RealMenuAssets;
 pub use seams::{
     AudioSink, ConfigValues, ConnectionState, FakeAssets, FakeConfig, FakeWindow,
-    IgnoreInputsCallback, LevelInfo, MenuAssets, MenuConfig, MenuTouch, MenuWindow, NetEvent,
-    NetworkClient, NewGameCallback, NoopNetwork, NoopTouch, PackDataInfo, RecordingAudio,
-    RichPresenceCallback, ScoreEntry, StyleBackground, TriggerRefreshCallback,
+    IgnoreInputsCallback, LevelInfo, MenuAssets, MenuConfig, MenuJoystick, MenuTouch, MenuWindow,
+    NetEvent, NetworkClient, NewGameCallback, NoMenuJoystick, NoopNetwork, NoopTouch, PackDataInfo,
+    RecordingAudio, RichPresenceCallback, ScoreEntry, StyleBackground, TriggerRefreshCallback,
 };
 pub use states::{DialogInputState, PackChange, States};

@@ -7,7 +7,8 @@ use std::rc::Rc;
 
 use oh_menu::layout::LinearFontHeight;
 use oh_menu::seams::{
-    FakeAssets, FakeConfig, FakeWindow, MenuAssets, NoopNetwork, NoopTouch, RecordingAudio,
+    FakeAssets, FakeConfig, FakeWindow, MenuAssets, NoMenuJoystick, NoopNetwork, NoopTouch,
+    RecordingAudio,
 };
 use oh_menu::states::States;
 use oh_menu::MenuGame;
@@ -30,6 +31,7 @@ fn menu_with_profiles(
         Rc::new(NoopNetwork),
         audio.clone(),
         Rc::new(NoopTouch),
+        Rc::new(NoMenuJoystick),
         FakeWindow::new(),
         None,
         None,

@@ -139,6 +139,11 @@ pub fn main_server(base_dir: &Path) -> i32 {
         // active" reject, :1178-1183) — the no-op store keeps it
         // disk-silent, exactly the C++ behavior.
         Arc::new(NullReplayStore),
+        // 29j1 — the server's headless engine: no window, no controller
+        // (the C++'s headless `HexagonGame` constructor state — every
+        // joystick call site is window-gated; `NoJoystick` is the
+        // `isConnected(0) == false` equivalent).
+        Arc::new(oh_game::seams::NoJoystick),
     );
     let executor = GameReplayExecutor {
         game: composed.game.clone(),
