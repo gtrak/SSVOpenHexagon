@@ -473,6 +473,17 @@ impl ConfigMenuAdapter {
     }
 }
 
+/// issue 32 §2.4 (emscripten only — the 025i pacing lesson, the
+/// `tick_fields`'s `runFPS` clamp's docs): the max frame gap a web frame
+/// may bill the timer as — 100 ms in frametime (6 FT, `getSecondsToFT`
+/// × 60): the `request_animation_frame` loop stops while the tab is
+/// hidden, and a gap past this caps the next frame's `frameTime` + drops
+/// the timer's accumulated backlog (no fast-forward on the return; the
+/// C++'s `maxLoops` cap alone only bounds the per-frame burst, not the
+/// backlog's multi-frame drain).
+#[cfg(target_os = "emscripten")]
+const WEB_FRAME_GAP_CLAMP_FT: f32 = 6.0;
+
 /// C++ `sf::Color::Transparent` (the `GameWindow::run` pre-update clear's
 /// default, GameWindow.hpp:126,157).
 const COLOR_TRANSPARENT: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
@@ -2389,6 +2400,38 @@ pub fn web_tick_count() -> u64 {
     WEB_TICKS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// issue 32 — the state probe's slot (the `WEB_TICKS` twin — lane 026's
+/// `status()` evidence shape, extended): the composition's CURRENT
+/// representative state, stored by the rAF loop once per frame — the
+/// menu state's `States` discriminant (0..=9) or `10` for the game
+/// state (the level running). `oh-web`'s `status()` reads it through
+/// [`web_state`], so the browser check confirms each acceptance step
+/// (boot → name entry → menu → level start) as the port's own
+/// observable (the C++ `States` names — the C++ `MenuGame::States`
+/// enum's discriminants, `oh_menu::states::States`).
+#[cfg(target_os = "emscripten")]
+static WEB_STATE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+#[cfg(target_os = "emscripten")]
+/// The state probe's reader (issue 32): the C++ `States` name (the
+/// menu) or `"game"` (the level running).
+#[must_use]
+pub fn web_state() -> &'static str {
+    match WEB_STATE.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => "menu:ETLPNewBoot",
+        1 => "menu:LoadingScreen",
+        2 => "menu:EpilepsyWarning",
+        3 => "menu:SLPSelectBoot",
+        4 => "menu:SMain",
+        5 => "menu:LevelSelection",
+        6 => "menu:MOpts",
+        7 => "menu:MOnline",
+        8 => "menu:SLPSelect",
+        9 => "menu:ETLPNew",
+        _ => "game",
+    }
+}
+
 pub struct WindowedClient {
     pub window: Window,
     pub engine: Rc<GameEngine>,
@@ -2632,18 +2675,21 @@ impl WindowedClient {
         // bound-input writes — the C++'s touch-controls position), and
         // the engine's rotation path (the consumed-pointer exclusion —
         // the §2b double-count hazard). Spec §5's enable flag: the
-        // winit pointer feed exists on the android target (the web
-        // target — issue 32 — sets it too); the desktop keeps it off
-        // (§4.4: the desktop build has no overlay and no behavior
-        // change — `WindowEvent::Touch` never arrives there either).
+        // pointer feed exists on the android target (the winit fold's
+        // touch events) AND the emscripten target (issue 32 — the
+        // canvas's pointer events feed the SAME shared touch sink this
+        // frame's feed diffs, spec §5's "31 and 32 meet here"); the
+        // desktop keeps it off (§4.4: the desktop build has no overlay
+        // and no behavior change — `WindowEvent::Touch` never arrives
+        // there either).
         let touch_overlay = std::sync::Arc::new(std::sync::RwLock::new({
-            #[cfg(target_os = "android")]
+            #[cfg(any(target_os = "android", target_os = "emscripten"))]
             {
                 let mut overlay = crate::touch_overlay::TouchOverlay::new();
                 overlay.set_enabled(true);
                 overlay
             }
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(any(target_os = "android", target_os = "emscripten")))]
             crate::touch_overlay::TouchOverlay::new()
         }));
         // issue 025g — the ACTUAL-window-size slot (the `RenderWindowSize`
@@ -3374,6 +3420,18 @@ impl WindowedClient {
         window.run(move |window| {
             #[cfg(target_os = "emscripten")]
             WEB_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            // issue 32 — the state probe's per-frame store (the rAF loop is
+            // the composition's single-threaded frame — the store is the
+            // current representative state: the menu's `States`
+            // discriminant, or `10` for the game state).
+            #[cfg(target_os = "emscripten")]
+            WEB_STATE.store(
+                match engine.current() {
+                    GameSlot::Menu => menu.state() as u32,
+                    GameSlot::Game => 10,
+                },
+                std::sync::atomic::Ordering::Relaxed,
+            );
             Self::tick_fields(
                 window,
                 &mut timer,
@@ -3789,8 +3847,35 @@ impl WindowedClient {
         // GameEngine.hpp:96-101): `runFrameTime` (the next frame's
         // `frameTime`, TimerBase.hpp:40-43) then `runFPS`
         // (TimerBase.hpp:45-48).
-        timer.run_frame_time();
-        timer.run_fps();
+        // Emscripten (issue 32 §2.4 — the 025i pacing lesson): the rAF
+        // loop STOPS while the tab is hidden (the browser pauses it —
+        // the Android activity-pause's web twin); without a cap the
+        // whole hidden span accumulates as the next frame's `frameTime`
+        // and the timer's backlog (`time`) fast-forwards the game on
+        // return (a 60 s hidden tab = 3600 FT = 3550 ticks drained over
+        // the following frames, the C++ `maxLoops` cap only limiting the
+        // per-frame burst). The clamp: a frame gap past 100 ms (6 FT —
+        // six normal 16.7 ms rAF frames; comfortably beyond a jank
+        // frame, far below any real pause) caps the `frameTime` AND
+        // drops the accumulated backlog (`TimerStatic::reset` — the
+        // C++ `reset` zeroes `time` + `loops`; normal frames, gap ≤
+        // 100 ms, take the C++ path verbatim). Web-only: the desktop /
+        // android loops keep the C++'s faithful accumulation (their
+        // pause semantics are the platform's, not the tab's).
+        #[cfg(target_os = "emscripten")]
+        {
+            timer.run_frame_time();
+            if timer.get_frame_time() > WEB_FRAME_GAP_CLAMP_FT {
+                timer.set_frame_time(WEB_FRAME_GAP_CLAMP_FT);
+                timer.reset();
+            }
+            timer.run_fps();
+        }
+        #[cfg(not(target_os = "emscripten"))]
+        {
+            timer.run_frame_time();
+            timer.run_fps();
+        }
         // 029e3 — publish the just-computed window FPS (the C++'
         // `runFPS`'s `fps = getFTToFPS(frameTime)` result, now in
         // `timer.get_fps()`) into the shared slot the engine's
@@ -3848,6 +3933,16 @@ pub fn create_window(config: &Config, base_dir: &Path) -> Window {
 
     let mut window = Window::create(physical_w.max(1), physical_h.max(1), title);
     // Restore the logical size members (the C++ `setSize(logical)`).
+    // Emscripten (issue 32 §2.3): NOT here — the web window's size IS
+    // the real canvas size (the CSS box × the device pixel ratio,
+    // `Window::create`'s measurement — the 025g "config size ≠ real
+    // size" invariant), and the restore would squish it back to the
+    // config's resolution: unlike the winit targets, a web window
+    // delivers no creation-time `Resized` that would correct it (the
+    // DOM `resize` listener covers browser resizes only). The menu
+    // layout + the hit tests would then run in the config space while
+    // the pointer positions run in the real one — every hit test off.
+    #[cfg(not(target_os = "emscripten"))]
     window.set_size(logical_w as u32, logical_h as u32);
 
     // C++ main.cpp:305-310 (the setters, in the C++ order).

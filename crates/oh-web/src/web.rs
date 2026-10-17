@@ -52,16 +52,24 @@ static BOOTED: AtomicBool = AtomicBool::new(false);
 static EXIT_CODE: AtomicI32 = AtomicI32::new(-1);
 
 /// The `#[wasm_bindgen]` probe (the 26c.1/26c.2 `status()` shape): the
-/// boot state + the composition's exit code — the supervisor's browser
-/// check calls it after the module loads.
+/// boot state + the composition's exit code + the rAF tick count (lane
+/// 026) + the current representative state (issue 32 — the rAF loop's
+/// per-frame store: the menu's C++ `States` name or `"game"`; the
+/// browser check's step-by-step observable: boot → name entry → menu
+/// → level start). The supervisor's browser check calls it after the
+/// module loads.
 #[wasm_bindgen]
 pub fn status() -> String {
     #[cfg(target_os = "emscripten")]
     let ticks = oh_app::windowed::web_tick_count();
     #[cfg(not(target_os = "emscripten"))]
     let ticks = 0;
+    #[cfg(target_os = "emscripten")]
+    let state = oh_app::windowed::web_state();
+    #[cfg(not(target_os = "emscripten"))]
+    let state = "";
     format!(
-        "booted={};exit_code={};ticks={ticks}",
+        "booted={};exit_code={};ticks={ticks};state={state}",
         BOOTED.load(Ordering::SeqCst),
         EXIT_CODE.load(Ordering::SeqCst)
     )

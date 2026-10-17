@@ -819,6 +819,45 @@ impl GlParts {
         }
     }
 
+    /// Emscripten (issue 32 §2.3): the web window's RESIZE — the C++
+    /// `recreateWindow`'s render-window half, applied to the canvas (the
+    /// desktop port's creation-frozen GL surface is the documented
+    /// deviation; the web canvas resizes cheaply, so the web window
+    /// tracks the real size 1:1 — spec §2.3: the canvas CSS size + the
+    /// `devicePixelRatio` → the real window size, and a wrong mapping
+    /// silently breaks every hit test):
+    ///
+    /// * the backing store (`canvas.width/height` — the browser resizes
+    ///   the drawing buffer; the WebGL context SURVIVES the canvas
+    ///   resize, no context loss);
+    /// * the GL viewport — a canvas resize does NOT re-set the WebGL
+    ///   viewport (the context's default viewport stays at the creation
+    ///   size; the port sets no viewport anywhere else, so without this
+    ///   call the rendering would stay clipped / stretched to the old
+    ///   size);
+    /// * the size bookkeeping (`width/height` — `GlDrawTarget::new`'s
+    ///   initial view reads them, the `Window`'s `set_size` half moves
+    ///   in `window.rs`'s `Resized` fold alongside this call).
+    ///
+    /// A no-op at the current size (the per-frame cost of the `Resized`
+    /// arm is then a compare).
+    #[cfg(target_os = "emscripten")]
+    pub fn resize(&mut self, width: u32, height: u32) {
+        let w = width.max(1);
+        let h = height.max(1);
+        if w == self.width && h == self.height {
+            return;
+        }
+        self._canvas.set_width(w);
+        self._canvas.set_height(h);
+        self.width = w;
+        self.height = h;
+        let gl = &self.gl;
+        unsafe {
+            gl.viewport(0, 0, w as i32, h as i32);
+        }
+    }
+
     /// C++ `renderWindow.display()` — the frame present:
     /// `Surface::swap_buffers` (the context is current on this thread —
     /// single-threaded GL, the `GlParts` contract; issue 25, on-device

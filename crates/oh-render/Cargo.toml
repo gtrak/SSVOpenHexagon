@@ -78,11 +78,17 @@ web-sys = { version = "0.3.106", features = [
   "Event",
   "EventTarget",
   "KeyboardEvent",
-  "MouseEvent",
   "WheelEvent",
-  "TouchEvent",
-  "TouchList",
-  "Touch",
+  # issue 32 — the pointer event model (the DOM `pointerdown` /
+  # `pointermove` / `pointerup` / `pointercancel` feed; the `TouchEvent`
+  # / `MouseEvent` features went with the listeners it replaced):
+  # `PointerEvent` (the event type + `pointer_id` / `pointer_type`) +
+  # `set_pointer_capture` (the `Element` method, the stuck-down guard)
+  # + `VisibilityState` (the `visibilitychange`'s hidden state) +
+  # `DomRect` (the canvas's bounding-rect origin + the CSS box size the
+  # REAL window size is in, the CSS-px × `devicePixelRatio` product).
+  "PointerEvent",
+  "VisibilityState",
   "DomRect",
 ] }
 
