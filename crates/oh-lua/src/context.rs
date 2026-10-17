@@ -163,6 +163,38 @@ impl LuaContext {
     // C++ `_getGlobal` / `_setGlobal` (dotted-name path walk)
     // ------------------------------------------------------------------
 
+    /// Tolerant existence check for the sandbox (lane 030a): like
+    /// `does_variable_exist` but a missing/non-table intermediate (or a
+    /// nil key at any step) reports `false` instead of raising — the C++
+    /// teardown only ever clears variables that exist on its VM (LuaJIT),
+    /// while the Luau backend simply has no `io`/`ffi`/`jit` at all, so
+    /// the ported teardown skips absent targets instead of failing.
+    pub fn variable_exists(&self, name: &str) -> bool {
+        if !name.contains('.') {
+            return self
+                .lua
+                .globals()
+                .get::<Option<Value>>(name)
+                .map(|v| v.is_some())
+                .unwrap_or(false);
+        }
+        let segments: Vec<&str> = name.split('.').collect();
+        let mut current: Option<Value> = self
+            .lua
+            .globals()
+            .get::<Option<Value>>(segments[0])
+            .ok()
+            .flatten();
+        for part in &segments[1..] {
+            let table = match current {
+                Some(Value::Table(table)) => table,
+                _ => return false,
+            };
+            current = table.get::<Option<Value>>(*part).ok().flatten();
+        }
+        current.is_some()
+    }
+
     /// C++ `_getGlobal`: plain names resolve directly (nil is returned as
     /// `None` — never an error); dotted names walk the path and raise
     /// `VariableDoesntExist` (carrying the *resolved* name) when an

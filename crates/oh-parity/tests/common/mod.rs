@@ -597,7 +597,10 @@ pub fn run_live_to_death(game: &HexagonGame<GameApiState>) -> (f64, ReplayFile) 
 }
 
 /// The C++-derived parity corpus directory (the plan's `parity/` dir — the
-/// source of truth for the pins; see its README.md).
+/// source of truth for the pins; see its README.md). Each test binary
+/// compiles this module separately, so allow the warning where unused
+/// (the lane-030a differential-simulation harness does not use it).
+#[allow(dead_code)]
 pub fn corpus_path(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../.agents/plans/001-rust-port/parity")
@@ -607,6 +610,7 @@ pub fn corpus_path(name: &str) -> PathBuf {
 /// Read + parse one corpus JSON file (a parse failure is a corpus bug, not
 /// an assertion about the engine).
 #[must_use]
+#[allow(dead_code)]
 pub fn read_corpus(path: impl AsRef<Path>) -> serde_json::Value {
     let path = path.as_ref();
     let text =

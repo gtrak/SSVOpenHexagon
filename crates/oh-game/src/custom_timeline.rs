@@ -80,4 +80,11 @@ impl CustomTimelineManager {
         debug_assert!(self.is_handle_valid(h));
         &mut self.timelines[h as usize]
     }
+
+    /// Port-side test accessor (lane 030a's differential-simulation harness):
+    /// `timelines.size()`, the live custom-timeline entity count.
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.timelines.len()
+    }
 }

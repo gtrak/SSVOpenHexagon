@@ -147,3 +147,67 @@ than "we ran it once on Gary's machine".
 - If a probe cannot be made to work for one backend, report that as a **finding**
   (an unmeasurable surface is itself a cost of unification) rather than dropping
   it silently.
+
+---
+
+## Summary (lane 030a — done; full report: `.agents/plans/001-rust-port/30a-lua-parity.md`)
+
+**Measured, nothing migrated.** `oh-lua` now has mutually-exclusive
+`backend-luajit` (default, unchanged behavior) / `backend-luau` features,
+forwarded through oh-app/oh-game/oh-parity (features first, wasm
+target-default after).
+
+**Commands** (per the lane's env; debug profile):
+
+- LuaJIT: `cargo test -p oh-lua` / `-p oh-game` / `-p oh-parity`;
+  `cargo build -p oh-app`; `source tools/android-env.sh && cargo check
+  -p oh-app --target aarch64-linux-android`
+- Luau: same commands with `--no-default-features --features
+  backend-luau` appended (one flag set per selected crate)
+- Both (gate stage 5, `tools/lua-parity.sh`, ~7 min): N separate-VM-process
+  runs per backend (default 2, `LUA_PARITY_REPEATS_COUNT=K`) → A/B compare
+  (fails with case + first divergent frame) + per-backend repeats + probe
+  diff table. Artifacts: `target/lua-parity/<backend>/run-<k>/` (never
+  committed).
+
+**Result (43-case shipped corpus, fixed dt, seeded input):**
+
+- **A/B: 43/43 cases byte-identical across backends (run-0); and
+  identical across 3 separate processes per backend** — no per-process
+  gameplay nondeterminism observed.
+- Probes: 6/8 differ, all at the dialect surface — number spellings of
+  wide ints (`tostring(1e20)`: `1e+20` vs `100000000000000000000`;
+  `tostring(9999999999999.999)` differs in the *parsed value*, not just
+  the spelling), `error()`/nil-index message shapes (chunk-location
+  prefix on Luau), the post-sandbox surface (Luau lacks `io`/`jit`/
+  `load*`/`bit`/`module`/`dofile`; adds `bit32`/`buffer`/`utf8`/
+  `vector`), `mlua::Integer` width (8B i64 exact vs 4B i32 saturating),
+  and `pairs` order — **Luau stable across processes (4 obs.), LuaJIT
+  varies (3 obs.)**, while the gameplay fingerprints stayed
+  byte-identical throughout. `string.format('%.14g')` and the port's
+  number→string path are identical on both.
+- Perf (debug, 2500 frames, alwaysSpinRight): light level 6.09
+  (LuaJIT) vs 6.60 (Luau) µs/frame — +8%, ~1.2% of the 200–360 fps
+  frame budget; heavy `stress1` 1037.5 vs 1029.3 µs/frame (Lua-bound,
+  backend-neutral). Release-mode not measured.
+- **Android (REQUIRED): Luau PASSES `cargo check -p oh-app --target
+  aarch64-linux-android`** (and LuaJIT still passes — NDK 27.2.12479018).
+- Suites: oh-lua 36/36 on both backends (all divergences pinned with
+  documented arms), oh-game + oh-parity green on both, workspace 117
+  binaries 0 failed, fmt + clippy clean.
+
+**Recommendation:** keep `backend-luajit` as the default (it is the
+C++-parity, third-party-pack-compatible backend; nothing measured forces
+a move); keep `backend-luau` first-class and gate-covered — unification,
+if ever chosen, becomes a one-line default change with the §3-§6 evidence
+re-running in the gate. What unification would delete (luajit-src +
+patch, ffi_stub.c, cshim.c, the per-target split, K3 + K4 moot) is
+recorded in the report §6; what it would cost, in §3/§6.
+
+**Could not establish (explicit):** release-mode perf on both backends;
+on-device (phone) performance (compile-only for Android); pairs-order
+stability beyond 3–4 processes per backend; any third-party/user-pack
+content (no such corpus in the repo); the full integer-operator matrix
+beyond the probed set; the C++ third column (030b is blocked on system
+X11/GL dev packages); an emscripten build under these features (verified
+by construction, not by a wasm toolchain run).

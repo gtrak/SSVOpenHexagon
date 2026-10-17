@@ -82,6 +82,12 @@ impl Pcg32Fast {
     pub fn state_position(&self) -> u64 {
         distance_from_wrapped(self.state)
     }
+    /// C++ `engine()` accessor (`pcg_random.hpp`: `engine_type engine()
+    /// const noexcept { return state_; }`): the raw MCG state.
+    #[must_use]
+    pub const fn state(&self) -> u64 {
+        self.state
+    }
 }
 
 /// `engine::distance(cur_state, newstate, cur_mult, cur_plus, mask)` with

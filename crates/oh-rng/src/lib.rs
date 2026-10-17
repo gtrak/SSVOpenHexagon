@@ -111,6 +111,16 @@ impl RandomNumberGenerator {
     pub fn advance(&mut self, delta: State) {
         self.engine.advance(delta);
     }
+
+    /// Port-side test accessor (lane 030a's differential-simulation harness):
+    /// the raw PCG engine state behind this RNG. The C++ wrapper keeps
+    /// `_rng` private (only `seed()` is public there), but its `engine()`
+    /// accessor is the same value — the harness fingerprints it per frame
+    /// to pin the game-RNG stream.
+    #[must_use]
+    pub fn engine_state(&self) -> State {
+        self.engine.state()
+    }
 }
 
 // ---------------------------------------------------------------------------

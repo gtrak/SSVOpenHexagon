@@ -30,7 +30,10 @@ oh-data = { path = "../oh-data" }
 # (same package) needs the Lua host to run `-printLuaDocs` / headless
 # replays. Step (a)'s "dev-only" constraint was about the DRAW BRIDGE not
 # coupling to the Lua backend; the composition crate legitimately does.
-oh-lua = { path = "../oh-lua" }
+# `default-features = false` (lane 030a): the Lua VM backend comes from
+# this crate's `backend-*` feature (forwarded onto oh-lua), so the
+# `open-hexagon` binary is buildable under EITHER backend.
+oh-lua = { path = "../oh-lua", default-features = false }
 oh-assets = { path = "../oh-assets" }
 oh-menu = { path = "../oh-menu" }
 # C++ main.cpp:340-349 — the SIGINT handler, the SAFE port (the C++'s
@@ -109,6 +112,17 @@ gilrs = "0.11"
 ndk = "0.9"
 
 [features]
+# The Lua VM backend (lane 030a): forwarded onto the oh-lua dependency so
+# the `open-hexagon` binary builds under either backend. Default =
+# `backend-luajit` (the C++ build's backend, unchanged — `cargo build -p
+# oh-app` behaves exactly as before the features existed);
+# `cargo check -p oh-app --no-default-features --features backend-luau`
+# builds the same binary on Luau (this is the command the lane-030a
+# aarch64-linux-android check uses).
+backend-luajit = ["oh-lua/backend-luajit"]
+backend-luau = ["oh-lua/backend-luau"]
+default = ["backend-luajit"]
+
 # Issue 020: the real Steam backend (the C++'s `#ifndef SSVOH_ANDROID`
 # build — links the official loader stub via `steamworks-sys`; degrades
 # at runtime when no Steam client is running). OFF by default = the

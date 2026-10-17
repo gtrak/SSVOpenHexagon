@@ -25,7 +25,16 @@ use crate::snippets::{REDEFINE_IO_OPEN, REDEFINE_RANDOM};
 /// compile-tested by 29v1's table in `snippets.rs`). Wraps `io.open` so
 /// that any mode other than `"rb"` is coerced to `"r"`: all file opens
 /// become read-only text, except true binary-read.
+///
+/// Lane 030a: the wrap is a no-op when `io.open` does not exist — the Luau
+/// backend has no `io` library at all, and the C++ snippet (`local open =
+/// io.open`) would raise `attempt to index a nil value (global 'io')`
+/// there. On the LuaJIT backend `io.open` always exists, so the behavior is
+/// unchanged.
 pub fn redefine_io_open(lua: &LuaContext) -> Result<(), LuaError> {
+    if !lua.variable_exists("io.open") {
+        return Ok(());
+    }
     lua.execute_code(REDEFINE_IO_OPEN)
 }
 
@@ -49,40 +58,50 @@ pub fn redefine_random(lua: &LuaContext) -> Result<(), LuaError> {
 /// `math.randomseed` is gone, and `package` survives with `require` /
 /// `package.path` working but `loadlib`/`searchpath`/`loaders` and the
 /// `package.loaded.os`/`package.loaded.debug` restore paths removed.
+///
+/// Lane 030a: each clear is skipped when the target does not exist (the C++
+/// runs on LuaJIT where every target exists; the Luau backend has no
+/// `io`/`ffi`/`jit` at all, and `os`/`debug` there are Luau's minimal
+/// stand-ins, cleared exactly like the LuaJIT ones). On the LuaJIT backend
+/// every target exists, so the observable post-state is unchanged.
 pub fn destroy_malicious_functions(lua: &LuaContext) -> Result<(), LuaError> {
-    // This destroys the "os" library completely. This library is capable of
-    // file manipulation, running shell commands, and messing up the replay
-    // system completely.
-    lua.clear_variable("os")?;
-
-    // This destroys some of the "io" functions completely.
-    lua.clear_variable("io.popen")?;
-    lua.clear_variable("io.flush")?;
-    lua.clear_variable("io.write")?;
-    lua.clear_variable("io.setvbuf")?;
-
-    // This destroys the "debug" library completely.
-    lua.clear_variable("debug")?;
-
-    // This function allows pack developers to set the seed in Lua.
-    lua.clear_variable("math.randomseed")?;
-
-    // These functions are being deleted as they can assist in restoring
-    // destroyed modules. However, we cannot destroy the whole library as
-    // the other functions are needed for the "require" function to work
-    // properly.
-    lua.clear_variable("package.loadlib")?;
-    lua.clear_variable("package.searchpath")?;
-
-    // This removes some other ways in which the "os" and "debug" libraries
-    // can be accessed.
-    lua.clear_variable("package.loaded.os")?;
-    lua.clear_variable("package.loaded.debug")?;
-
-    // This removes some potentially dangerous packages that could be used
-    // to inject malicious code.
-    lua.clear_variable("package.loadlib")?;
-    lua.clear_variable("package.loaders")?;
+    // Clear each target only if it exists (see the lane-030a note above);
+    // the C++ order — including the double `package.loadlib` clear — is
+    // preserved.
+    let targets = [
+        // This destroys the "os" library completely. This library is capable of
+        // file manipulation, running shell commands, and messing up the replay
+        // system completely.
+        "os",
+        // This destroys some of the "io" functions completely.
+        "io.popen",
+        "io.flush",
+        "io.write",
+        "io.setvbuf",
+        // This destroys the "debug" library completely.
+        "debug",
+        // This function allows pack developers to set the seed in Lua.
+        "math.randomseed",
+        // These functions are being deleted as they can assist in restoring
+        // destroyed modules. However, we cannot destroy the whole library as
+        // the other functions are needed for the "require" function to work
+        // properly.
+        "package.loadlib",
+        "package.searchpath",
+        // This removes some other ways in which the "os" and "debug" libraries
+        // can be accessed.
+        "package.loaded.os",
+        "package.loaded.debug",
+        // This removes some potentially dangerous packages that could be used
+        // to inject malicious code.
+        "package.loadlib",
+        "package.loaders",
+    ];
+    for name in targets {
+        if lua.variable_exists(name) {
+            lua.clear_variable(name)?;
+        }
+    }
 
     Ok(())
 }
