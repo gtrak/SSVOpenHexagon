@@ -618,6 +618,20 @@ impl<S: SharedStore> HexagonGame<S> {
             discord_attempt: 1,
         };
 
+        // C++ `HexagonGame` ctor's "Keyboard binds" section
+        // (HexagonGame.cpp:343-345) — `Config::keyboardBindsSanityCheck()`
+        // (Config.cpp:1392-1406): `resizeTrigger` REPAIR on the first 12
+        // triggers (RotateCCW..Down) — agglomerate (drop unbound combos),
+        // trim to `MAX_BINDS`, pad with cleared combos. A hand-edited /
+        // legacy `config.json` with a malformed trigger (too many /
+        // too few / scattered combos) is normalized before any bind is
+        // read; the other 4 triggers (NextPack / PreviousPack /
+        // LuaConsole / Pause) are NOT repaired (the C++'s exact scope).
+        config
+            .write()
+            .expect("config poisoned")
+            .keyboard_binds_sanity_check();
+
         // C++ `HexagonGame` ctor's "Joystick binds" section (HexagonGame.cpp:
         // 445-448) — `Config::loadAllJoystickBinds()`: load the 12 `j_*`
         // config values into the shared `Joystick` machine (`Config.cpp:
