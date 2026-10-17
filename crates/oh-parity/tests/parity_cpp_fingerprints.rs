@@ -25,9 +25,24 @@
 //! The check survives without the C++ present: the C++ column is frozen in
 //! the JSON. Definition (the durable interface):
 //! `.agents/plans/001-rust-port/parity/cpp-fingerprint-definition.md` (v1).
+//!
+//! # Lane 030c — the three-way proof (C++ ↔ LuaJIT ↔ Luau)
+//!
+//! This file is backend-agnostic: it replays the SAME corpus through
+//! whichever VM the build selected. The LuaJIT column (030b's 3627/3627) is
+//! this file under the default features (gate stage 4, `cargo test
+//! --workspace`); the Luau column (the third column 030a's A/B could not
+//! produce, because it only compared port-vs-port) is the same file under
+//! `--no-default-features --features backend-luau` (wired into gate stage 5
+//! by `tools/lua-parity.sh`). `cpp_fingerprint_per_case_table` prints the
+//! per-case `case | <backend> vs C++` rows the report's three-way table is
+//! built from, and — unlike the all-or-nothing corpus test — reports EVERY
+//! case's outcome even when an earlier one diverged (with the first
+//! divergent frame + field, exactly as 030b's comparator reports it).
 
 mod common;
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use common::{compose, corpus_path, read_corpus, release_dir};
@@ -94,6 +109,26 @@ fn hex(bytes: &[u8]) -> String {
     s
 }
 
+/// The fingerprint temp-file path, unique per `compare_case` CALL: the
+/// tests run as parallel threads in one process, and two of them (the
+/// 030b corpus test and the 030c per-case table test) drive the SAME case
+/// names — a shared `oh030b-parity-<case>.fp.txt` would be truncated by
+/// `set_fingerprint_path`'s `File::create` under the other test's open
+/// handle (a flaky frame-count/hash mismatch). The file name is irrelevant
+/// to the comparison (the C++ writes its own file in the container; only
+/// the line CONTENT is compared), so one sequence number per call
+/// removes the race.
+static FP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn fingerprint_temp_path(name: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "oh030b-parity-{}-{}-{}.fp.txt",
+        name,
+        std::process::id(),
+        FP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
 /// Rebuild the case's `ReplayFile` from the committed fields.
 fn build_replay(c: &Case) -> oh_replay::ReplayFile {
     let mut data = oh_replay::ReplayData::default();
@@ -118,36 +153,43 @@ fn build_replay(c: &Case) -> oh_replay::ReplayFile {
 }
 
 /// One corpus case through the port: the byte-exact compression pin + the
-/// full per-frame fingerprint comparison + the final result.
-fn check_case(assets: &Arc<oh_assets::Assets>, c: &Case) {
+/// full per-frame fingerprint comparison + the final result. Returns the
+/// simulated frame count on success; on any divergence the Err carries the
+/// 030b-attribution diagnostic (first divergent frame + which column
+/// differs, or the final-result mismatch) with the case name prefixed.
+///
+/// The interchange-format pin (1) panics rather than returning: it is pure
+/// Rust (`oh_replay`'s zlib) and cannot depend on the VM backend, so a
+/// failure there is a corpus bug, not a three-way finding.
+fn compare_case(assets: &Arc<oh_assets::Assets>, c: &Case) -> Result<u64, String> {
     let rf = build_replay(c);
 
     // (1) The interchange-format pin: the port's compression of this
     // ReplayFile must be byte-exactly the hex the C++ executed.
     let crf = oh_replay::compress_replay_file(&rf)
         .unwrap_or_else(|| panic!("{}: compression failed", c.name));
-    assert_eq!(
-        hex(&crf.data),
-        c.replay_z_hex,
-        "{}: the port's .ohr.z bytes must be byte-exactly the bytes the C++ executed",
-        c.name
-    );
+    if hex(&crf.data) != c.replay_z_hex {
+        return Err(format!(
+            "{}: the port's .ohr.z bytes are not byte-exactly the bytes the C++ executed (interchange-format pin, VM-independent)",
+            c.name
+        ));
+    }
 
     // (2) The replay run with the 030b fingerprint enabled.
     let root = release_dir();
     let comp = compose(assets.clone(), root, false);
-    let fp_path = std::env::temp_dir().join(format!("oh030b-parity-{}.fp.txt", c.name));
+    let fp_path = fingerprint_temp_path(&c.name);
     comp.game.set_fingerprint_path(Some(&fp_path));
 
     let result = comp
         .game
         .run_replay_until_death_and_get_score(&rf, 1, 1.0)
-        .unwrap_or_else(|| {
-            panic!(
+        .ok_or_else(|| {
+            format!(
                 "{}: replay playback exceeded the 1-second processing budget",
                 c.name
             )
-        });
+        })?;
 
     // Back off the fingerprint's file writes (the C++ `fputs` is unbuffered
     // per call here too; the drop closes + flushes either way).
@@ -157,15 +199,15 @@ fn check_case(assets: &Arc<oh_assets::Assets>, c: &Case) {
     let lines: Vec<&str> = text.lines().collect();
 
     // Frame count: one line per `update` call through the death frame.
-    assert_eq!(
-        lines.len() as u64,
-        c.frames,
-        "{}: the port simulated {} frames, the C++ {} (first port line: {:?})",
-        c.name,
-        lines.len(),
-        c.frames,
-        lines.first()
-    );
+    if lines.len() as u64 != c.frames {
+        return Err(format!(
+            "{}: the port simulated {} frames, the C++ {} (first port line: {:?})",
+            c.name,
+            lines.len(),
+            c.frames,
+            lines.first()
+        ));
+    }
 
     // The per-frame (frame, hash, draws) triple — the whole-engine oracle.
     for (i, line) in lines.iter().enumerate() {
@@ -183,26 +225,35 @@ fn check_case(assets: &Arc<oh_assets::Assets>, c: &Case) {
                 }
                 _ => "frame",
             };
-            panic!(
+            return Err(format!(
                 "{}: FIRST DIVERGENT FRAME {i} (field: {field})\n  C++  : {expected}\n  port : {line}\n  (attribution: same hash + different draws = the cosmetic-RNG split class; different hash = a real gameplay/state divergence — see the definition note's 'The RNG trap')",
                 c.name
-            );
+            ));
         }
     }
 
     // (3) The final result.
-    assert_eq!(
-        result.custom_score, c.custom_score,
-        "{}: customScore (no shipped level script calls l_overrideScore)",
-        c.name
-    );
+    if result.custom_score != c.custom_score {
+        return Err(format!(
+            "{}: customScore mismatch (no shipped level script calls l_overrideScore): port {} vs C++ {}",
+            c.name, result.custom_score, c.custom_score
+        ));
+    }
     let printed = oh_math::hg::concat::format_ostream_f64(result.played_time_seconds);
-    assert_eq!(
-        printed,
-        c.final_time_print,
-        "{}: the `Final time` the C++ printed (std::ostream 6-significant-digit format; the exact f64 bits are already pinned by the final frame's hash field 9)",
-        c.name
-    );
+    if printed != c.final_time_print {
+        return Err(format!(
+            "{}: the `Final time` the C++ printed (std::ostream 6-significant-digit format; the exact f64 bits are already pinned by the final frame's hash field 9): port {:?} vs C++ {:?}",
+            c.name, printed, c.final_time_print
+        ));
+    }
+    Ok(lines.len() as u64)
+}
+
+/// One corpus case through the port, all-or-nothing: the 030b gate
+/// semantics (the first divergence panics, with the 030b attribution
+/// message unchanged).
+fn check_case(assets: &Arc<oh_assets::Assets>, c: &Case) {
+    compare_case(assets, c).unwrap_or_else(|msg| panic!("{msg}"));
 }
 
 /// The whole corpus: every C++ column case replays through the port to the
@@ -224,6 +275,53 @@ fn cpp_fingerprint_vectors_match_the_port() {
     }
 }
 
+/// The 030c three-way table — EVERY corpus case through the CURRENT
+/// backend, one result line per case — `OK (N frames)` or the first
+/// divergent frame + field (030b's attribution). Unlike the all-or-nothing
+/// corpus test above, an early case's divergence does not hide the later
+/// cases' results; the whole table is printed, and the test panics with it
+/// if ANY case diverged. Under the default features this is the LuaJIT
+/// column of the C++ ↔ LuaJIT ↔ Luau proof (re-proven per gate, stage 4);
+/// under `--no-default-features --features backend-luau` it is the Luau
+/// column (gate stage 5, `tools/lua-parity.sh`). The C++ column is the
+/// committed `cpp_fingerprints.json` (regenerated by neither backend).
+#[test]
+fn cpp_fingerprint_per_case_table() {
+    let assets = Arc::new(
+        oh_assets::Assets::new(release_dir(), true, false).expect("_RELEASE loads headless"),
+    );
+    let backend = if cfg!(feature = "backend-luau") {
+        "Luau"
+    } else {
+        "LuaJIT"
+    };
+    eprintln!("030c per-case table [{backend} vs C++]:");
+    let mut table: Vec<String> = Vec::new();
+    let mut failures = 0usize;
+    for c in cases() {
+        let outcome = compare_case(&assets, &c);
+        let row = match &outcome {
+            Ok(frames) => format!("  {:24} frames={:>5}  OK", c.name, frames),
+            Err(msg) => {
+                failures += 1;
+                format!("  {:24} MISMATCH: {msg}", c.name)
+            }
+        };
+        eprintln!("{row}");
+        table.push(row);
+    }
+    assert_eq!(
+        failures,
+        0,
+        "030c: {failures} case(s) diverge from the C++ column under {backend}:\n{}",
+        table.join("\n")
+    );
+    eprintln!(
+        "030c: all {} cases match the C++ column under {backend}",
+        cases().len()
+    );
+}
+
 /// The harness itself is tested: a 1-ULP drift in a hashed field must be
 /// discriminated by the comparison (the contract's deliberately-wrong-entry
 /// check). Flip the last frame's hash of one case and expect the panic.
@@ -240,7 +338,7 @@ fn deliberately_wrong_fingerprint_discriminates() {
     let rf = build_replay(&c);
     let root = release_dir();
     let comp = compose(assets.clone(), root, false);
-    let fp_path = std::env::temp_dir().join("oh030b-parity-discriminating.fp.txt");
+    let fp_path = fingerprint_temp_path("discriminating");
     comp.game.set_fingerprint_path(Some(&fp_path));
     let _ = comp
         .game

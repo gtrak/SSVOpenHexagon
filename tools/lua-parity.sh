@@ -23,6 +23,10 @@
 #      (per-process determinism; a hit means confirmed
 #      hash-randomization/pairs-order nondeterminism).
 #   5. COMPARE PROBES: the per-probe diff table (printed to the log).
+#   6. C++ COLUMN UNDER LUAU (lane 030c): the 030b fingerprint vectors
+#      re-proven under the Luau backend (the third column of the
+#      C++ ↔ LuaJIT ↔ Luau proof; the LuaJIT column is gate stage 4's
+#      default-backend `cargo test --workspace` over the same test file).
 #
 # Exit code: 0 iff every comparison passed. The probe table is
 # informational (backends ARE expected to differ at the dialect level);
@@ -122,6 +126,18 @@ done
 timeout "$TIMEOUT" env LUA_PARITY_PROBES=1 cargo test -q -p oh-parity \
     --test lua_vm_probes compare_probes -- --exact \
     || step_fail "probe diff table"
+
+# ---------------------------------------------------------------------------
+# 6. The 030c third column: the 030b C++ fingerprint vectors re-proven
+#    under Luau (parity_cpp_fingerprints runs backend-agnostically; the
+#    default-backend LuaJIT column is gate stage 4). On a mismatch the log
+#    carries the per-case table + the first divergent frame + field.
+# ---------------------------------------------------------------------------
+note "cpp-fingerprint vectors under Luau (030c third column)"
+if ! timeout "$TIMEOUT" cargo test -q -p oh-parity --no-default-features \
+    --features backend-luau --test parity_cpp_fingerprints; then
+    step_fail "cpp-fingerprint vectors under Luau (first divergent frame is in the log)"
+fi
 
 if [ "$fail" -eq 0 ]; then
     note "OK: $REPEATS runs per backend; A/B + repeats + probes all compared (artifacts under $CARGO_TARGET_DIR/lua-parity/)"
