@@ -36,7 +36,12 @@ fn draw_is_a_no_op_without_a_window() {
     c.game.new_game(PACK, LEVEL, true, 1.0, false);
 
     let (font, font_bold) = test_fonts();
-    let mut app = oh_app::bridge::AppDraw::new(&Config::default(), font, font_bold);
+    let mut app = oh_app::bridge::AppDraw::new(
+        &Config::default(),
+        &release_dir().join("Assets"),
+        font,
+        font_bold,
+    );
     let mut rec = Recording::default();
     oh_app::bridge::draw(&c.game, &mut app, &mut rec);
 
@@ -157,7 +162,12 @@ fn full_frame_passes_cpp_order_and_is_deterministic() {
         c.game.set_must_take_screenshot(true);
 
         let (font, font_bold) = test_fonts();
-        let mut app = oh_app::bridge::AppDraw::new(&Config::default(), font, font_bold);
+        let mut app = oh_app::bridge::AppDraw::new(
+            &Config::default(),
+            &release_dir().join("Assets"),
+            font,
+            font_bold,
+        );
         app.fps = 60.0; // C++ `window->getFPS()` — the test's window rate
         let mut rec = Recording::default();
         oh_app::bridge::draw(&c.game, &mut app, &mut rec);
@@ -274,7 +284,12 @@ fn on_render_stage_fires_per_stage_with_frametime() {
     bind_all_stages(&c.game);
 
     let (font, font_bold) = test_fonts();
-    let mut app = oh_app::bridge::AppDraw::new(&Config::default(), font, font_bold);
+    let mut app = oh_app::bridge::AppDraw::new(
+        &Config::default(),
+        &release_dir().join("Assets"),
+        font,
+        font_bold,
+    );
     app.fps = 120.0; // C++ frametime argument = 60.f / fps = 0.5
     let mut rec = Recording::default();
     oh_app::bridge::draw(&c.game, &mut app, &mut rec);
@@ -291,4 +306,96 @@ fn on_render_stage_fires_per_stage_with_frametime() {
         "the hook fired once per stage with the C++ frametime (60/120)"
     );
     assert!(!rec.events.is_empty(), "the frame rendered");
+}
+
+// ---------------------------------------------------------------------
+// 029e1 (the graphics audit's M1): the HUD icon + particle textures must
+// be the real `Assets/*.png` decodes — the pre-fix port drew all five
+// key/replay icons and every PB/trail/swap particle from
+// `Texture::new()`'s 1×1 white pixel (a `sf::Texture` default), where
+// the C++ assigns the asset registry's textures: `initKeyIcons`'s
+// `getTextureOrNullTexture` loop + `setSmooth(true)`
+// (`HexagonGame.cpp:87-107`, called from the ctor `:453` and
+// `onRecreation` `:339`) and the ctor window branch's
+// `txStarParticle` / `txSmallCircle` (`:324-325`).
+// ---------------------------------------------------------------------
+
+/// The six textures are the REAL `Assets/` PNGs (their on-disk
+/// dimensions, not the 1×1 placeholder), with the C++'s `setSmooth(true)`
+/// on the four icon textures only (`HexagonGame.cpp:96-100` — the
+/// particle textures are never smoothed, `:324-325`).
+#[test]
+fn app_draw_loads_the_real_hud_and_particle_textures() {
+    let (font, font_bold) = test_fonts();
+    let app = oh_app::bridge::AppDraw::new(
+        &Config::default(),
+        &release_dir().join("Assets"),
+        font,
+        font_bold,
+    );
+    let st = app.state();
+    // The four key icons: `keyArrow.png` (64×64) on BOTH left and right
+    // (`HexagonGame.cpp:102-103`), `keyFocus.png` / `keySwap.png` (64×64),
+    // `replayIcon.png` (128×128) — the C++'s `setSmooth(true)`
+    // (`HexagonGame.cpp:96-100`).
+    for (name, icon) in [
+        ("key_icon_left", st.key_icon_left.get_texture()),
+        ("key_icon_right", st.key_icon_right.get_texture()),
+        ("key_icon_focus", st.key_icon_focus.get_texture()),
+        ("key_icon_swap", st.key_icon_swap.get_texture()),
+    ] {
+        assert_eq!(
+            icon.get_size(),
+            (64, 64),
+            "{name} must be the 64×64 keyArrow/keyFocus/keySwap PNG"
+        );
+        assert!(icon.is_smooth(), "{name} carries the C++ setSmooth(true)");
+    }
+    let replay = st.replay_icon.get_texture();
+    assert_eq!(replay.get_size(), (128, 128), "replayIcon.png is 128×128");
+    assert!(replay.is_smooth());
+
+    // The particle textures (the ctor window branch, `:324-325`) — NOT
+    // smoothed (the C++ smooths only the four icon textures).
+    assert_eq!(
+        app.tx_star_particle().get_size(),
+        (64, 64),
+        "starParticle.png is 64×64"
+    );
+    assert!(!app.tx_star_particle().is_smooth());
+    assert_eq!(
+        app.tx_small_circle().get_size(),
+        (16, 16),
+        "smallCircle.png is 16×16"
+    );
+    assert!(!app.tx_small_circle().is_smooth());
+}
+
+/// A missing `Assets/` folder degrades to the C++'s `nullTexture`
+/// (`Assets.cpp:568-575` — the `static sf::Texture` default = 1×1 white)
+/// on every texture, exactly as the C++'s
+/// `getTextureOrNullTexture` does for an absent asset — the game still
+/// runs, drawing the placeholder squares (the pre-fix look, now only on
+/// a broken install).
+#[test]
+fn app_draw_missing_assets_fall_back_to_the_cpp_null_textures() {
+    let (font, font_bold) = test_fonts();
+    let app = oh_app::bridge::AppDraw::new(
+        &Config::default(),
+        std::path::Path::new("/nonexistent-oh-029e1/assets"),
+        font,
+        font_bold,
+    );
+    let st = app.state();
+    for icon in [
+        st.key_icon_left.get_texture(),
+        st.key_icon_right.get_texture(),
+        st.key_icon_focus.get_texture(),
+        st.key_icon_swap.get_texture(),
+        st.replay_icon.get_texture(),
+    ] {
+        assert_eq!(icon.get_size(), (1, 1), "the nullTexture is 1×1");
+    }
+    assert_eq!(app.tx_star_particle().get_size(), (1, 1));
+    assert_eq!(app.tx_small_circle().get_size(), (1, 1));
 }

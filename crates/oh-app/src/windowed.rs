@@ -2146,6 +2146,7 @@ impl WindowedClient {
             .map_err(|e| format!("failed to load Assets/OpenSquare-Bold.ttf: {e}"))?;
         let app_draw = Rc::new(RefCell::new(AppDraw::new(
             &config.read().expect("config poisoned"),
+            &assets_dir,
             font.clone(),
             font_bold.clone(),
         )));

@@ -60,6 +60,8 @@
 //! conversions), and the snapshot locals — never a `st()` / `est()` /
 //! `config_ref()` guard — are what `FrameInput` borrows.
 
+use std::path::Path;
+
 use oh_config::Config;
 use oh_game::hexagon_game::HexagonGame;
 use oh_game::lua_state::SharedStore;
@@ -89,10 +91,9 @@ fn copy_batch(src: &oh_game::FastVertexVectorTris, dst: &mut Vec<Vertex>) {
 
 /// C++ `HexagonGame::Particle/TrailParticle/SwapParticle` sprite fields
 /// (`SpriteState`) → the render `Sprite` (position / rotation / scale /
-/// color / origin — the texture is the composition's placeholder; the C++
-/// constructor wires `txStarParticle` / `txSmallCircle` from the assets,
-/// `HexagonGame.cpp:324-325` — step (c) replaces the placeholders with the
-/// registry textures).
+/// color / origin; the texture is the composition's `txStarParticle` /
+/// `txSmallCircle` — the C++ constructor wires them from the assets,
+/// `HexagonGame.cpp:324-325`).
 fn sprite_from_state(texture: &Texture, s: &oh_game::hexagon_game::SpriteState) -> Sprite {
     let mut sprite = Sprite::new(texture.clone());
     sprite.set_position(s.position);
@@ -127,8 +128,9 @@ pub struct AppDraw {
     player_tris: Vec<Vertex>,
     cap_tris: Vec<Vertex>,
     // The C++ `txStarParticle` / `txSmallCircle` (window-ctor branch,
-    // `HexagonGame.cpp:324-325`) — placeholders in step (a); step (c)
-    // loads the registry textures.
+    // `HexagonGame.cpp:324-325`) — the assets' `starParticle.png` /
+    // `smallCircle.png` (29e1: the real textures; the C++
+    // `getTextureOrNullTexture` null-texture fallback on a missing file).
     tx_star_particle: Texture,
     tx_small_circle: Texture,
 }
@@ -139,11 +141,18 @@ impl AppDraw {
     /// `:276-281`, character sizes divided by the zoom factor; `pbText` /
     /// `timeText` use the BOLD font, `:298` / `:308`), the level-info texts
     /// (`sf::Text{"", font}` — default character size 0, the sizes are set
-    /// per frame by `updateLevelInfo`), and `initKeyIcons`
-    /// (`HexagonGame.cpp:87-107` — set the sprite textures + the initial
-    /// `updateKeyIcons`).
+    /// per frame by `updateLevelInfo`), `initKeyIcons`
+    /// (`HexagonGame.cpp:87-107` — the asset textures + the initial
+    /// `updateKeyIcons`), and the ctor window-branch's
+    /// `txStarParticle` / `txSmallCircle` (`:324-325`).
+    ///
+    /// `assets_dir` is the C++ `Assets/` folder (the composition's
+    /// `base_dir` + `Assets`): the six HUD/particle PNGs load through the
+    /// port's asset-PNG path (`oh_render::Image::load_png` — the same
+    /// decode the window icon and the screenshot use; the C++ loads them
+    /// from the `Assets/assets.json` texture list, Assets.cpp:238-244).
     #[must_use]
-    pub fn new(config: &Config, font: Font, font_bold: Font) -> Self {
+    pub fn new(config: &Config, assets_dir: &Path, font: Font, font_bold: Font) -> Self {
         let zoom = config.get_zoom_factor();
 
         let mut state = DrawState {
@@ -182,15 +191,16 @@ impl AppDraw {
             pb_text_growth: 0.0,
         };
 
-        // C++ `initKeyIcons` (`HexagonGame.cpp:87-107`) — the placeholder
-        // textures stand in for the assets registry's
-        // `keyArrow/keyFocus/keySwap/replayIcon.png` (step (c) wires the
-        // registry ones; the layout/rotation/scale behaviour under test
-        // is texture-independent).
-        let mut key_arrow = Texture::new();
-        let mut key_focus = Texture::new();
-        let mut key_swap = Texture::new();
-        let mut replay = Texture::new();
+        // C++ `initKeyIcons` (`HexagonGame.cpp:87-107`) — the assets'
+        // `keyArrow/keyFocus/keySwap/replayIcon.png` (the C++'s
+        // `getTextureOrNullTexture`, Assets.cpp:568-575: the 1×1 white
+        // `nullTexture` when the file is missing; `init_key_icons` below
+        // applies the C++'s `setSmooth(true)` to the four icon textures —
+        // NOT the particle textures, HexagonGame.cpp:324-325).
+        let mut key_arrow = load_texture_or_null(assets_dir, "keyArrow.png");
+        let mut key_focus = load_texture_or_null(assets_dir, "keyFocus.png");
+        let mut key_swap = load_texture_or_null(assets_dir, "keySwap.png");
+        let mut replay = load_texture_or_null(assets_dir, "replayIcon.png");
         graphics::init_key_icons(
             &mut state.key_icon_left,
             &mut state.key_icon_right,
@@ -211,8 +221,11 @@ impl AppDraw {
             pivot_quads: Vec::new(),
             player_tris: Vec::new(),
             cap_tris: Vec::new(),
-            tx_star_particle: Texture::new(),
-            tx_small_circle: Texture::new(),
+            // C++ `txStarParticle = &assets.getTextureOrNullTexture(
+            // "starParticle.png")` / `txSmallCircle = ... "smallCircle.png"`
+            // (HexagonGame.cpp:324-325, the ctor's window branch).
+            tx_star_particle: load_texture_or_null(assets_dir, "starParticle.png"),
+            tx_small_circle: load_texture_or_null(assets_dir, "smallCircle.png"),
         }
     }
 
@@ -221,6 +234,36 @@ impl AppDraw {
     #[must_use]
     pub fn state(&self) -> &DrawState {
         &self.state
+    }
+
+    /// C++ `txStarParticle` (the PB-star / particle sprites' texture —
+    /// `starParticle.png`, `HexagonGame.cpp:324`).
+    #[must_use]
+    pub fn tx_star_particle(&self) -> &Texture {
+        &self.tx_star_particle
+    }
+
+    /// C++ `txSmallCircle` (the trail/swap particles' texture —
+    /// `smallCircle.png`, `HexagonGame.cpp:325`).
+    #[must_use]
+    pub fn tx_small_circle(&self) -> &Texture {
+        &self.tx_small_circle
+    }
+}
+
+/// C++ `assets.getTextureOrNullTexture(name)` (Assets.cpp:568-575): the
+/// asset's decoded texture, or the C++'s `static sf::Texture nullTexture`
+/// (a default `sf::Texture` = the 1×1 white pixel) when the file is
+/// missing/unreadable. The C++ logs the failure at asset-load time
+/// (`hg::loadAssetsFromJson`, Assets.cpp:238-244); the port decodes at
+/// `AppDraw` construction and logs the same line there.
+fn load_texture_or_null(assets_dir: &Path, name: &str) -> Texture {
+    match oh_render::Image::load_png(&assets_dir.join(name)) {
+        Ok(image) => Texture::from_image(image),
+        Err(_) => {
+            println!("[hg::loadAssetsFromJson] Failed to load texture '{name}'");
+            Texture::new()
+        }
     }
 }
 
