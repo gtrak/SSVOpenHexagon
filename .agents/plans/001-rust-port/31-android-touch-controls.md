@@ -1,4 +1,4 @@
-# Issue 31 — Android touch controls (the tutorial is unpassable on touch) + the dead key-state surface
+# Issue 31 — touch controls (the tutorial is unpassable on touch; Android first, wasm next) + the dead key-state surface
 
 Read `.agents/WORKER-HYGIENE.md` first. Operator report (2026-10-17, real device):
 **"I can't get through the android tutorial because it wants me to pass a 'shift'
@@ -93,6 +93,65 @@ input path would appear to work in tests and do nothing on the device.
    today and note it — do not silently add a new quit path that bypasses the
    menu's `go_to_menu(true, false)` contract (029d1).
 
+## 2b. THE STRATEGY — the C++ precedent, and where the synthetic focus actually goes
+
+**The C++ already has touch controls, and they cover ONLY rotation.**
+`HexagonGame::updateInput_UpdateTouchControls()` (`HGUpdate.cpp:589`, declared
+`HexagonGame.hpp:347`, called `:682`) loops `window->getFingerDownPositions()` and sets
+`inputImplCCW`/`inputImplCW` by screen half; the port already mirrors it verbatim
+(`update.rs:740-762`). So **rotation-on-touch works today, and focus/swap have no touch
+path in the C++ either — the tutorial is unpassable on the upstream Android build too.**
+The overlay is therefore a sanctioned *deviation* (D-034 class: a new feature), not a
+port defect. Record it as a deviation with that rationale; do not present it as
+restoring C++ behavior.
+
+**Inject at the input-bit level — the same layer the C++'s own touch controls write.**
+The tutorial's gate resolves through:
+
+```
+inputFocused            (HGUpdate.cpp:208, from ib[input_bit::focus])
+  -> addTid2StateInput(Tid::Focus, inputFocused)   (HexagonGame.cpp:364)
+  -> Lua `mFocus`                                  (tutorial/babysteps.lua:107)
+  -> step1_trFocus = "yes!"                        (tutorial/babysteps.lua:109)
+  -> the step-2 gate                               (tutorial/babysteps.lua:170)
+```
+
+and `inputFocused` is also what slows the player (`HGUpdate.cpp:239`, `:251`). So the
+focus button must make `input_focused` true and nothing else in the chain changes. Do
+**not** make synthesized key events the primary mechanism: `ib` is not where the C++'s
+own touch controls write, and a key-event path would have to reach `ib` anyway.
+
+**Call order matters.** `inputFocused` is assigned from `ib` at `:208`, and the touch
+controls run later at `:682` — mirror that order so the overlay's write lands last,
+exactly as the C++'s rotation touch write overrides keyboard rotation.
+
+**The double-count hazard — subtle, and it would look almost right.** The rotation path
+reads *all* `finger_down_positions()`, so a finger held on the focus button would ALSO
+count as a rotation finger (left half → ccw). The overlay's consumed pointers must be
+excluded from what the rotation path sees, or holding focus spins the player — and
+step 2 needs focus and rotation *simultaneously*, so this cannot be dodged.
+
+**Multi-touch needs per-button refcounting.** Track pointer ids; releasing one finger
+must clear a button only when no other finger still holds it (step 2 is finger A holding
+focus while finger B taps rotate).
+
+**Replay safety is free at this layer**, and this supersedes §2 requirement 3's
+"inject only the C++-bound key codes": the replay stores the *derived input bits* per
+frame (`update_input_record_current_input_to_last_replay_data`), not key events, so a
+touch-generated replay decodes identically on desktop and no new event kind enters the
+format. Injecting the bit is both simpler and more faithful than injecting a key.
+
+**Drawing: reuse the game's own key-icon textures.** The C++ already loads
+`keyFocus.png`/`keySwap.png`/`keyArrow.png`/`keyReplay.png` and draws them as key hints
+when `Config::getShowKeyIcons()` (`HexagonGame.cpp:95-102`, `HGUpdate.cpp:~213`) — on a
+phone those hints name keys that do not exist, so the overlay should use the same four
+textures and the hint row may be suppressed.
+
+**The `u_isKeyPressed` stub is NOT on this critical path.** The tutorial reads `mFocus`,
+an input-bit-derived tutorial variable — not Lua key polling. Fix the stub (§1) for
+Lua-facing correctness on every platform, but do not expect the tutorial to depend on
+it, and do not let §1 become a prerequisite for §2.
+
 ## 3. The "hangs non-responsive" half — get evidence, do not assume
 
 The operator reports the app hanging. Two very different causes are possible and
@@ -127,7 +186,31 @@ inferring.
    desktop is unaffected (the overlay is Android/gameplay-gated; verify the
    desktop build has no overlay and no behavior change).
 
-## 5. Hygiene
+## 5. Platform-neutral by construction — the wasm build will need this too
+
+Operator directive (2026-10-17): "I will want this for wasm builds as well." So the
+overlay must be a **platform-neutral seam** in the D-032 sense, not an Android path:
+it consumes a *pointer feed* (`id, x, y, phase`) plus a *view size*, and writes held
+button state into the shared input state of §2b. Android feeds it from the existing
+shared touch sink (`windowed.rs:203`, `:249-286`); the web target will feed it from
+canvas pointer events — **but that feed does not exist yet** (see issue 32).
+
+- **Do not gate the overlay on `#[cfg(target_os = "android")]`.** Gate it on "the
+  platform provides a pointer/touch feed" plus an enable flag, so desktop can exercise
+  it in tests and the web target inherits it for free when 32 lands.
+- **Design for the web's event model now**, so 32 only has to fill a feed: pointer
+  events rather than winit, `pointerdown/pointermove/pointerup/pointercancel` tracked by
+  `pointerId`, and **pointer capture** so a finger dragged off a button still delivers a
+  release (otherwise a button can be left stuck down).
+- **The canvas' size is not the config size** — the same trap 025g fixed for the phone
+  window (`Config::getWidth()/Height()` vs the real window) applies to a CSS-sized
+  canvas with a device pixel ratio. Map pointer coordinates to the overlay in the
+  *view's* space, not the config's.
+- **Dependency, stated honestly**: 31 delivers the seam + the Android device
+  verification. The web half cannot be verified until 32 exists; do not claim browser
+  parity for this feature, and leave the seam ready rather than stubbing a web feed.
+
+## 6. Hygiene
 
 `tools/gate.sh` 4/4 before every commit; `cargo fmt --all`; bounded processes
 (`timeout`); commit per milestone with **explicit paths**; at most one image read
@@ -135,7 +218,7 @@ inferring.
 (`CARGO_APK_RELEASE_KEYSTORE`, `RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384"`);
 **stop-and-report** on any wall.
 
-## 6. Scope guard
+## 7. Scope guard
 
 The goal is **the operator can play the tutorial to completion on the phone**. A
 correct, narrow overlay (focus + swap + rotate, multi-touch, gameplay-only, drawn
