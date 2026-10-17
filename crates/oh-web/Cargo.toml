@@ -1,0 +1,25 @@
+[package]
+name = "oh-web"
+description = "The emscripten (web) entry crate (issue 26c, W0): the wasm32-unknown-emscripten BINARY that boots the web platform skeleton - a <canvas id=\"c\"> + a WebGL2 context via the emscripten_webgl_* C API + a clear + a #[wasm_bindgen] status() probe (oh-render's emscripten backend is W1; the real engine composition is W2)"
+version.workspace = true
+edition.workspace = true
+
+# The web stack (the 26c.1/26c.2 verified pins - D-029; no version bumps, all
+# already in the lockfile from the research branch). Target-gated to
+# emscripten ONLY (the oh-android pattern): on every other target this package
+# builds to a no-op binary so the desktop gate (cargo build --workspace) stays
+# green. `wasm-bindgen` must be a BIN crate + the -sWASM_BINDGEN link flag
+# (the root .cargo/config.toml's [target.wasm32-unknown-emscripten] table) so
+# emcc runs the wasm-bindgen CLI itself over the linked wasm.
+[target.'cfg(target_os = "emscripten")'.dependencies]
+wasm-bindgen = "0.2.129"
+js-sys = "0.3.106"
+web-sys = { version = "0.3.106", features = [
+  "Window",
+  "Document",
+  "Element",
+  "HtmlCanvasElement",
+  "WebGl2RenderingContext",
+  "console",
+  "Performance",
+] }

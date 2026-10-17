@@ -2168,6 +2168,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "oh-web"
+version = "0.1.0"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "oh-workshop-uploader"
 version = "0.1.0"
 dependencies = [

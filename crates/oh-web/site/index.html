@@ -1,0 +1,63 @@
+<!doctype html>
+<!--
+  oh-web (issue 26c W0, D-029) - the browser page for the emscripten WEB
+  PLATFORM SKELETON: a <canvas id="c"> + a WebGL2 context created through the
+  emscripten_webgl_* C API + a clear + a #[wasm_bindgen] status() probe.
+  (oh-render's emscripten backend is W1; the real engine composition is W2.)
+
+  SERVE (static, no build step): copy the two build artifacts next to this
+  file, then serve THIS folder:
+
+      Copy-Item ..\..\..\target\wasm32-unknown-emscripten\debug\oh-web.js,`
+                 ..\..\..\target\wasm32-unknown-emscripten\debug\oh_web.wasm .
+      python -m http.server 8000
+
+  (Artifact names: the loader is `oh-web.js` (MODULARIZE + EXPORT_ES6,
+  default-exports the Module factory) but emcc names the wasm after the
+  object file - `oh_web.wasm` (underscore); the loader's locateFile looks
+  for exactly `oh_web.wasm` beside `oh-web.js`.)
+
+  URL: http://localhost:8000/
+  (Any static file server works - the page is plain ES-module + two files.)
+
+  Expected browser console (the W0 skeleton boot - the emscripten
+  stdout/stderr redirect carries the Rust log/eprintln! lines):
+      oh-web: boot started (after __wasm_call_ctors)
+      oh-web: <canvas id="c"> ready (640x480)
+      oh-web: WebGL2 context created + current (via emscripten_webgl_*)
+      oh-web: cleared the canvas (a colour) - W0 boot skeleton complete
+      oh-web: module loaded
+      status booted=true;webgl2=true   (every 2s; the module stays loaded)
+  The 640x480 canvas is cleared a solid colour (no engine draw yet - W1/W2).
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>SSVOpenHexagon (web)</title>
+    <style>
+      body { background: #111; color: #ddd; font-family: monospace; margin: 16px; }
+      canvas { display: block; border: 1px solid #444; }
+      #status { margin-top: 8px; }
+    </style>
+  </head>
+  <body>
+    <!-- The canvas oh-web's boot looks up: id "c" (the 26c.1 selector
+         contract); the boot sets its 640x480 size at context creation. -->
+    <canvas id="c" width="640" height="480"></canvas>
+    <div id="status">booting</div>
+    <script type="module">
+      // MODULARIZE + EXPORT_ES6 (the 26c.1 recipe): the default export is
+      // the Module factory; it resolves once the wasm + the wasm-bindgen
+      // glue (including Rust main via addOnInit) have initialized.
+      import Module from "./oh-web.js";
+      const mod = await Module();
+      console.log("oh-web: module loaded");
+      // Poll the #[wasm_bindgen] status() probe into the page + console.
+      setInterval(() => {
+        const s = mod.status();
+        document.getElementById("status").textContent = "status: " + s;
+        console.log("status " + s);
+      }, 2000);
+    </script>
+  </body>
+</html>
