@@ -1980,6 +1980,7 @@ dependencies = [
  "egui_glow",
  "gilrs",
  "glow 0.17.0",
+ "libc",
  "ndk",
  "oh-assets",
  "oh-audio",

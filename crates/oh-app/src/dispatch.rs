@@ -228,13 +228,16 @@ pub fn main_server(base_dir: &Path) -> i32 {
         }
     };
 
-    // C++ `HexagonServer.cpp:1386-1398` (the ctor-installed SIGINT: the
-    // C++'s `globalRunning = false` + listener close, the `TODO (P2):
-    // UB` its comment marks) — the safe port: `signal-hook`'s flag
-    // register (the `windowed.rs` precedent); `server.run`'s loop head
+    // C++ `HexagonServer.cpp:1386-1398` (the ctor-installed SIGINT: the C++
+    // prints `Caught signal %d\n` + `globalListener.close()` +
+    // `globalRunning = false`, the `TODO (P2): UB` its comment marks) — the
+    // safe port (29o1): `sigint::install_server` — a signal-context
+    // `write(2)` of the C++'s `std::printf` line + the `globalRunning =
+    // false` atomic store; the C++'s `globalListener.close()` is deferred to
+    // the `run` loop's exit / the server's drop. `server.run`'s loop head
     // observes the flag (the C++'s `_running` check position).
     let stop = Arc::new(AtomicBool::new(false));
-    let _ = signal_hook::flag::register(signal_hook::consts::signal::SIGINT, stop.clone());
+    crate::sigint::install_server(stop.clone());
 
     // C++ `HexagonServer::run` (`HexagonServer.cpp:483-...`) — the C++
     // calls it from the constructor; the port's `new` + `run` split.
@@ -353,8 +356,12 @@ pub fn run(argv: &[String]) -> i32 {
 
     let parsed = parse_args(argv);
 
-    // Print Lua docs mode (C++ main.cpp:666-669).
+    // Print Lua docs mode (C++ main.cpp:666-669). 29o1 — the C++'s default
+    // headless SIGINT handler (main.cpp:627-634, installed before any
+    // dispatch) is active here (the printLuaDocs path installs no other
+    // handler): a Ctrl-C logs + exits 1, exactly the C++.
     if parsed.print_lua_docs {
+        crate::sigint::install_headless();
         return main_print_lua_docs(&base_dir);
     }
 

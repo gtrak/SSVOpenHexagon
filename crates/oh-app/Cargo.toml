@@ -40,6 +40,12 @@ oh-menu = { path = "../oh-menu" }
 # a single atomic store on the `WindowedClient`'s interrupt flag; the
 # loop head (the C++'s `while(isRunning())` position) performs the stop.
 signal-hook = "0.3"
+# 29o1 — the headless / server SIGINT handlers' async-signal-safe stdout
+# write (`libc::write` in the signal context; `std`'s `println!` is NOT
+# async-signal-safe — it takes the stdout lock, the C++'s `TODO (P2): UB`
+# the comment marks for `ssvu::lo` / `std::exit` in the handler). Transitively
+# present (signal-hook's dep); a direct dep for the `write(2)` call.
+libc = "0.2"
 oh-replay = { path = "../oh-replay" }
 oh-rng = { path = "../oh-rng" }
 # Issue 21: the Discord manager (the C++ `main.cpp:264-269` `discordManager`,

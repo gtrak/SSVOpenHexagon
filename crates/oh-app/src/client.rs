@@ -202,6 +202,16 @@ pub fn main_client(
             }
         }
     } else {
+        // 29o1 — C++ main.cpp:627-634 — the headless (no game window)
+        // SIGINT handler: on Ctrl-C, log "Caught signal '2' without game
+        // window open, exiting..." + exit 1 (NOT the default 130). The C++
+        // installs it in `main` before the dispatch (the default) and the
+        // windowed handler replaces it; the port installs per-mode (the
+        // `sigint` module docs: signal-hook chains, so a default + the
+        // windowed replacement would both fire). This is the headless path
+        // — the windowed path installs its own (`client.install_sigint`) and
+        // the server path its own (`sigint::install_server`).
+        crate::sigint::install_headless();
         // Initialize hexagon game (C++ main.cpp:413-421: null steam/discord/
         // audio/window/client; the step-(b) engine is window-less). The C++
         // headless path has NO Discord manager (main.cpp:264-269 `if(!headless)`
