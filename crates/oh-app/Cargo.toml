@@ -19,7 +19,6 @@ path = "src/main.rs"
 # oh-game must not gain oh-render — oh-lua depends on oh-game, so the
 # adapter cannot live in oh-game or oh-render).
 oh-game = { path = "../oh-game" }
-oh-audio = { path = "../oh-audio" }
 oh-render = { path = "../oh-render" }
 oh-config = { path = "../oh-config" }
 oh-math = { path = "../oh-math" }
@@ -33,30 +32,47 @@ oh-data = { path = "../oh-data" }
 oh-lua = { path = "../oh-lua" }
 oh-assets = { path = "../oh-assets" }
 oh-menu = { path = "../oh-menu" }
+oh-replay = { path = "../oh-replay" }
+oh-rng = { path = "../oh-rng" }
+# Issue 21: the Discord manager (the C++ `main.cpp:264-269` `discordManager`,
+# created only when NOT headless). The windowed composition builds the real
+# IPC impl (`IpcDiscordCore`); headless/server/printLuaDocs pass `None`.
+# The `IpcDiscordCore` is `#[cfg(not(target_os = "emscripten"))]` (W3);
+# the web path uses `NoDiscordCore`.
+oh-discord = { path = "../oh-discord" }
+
+# The windowed / console / server / steam / audio stack is desktop-only
+# (W2 — the web vertical slice has no online client, no Steam, no audio,
+# no egui console, no SIGINT): `winit` has no emscripten backend (its web
+# backend is `target_os = "unknown"`-only), `oh-net`'s C deps (libsodium /
+# sqlite) cannot link via emcc, `oh-steam` depends on `oh-net`, and
+# `oh-audio`'s `rodio`/`cpal` have no emscripten backend. Gating them off
+# `wasm32-unknown-emscripten` (same versions) keeps the desktop build
+# byte-identically unchanged while letting `oh-app` COMPILE for emscripten;
+# the real web client lands in the `oh-web` crate (W5).
+[target.'cfg(not(target_os = "emscripten"))'.dependencies]
+# Issue 18 milestone 4: the `-server` wiring (`dispatch.rs::main_server`)
+# — the only `oh_net` consumer in this crate (the `dispatch` module, the
+# `-server` entry, is `#[cfg(not(target_os = "emscripten"))]`). Gated off
+# emscripten for the link-time reason: `oh-net`'s `sodiumoxide` /
+# `rusqlite` C deps do not link for emscripten on a Windows host.
+oh-net = { path = "../oh-net" }
+# Issue 020 — the Steam manager the `mainClient` composition shares with
+# the engine (`HexagonGame`'s `steam_manager` seam) and the menu
+# (the `MenuGame::init`-lifecycle calls); `src/steam.rs` picks the
+# backend (feature `steam` = the real SDK, default = `NoSteam`).
+# Gated off emscripten (depends on `oh-net`).
+oh-steam = { path = "../oh-steam" }
+# Issue 025e — the real audio (rodio/cpal — no emscripten backend).
+oh-audio = { path = "../oh-audio" }
 # C++ main.cpp:340-349 — the SIGINT handler, the SAFE port (the C++'s
 # `TODO (P2): UB`, main.cpp:339: the C++ handler called
 # `globalWindow.stop()` — non-atomic engine state — inside the signal
 # context). `signal-hook`'s `flag::register` keeps the signal context to
 # a single atomic store on the `WindowedClient`'s interrupt flag; the
 # loop head (the C++'s `while(isRunning())` position) performs the stop.
+# The web loop is a plain `request_animation_frame` — no signal handler.
 signal-hook = "0.3"
-oh-replay = { path = "../oh-replay" }
-oh-rng = { path = "../oh-rng" }
-# Issue 21: the Discord manager (the C++ `main.cpp:264-269` `discordManager`,
-# created only when NOT headless). The windowed composition builds the real
-# IPC impl (`IpcDiscordCore`); headless/server/printLuaDocs pass `None`.
-oh-discord = { path = "../oh-discord" }
-# Issue 18 milestone 4: the `-server` wiring (`dispatch.rs::main_server`
-# — the C++ `mainServer`, main.cpp:197-242) over the ported
-# `HexagonServer` + the `Database`/`ReplayExecutor` composition.
-oh-net = { path = "../oh-net" }
-
-# Issue 020 — the Steam manager the `mainClient` composition shares with
-# the engine (`HexagonGame`'s `steam_manager` seam) and the menu
-# (the `MenuGame::init`-lifecycle calls); `src/steam.rs` picks the
-# backend (feature `steam` = the real SDK, default = `NoSteam`).
-oh-steam = { path = "../oh-steam" }
-
 # Issue 014b — the egui Lua console overlay (DECISIONS.md D-022, verified
 # against the D-011 stack: egui 0.37 + egui-winit 0.37 + egui_glow 0.37
 # coexist with winit 0.30.13). The overlay lives HERE (composition, like

@@ -73,12 +73,19 @@ pub fn main_client(
     // the stats/achievements request, and the first callback pump.
     // Held until the end of `mainClient` (the C++'s scope), shared with
     // the engine + the menu composition.
+    // W2: `oh-steam` is desktop-only (depends on `oh-net`); emscripten
+    // uses the `NoneSteamSink` no-op (the C++'s `steamManager == nullptr`
+    // null-equivalent).
+    #[cfg(not(target_os = "emscripten"))]
     let steam = crate::steam::steam_manager();
+    #[cfg(not(target_os = "emscripten"))]
     if steam.is_initialized() {
         steam.request_encrypted_app_ticket();
         steam.request_stats_and_achievements();
         steam.run_callbacks();
     }
+    #[cfg(target_os = "emscripten")]
+    let steam = std::sync::Arc::new(oh_game::seams::NoneSteamSink);
 
     // Create game folders if needed (C++ main.cpp:275-276).
     create_folder_if_non_existant(base_dir, "Profiles/");
@@ -152,17 +159,25 @@ pub fn main_client(
         // assets with the menu (the C++ shares one `HGAssets`);
         // `cli_level_pack` / `cli_level_name` feed the C++ `mg->init`
         // (`main.cpp:507-511`).
+        // W2: the `IpcDiscordCore` is `#[cfg(not(target_os = "emscripten"))]`
+        // (W3); the web path uses the no-SDK `NoDiscordCore`.
+        #[cfg(not(target_os = "emscripten"))]
+        let discord: Option<Arc<dyn oh_discord::Discord>> =
+            Some(Arc::new(oh_discord::DiscordManager::new(
+                oh_discord::IpcDiscordCore::new(oh_discord::DISCORD_APP_ID),
+            )) as Arc<dyn oh_discord::Discord>);
+        #[cfg(target_os = "emscripten")]
+        let discord: Option<Arc<dyn oh_discord::Discord>> = Some(Arc::new(
+            oh_discord::DiscordManager::new(oh_discord::NoDiscordCore),
+        )
+            as Arc<dyn oh_discord::Discord>);
         match crate::windowed::WindowedClient::build(
             crate::windowed::create_window(&config.read().expect("config poisoned"), base_dir),
             config.clone(),
             assets,
             base_dir,
             steam.clone(),
-            // C++ main.cpp:264-269 — `discordManager.emplace()` (the windowed
-            // path is always non-headless): the real IPC manager.
-            Some(Arc::new(oh_discord::DiscordManager::new(
-                oh_discord::IpcDiscordCore::new(oh_discord::DISCORD_APP_ID),
-            )) as Arc<dyn oh_discord::Discord>),
+            discord,
             // issue 025f (D-031) — the soft-input (system IME) controller:
             // the desktop no-op (no IME on the desktop window — the C++
             // desktop build never asked for one; the C++'s Android IME
@@ -175,6 +190,9 @@ pub fn main_client(
                 // port: `signal-hook`'s flag register over the client's
                 // `interrupt` flag; the loop head performs the handler's
                 // actions — `windowed.rs` module docs, the SIGINT bullet).
+                // Desktop only — the web loop is a plain
+                // `request_animation_frame` (no signal handler, W2).
+                #[cfg(not(target_os = "emscripten"))]
                 client.install_sigint();
                 client.boot(
                     cli_level_pack,

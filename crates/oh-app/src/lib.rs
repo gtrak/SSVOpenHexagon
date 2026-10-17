@@ -48,14 +48,32 @@ pub mod bridge;
 pub mod camera;
 pub mod client;
 pub mod compose;
+// The `-server` / `-printLuaDocs` entries (the `oh-net` / `std::net` path)
+// are desktop-only (W2: the web vertical slice has no online client).
+#[cfg(not(target_os = "emscripten"))]
 pub mod dispatch;
 pub mod game_state;
 #[cfg(not(any(target_os = "android", target_family = "wasm")))]
 pub mod joystick;
 pub mod lifecycle;
+// The egui console overlay (issue 014b) is the windowed-only half of the
+// composition (D-022): it needs `egui` / `egui-winit` / `egui_glow` /
+// `glow 0.17`, which are gated off `wasm32-unknown-emscripten` (W2 — the
+// web vertical slice ships without the console).
+#[cfg(not(target_os = "emscripten"))]
 pub mod lua_console_ui;
 pub mod menu_draw;
+// The `-printLuaDocs` entrypoint (the `oh-lua` docs path) — the `dispatch`
+// module's only consumer; gated with it (W2).
+#[cfg(not(target_os = "emscripten"))]
 pub mod print_lua_docs;
 pub mod replay_store;
+// W2: `oh-steam` is desktop-only (depends on `oh-net`); the emscripten
+// path uses `NoneSteamSink` directly (see `client.rs`).
+#[cfg(not(target_os = "emscripten"))]
 pub mod steam;
+// The windowed loop (issue 15 step (c)) drives `oh_render::window::Window`
+// (which has an emscripten backend — W1), so it COMPILES for emscripten
+// (W2). Only the egui console overlay (the `lua_console_ui` hook) and the
+// SIGINT handler are desktop-only (W2).
 pub mod windowed;

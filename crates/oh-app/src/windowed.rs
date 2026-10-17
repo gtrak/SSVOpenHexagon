@@ -133,7 +133,9 @@ use std::sync::{Arc, RwLock};
 
 use oh_config::{Config, Key, Tid, Trigger, TIME_SLICE, TIME_STEP};
 use oh_game::hexagon_game::HexagonGame;
+#[cfg(not(target_os = "emscripten"))]
 use oh_game::seams::Audio;
+use oh_game::seams::NullProfiles;
 use oh_lua::api::state::GameApiState;
 use oh_menu::layout::LinearFontHeight;
 use oh_menu::seams::{
@@ -158,6 +160,17 @@ use crate::bridge::AppDraw;
 use crate::compose::{compose_with_config, RealProfiles};
 use crate::game_state::{GameEngine, GameSlot, GameState};
 
+/// Issue 014b — the egui console overlay's lazy slot (`None` until the first
+/// shown frame — `crate::lua_console_ui`'s module docs: Gates). The type is
+/// aliased so the `WindowedClient`'s field + the `tick_fields` param exist on
+/// every platform; on emscripten the console is OFF (W2) — `lua_console_ui`
+/// is `#[cfg(not(target_os = "emscripten"))]`, so the slot degrades to the
+/// unit `()`.
+#[cfg(not(target_os = "emscripten"))]
+type IlcSlot = Rc<RefCell<Option<crate::lua_console_ui::IlcConsole>>>;
+#[cfg(target_os = "emscripten")]
+type IlcSlot = ();
+
 /// The menu's `AudioSink` over the REAL `oh_audio::Audio` (issue 025e — the
 /// C++ `hg::Audio`, main.cpp:392-401, shared with the engine). The menu's two
 /// `AudioSink` calls map onto the C++ menu's audio calls:
@@ -167,11 +180,16 @@ use crate::game_state::{GameEngine, GameSlot, GameState};
 ///   `audio.playSoundOverride(assetId)`.
 /// * `stop_all()` → C++ `audio.stopMusic(); audio.stopSounds();`
 ///   (MenuGame.cpp:798-799, the `MenuGame::init` teardown).
+///
+/// Gated off emscripten (W2: `oh-audio`/`rodio`/`cpal` have no emscripten
+/// backend; audio is out of the web prototype's scope).
+#[cfg(not(target_os = "emscripten"))]
 struct MenuAudioSink {
     audio: std::sync::Arc<oh_audio::Audio>,
     config: std::sync::Arc<std::sync::RwLock<Config>>,
 }
 
+#[cfg(not(target_os = "emscripten"))]
 impl AudioSink for MenuAudioSink {
     fn play_sound(&self, asset_id: &str) {
         // C++ `MenuGame::playSoundOverride` (MenuGame.cpp:1057-1061) gates the
@@ -189,6 +207,17 @@ impl AudioSink for MenuAudioSink {
         self.audio.stop_music();
         self.audio.stop_sounds();
     }
+}
+
+/// Emscripten (W2): the no-op `AudioSink` (audio is out of the web
+/// prototype's scope — `oh-audio`/`rodio`/`cpal` have no emscripten backend).
+#[cfg(target_os = "emscripten")]
+struct NoopAudioSink;
+
+#[cfg(target_os = "emscripten")]
+impl AudioSink for NoopAudioSink {
+    fn play_sound(&self, _asset_id: &str) {}
+    fn stop_all(&self) {}
 }
 
 /// issue 25b SG5: the engine's `Renderer` seam over the window's
@@ -1230,7 +1259,7 @@ struct GameSlotAdapter {
     /// consumption's `MenuGame::init`-lifecycle Steam calls
     /// (MenuGame.cpp:793-794; `oh-menu` is extend-only, so the
     /// composition makes them here, issue 020).
-    steam: Arc<oh_steam::SteamManager>,
+    steam: Arc<dyn oh_game::seams::SteamSink>,
     /// The C++ `discordManager` (main.cpp:264-269) — the `fnGoToMenu`
     /// consumption's `MenuGame::init`-lifecycle Discord call
     /// (MenuGame.cpp:796; `oh-menu` is extend-only, issue 021).
@@ -2043,14 +2072,17 @@ pub struct WindowedClient {
     /// the first shown frame — `crate::lua_console_ui`'s module docs:
     /// Gates). Shared by the per-event hook (the C++'s
     /// `Imgui::processEvent` feed, HexagonGame.cpp:335) and the frame
-    /// bodies (`tick_fields`'s post-update / draw halves).
-    ilc: Rc<RefCell<Option<crate::lua_console_ui::IlcConsole>>>,
+    /// bodies (`tick_fields`'s post-update / draw halves). On emscripten
+    /// (W2) the slot is the degenerate `()`.
+    ilc: IlcSlot,
     /// C++ `steamManager` (main.cpp:251) — the composition's Steam manager
     /// (issue 020): shared with the engine (the `steam_manager` seam) and
     /// driving the menu's `MenuGame::init`-lifecycle calls
     /// (MenuGame.cpp:793-794 — `oh-menu` is extend-only, so the
     /// composition makes them at the same lifecycle point).
-    pub steam: Arc<oh_steam::SteamManager>,
+    /// W2: the trait object (the `oh_steam::SteamManager` concrete type is
+    /// desktop-only; emscripten passes `NoneSteamSink`).
+    pub steam: Arc<dyn oh_game::seams::SteamSink>,
     /// C++ `discordManager` (main.cpp:264-269 — created only when NOT
     /// headless; the windowed path is always non-headless, so it is always
     /// `Some` here). The real IPC impl (`discord-rich-presence`, the
@@ -2092,7 +2124,7 @@ impl WindowedClient {
         config: Arc<RwLock<Config>>,
         assets: Arc<oh_assets::Assets>,
         base_dir: &Path,
-        steam: Arc<oh_steam::SteamManager>,
+        steam: Arc<dyn oh_game::seams::SteamSink>,
         discord: Option<Arc<dyn oh_discord::Discord>>,
         // issue 025f (D-031) — the soft-input (system IME) controller
         // (the `SoftInput` docs): the Android activity's
@@ -2186,10 +2218,20 @@ impl WindowedClient {
             }));
         // C++ main.cpp:264-269 — `discordManager.emplace()` (only when NOT
         // headless; the windowed path is always non-headless).
+        // W2: the `IpcDiscordCore` is `#[cfg(not(target_os = "emscripten"))]`
+        // (W3); the web path uses the no-SDK `NoDiscordCore`.
         let discord = discord.unwrap_or_else(|| {
-            Arc::new(oh_discord::DiscordManager::new(
-                oh_discord::IpcDiscordCore::new(oh_discord::DISCORD_APP_ID),
-            )) as Arc<dyn oh_discord::Discord>
+            #[cfg(not(target_os = "emscripten"))]
+            {
+                Arc::new(oh_discord::DiscordManager::new(
+                    oh_discord::IpcDiscordCore::new(oh_discord::DISCORD_APP_ID),
+                )) as Arc<dyn oh_discord::Discord>
+            }
+            #[cfg(target_os = "emscripten")]
+            {
+                Arc::new(oh_discord::DiscordManager::new(oh_discord::NoDiscordCore))
+                    as Arc<dyn oh_discord::Discord>
+            }
         });
 
         // C++ main.cpp:392-401 — `hg::Audio audio{ soundBufferGetter,
@@ -2200,7 +2242,11 @@ impl WindowedClient {
         // (`MenuAudioSink`, the C++ `mg.emplace(..., audio, ...)` at
         // main.cpp:434). issue 025e: this replaces the previous `None`
         // engine-audio / `NoopAudio` menu-sink (the missed subsystem).
+        // W2: gated off emscripten (`oh-audio`/`rodio`/`cpal` have no
+        // emscripten backend; audio is out of the web prototype's scope).
+        #[cfg(not(target_os = "emscripten"))]
         let audio = Arc::new(oh_audio::Audio::new(assets.clone()));
+        #[cfg(not(target_os = "emscripten"))]
         {
             let c = config.read().expect("config poisoned");
             audio.set_sound_volume(c.get_sound_volume());
@@ -2239,7 +2285,10 @@ impl WindowedClient {
             steam.clone(),
             Some(discord.clone()),
             renderer,
+            #[cfg(not(target_os = "emscripten"))]
             Some(audio.clone()),
+            #[cfg(target_os = "emscripten")]
+            None,
             // issue 029a1 — the C++ `death_saveReplay` filesystem half
             // (HexagonGame.cpp:1067-1097): the windowed entries chdir to
             // the game-data root before composing (the desktop
@@ -2385,6 +2434,21 @@ impl WindowedClient {
             window.get_height(),
         ));
 
+        let menu_audio: Rc<dyn AudioSink> = {
+            // W2: the real audio sink is desktop-only; emscripten uses
+            // the no-op (audio is out of the web prototype's scope).
+            #[cfg(not(target_os = "emscripten"))]
+            {
+                Rc::new(MenuAudioSink {
+                    audio: audio.clone(),
+                    config: config.clone(),
+                })
+            }
+            #[cfg(target_os = "emscripten")]
+            {
+                Rc::new(NoopAudioSink)
+            }
+        };
         let menu = Rc::new(MenuGame::new(
             Rc::new(RealMenuAssets::from_arc(assets)),
             Rc::new(ConfigMenuAdapter::new(
@@ -2392,10 +2456,7 @@ impl WindowedClient {
                 refresh_binds_slot.clone(),
             )),
             Rc::new(NoopNetwork),
-            Rc::new(MenuAudioSink {
-                audio: audio.clone(),
-                config: config.clone(),
-            }),
+            menu_audio,
             menu_touch,
             menu_joystick,
             Rc::new(MenuWindowSource {
@@ -2520,7 +2581,12 @@ impl WindowedClient {
             interrupt: Arc::new(AtomicBool::new(false)),
             _app_draw: app_draw,
             composed,
+            // W2: the egui console slot is desktop-only; emscripten uses
+            // the degenerate `()`.
+            #[cfg(not(target_os = "emscripten"))]
             ilc: Rc::new(RefCell::new(None)),
+            #[cfg(target_os = "emscripten")]
+            ilc: (),
         })
     }
 
@@ -2633,6 +2699,9 @@ impl WindowedClient {
     /// on registration failure the default SIGINT (terminate) stays in
     /// force — the pre-port behavior (the C++'s `std::signal` would return
     /// `SIG_ERR` likewise).
+    /// W2: desktop-only (the web loop is a plain `request_animation_frame`
+    /// — no signal handler).
+    #[cfg(not(target_os = "emscripten"))]
     pub fn install_sigint(&self) {
         let _ = signal_hook::flag::register(
             signal_hook::consts::signal::SIGINT,
@@ -2674,6 +2743,7 @@ impl WindowedClient {
     /// construction, main.cpp:251 — drops LAST, as the C++'s scope
     /// teardown does; `composed` — the `LuaContext` — drops after the
     /// states' `Rc<HexagonGame>` clones).
+    #[cfg(not(target_os = "emscripten"))]
     pub fn run(self) {
         // Declaration order = reverse drop order: `steam` first ⇒
         // dropped last (the C++'s teardown — the manager's `Drop` is the
@@ -2735,6 +2805,59 @@ impl WindowedClient {
         // C++ main.cpp:594-595 — the `main_client` caller prints the
         // "Finished" line (the ported `main_client` does, after this
         // returns).
+    }
+
+    /// Emscripten (W2): drive the emscripten `Window::run` (the
+    /// `request_animation_frame` loop — the winit event loop's web
+    /// replacement). The egui console hook is OFF on web (W2) — the
+    /// `IlcSlot` is the degenerate `()` and the frame body's console
+    /// halves are gated off, so the loop is the plain `on_frame` drive.
+    /// Drop order matches the desktop [`Self::run`].
+    ///
+    /// `move`: the emscripten `Window::run`'s `on_frame` is `'static`
+    /// (the rAF loop outlives this function), so the closure owns the
+    /// captured pieces (the desktop `run_with_event_hook`'s `on_frame`
+    /// is not `'static` and borrows them instead). `composed` (the
+    /// heap-pinned `LuaContext` every `SharedLua` carrier points into —
+    /// the `SharedLua` contract, compose.rs) is captured into the closure
+    /// too: the loop outlives `main` (emscripten's runtime stays alive
+    /// after `main` returns), so the `LuaContext` must live with the loop,
+    /// not die at this function's end. It is referenced LAST in the body,
+    /// so the closure captures (and drops) it AFTER the states'
+    /// `Rc<HexagonGame>` carriers (the contract's drop order).
+    #[cfg(target_os = "emscripten")]
+    pub fn run(self) {
+        let WindowedClient {
+            steam: _steam,
+            discord: _discord,
+            composed,
+            window,
+            engine,
+            timer,
+            menu,
+            game,
+            config,
+            engine_slot: _engine_slot,
+            interrupt,
+            _app_draw,
+            ilc,
+            render_size,
+        } = self;
+        let mut timer = timer;
+        window.run(move |window| {
+            Self::tick_fields(
+                window,
+                &mut timer,
+                &engine,
+                &menu,
+                &interrupt,
+                &game,
+                &config,
+                &ilc,
+                &render_size,
+            );
+            let _ = &composed;
+        });
     }
 
     /// One frame — the C++ `GameWindow::run` body (GameWindow.hpp:117-150)
@@ -2802,9 +2925,12 @@ impl WindowedClient {
     /// `#[allow]`: the C++'s frame body genuinely needs all eleven pieces
     /// (the two states' frame halves + the console's post-update/draw
     /// halves + the phase timers + the window's FPS publication + the
-    /// composition's `AppDraw` fps refresh) — a context struct would just
-    /// hide the C++'s parameter list (cf. `HexagonGame::new`'s allow).
+    /// composition's `AppDraw` fps refresh) - a context struct would just
+    /// hide the C++'s parameter list (cf. `HexagonGame::new`'s allow). On
+    /// emscripten (W2) the console + SIGINT halves are gated off, so the
+    /// `interrupt` / `game` / `config` / `ilc` params are unused there.
     #[allow(clippy::too_many_arguments)]
+    #[cfg_attr(target_os = "emscripten", allow(unused_variables))]
     fn tick_fields(
         window: &mut Window,
         timer: &mut TimerStatic,
@@ -2813,7 +2939,7 @@ impl WindowedClient {
         interrupt: &AtomicBool,
         game: &Rc<HexagonGame<GameApiState>>,
         config: &Arc<RwLock<Config>>,
-        ilc: &Rc<RefCell<Option<crate::lua_console_ui::IlcConsole>>>,
+        ilc: &IlcSlot,
         render_size: &std::sync::Arc<RenderWindowSize>,
         // 029e3 — the window's FPS slot (the C++ `window->getFPS()`;
         // the `WindowTouchRenderer`'s docs): the frame's `runFPS` result
@@ -2836,7 +2962,11 @@ impl WindowedClient {
         // ends the port's winit loop (the C++'s loop condition is the
         // engine's `isRunning()`; the port's is `window.open`). Observed
         // here, the C++'s `isRunning()` condition reads the handler's
-        // `running = false` at the same loop-head position.
+        // `running = false` at the same loop-head position. Desktop only —
+        // the web loop is a plain `request_animation_frame` (no signal
+        // handler, W2); the `interrupt` flag is never set on emscripten,
+        // so this gate is absent there (behavior-identical).
+        #[cfg(not(target_os = "emscripten"))]
         if interrupt.load(Ordering::SeqCst) {
             let mut out = |line: &str| println!("{line}");
             Self::sigint_stop(
@@ -2915,7 +3045,9 @@ impl WindowedClient {
         // D-022 — `crate::lua_console_ui`'s module docs: the per-frame
         // order + the C++'s one-frame `wantCapture*` lag). The C++ runs
         // it INSIDE `HexagonGame::postUpdate` (HexagonGame.cpp:331), so
-        // the game-state gate is the C++'s state gate.
+        // the game-state gate is the C++'s state gate. OFF on emscripten
+        // (W2 — the console is desktop-only).
+        #[cfg(not(target_os = "emscripten"))]
         if engine.current() == GameSlot::Game {
             crate::lua_console_ui::frame_post_update(window, game, config, ilc);
         }
@@ -2937,7 +3069,9 @@ impl WindowedClient {
             engine.draw(&mut target);
             // C++ `drawImguiLuaConsole` (HGGraphics.cpp:318-336) — the
             // console's GL paint, the C++ `draw()`'s LAST step
-            // (HGGraphics.cpp:315), after the game's own draw.
+            // (HGGraphics.cpp:315), after the game's own draw. OFF on
+            // emscripten (W2 — the console is desktop-only).
+            #[cfg(not(target_os = "emscripten"))]
             if engine.current() == GameSlot::Game {
                 crate::lua_console_ui::frame_draw(window, game, ilc);
             }
@@ -3002,6 +3136,7 @@ impl WindowedClient {
 /// [`WindowedClient::build`]; tests pass a `Window::headless` instead (the
 /// spec's "real windowed run = MANUAL").
 #[must_use]
+#[cfg_attr(target_os = "emscripten", allow(unused_variables))]
 pub fn create_window(config: &Config, base_dir: &Path) -> Window {
     let logical_w = config.get_width() as f32;
     let logical_h = config.get_height() as f32;
@@ -3031,15 +3166,20 @@ pub fn create_window(config: &Config, base_dir: &Path) -> Window {
     // `setIcon` (re-applied on `onRecreation` — no port hook: the port's
     // window is never recreated at runtime, module docs: the Icon bullet).
     // The decode is the screenshot's `png` dependency (`Image::load_png`
-    // — the C++'s stb-based `loadFromFile`, always RGBA8).
-    let icon_path = base_dir.join("Assets/icon.png");
-    match oh_render::Image::load_png(&icon_path) {
-        Ok(icon) => {
-            window.set_icon(&icon);
-        }
-        Err(_) => {
-            // C++ main.cpp:318 (the C++'s `::main` channel).
-            println!("[::main] Failed to load icon image");
+    // — the C++'s stb-based `loadFromFile`, always RGBA8). OFF on
+    // emscripten (W2 — a browser canvas has no window icon; the tab's
+    // favicon is the PAGE's, not the canvas's).
+    #[cfg(not(target_os = "emscripten"))]
+    {
+        let icon_path = base_dir.join("Assets/icon.png");
+        match oh_render::Image::load_png(&icon_path) {
+            Ok(icon) => {
+                window.set_icon(&icon);
+            }
+            Err(_) => {
+                // C++ main.cpp:318 (the C++'s `::main` channel).
+                println!("[::main] Failed to load icon image");
+            }
         }
     }
 
