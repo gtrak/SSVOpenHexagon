@@ -913,10 +913,32 @@ impl Config {
         json::write_to_string(&self.root)
     }
 
-    /// C++ `resetConfigToDefaults()` (the `resetAllFromDefault()` part;
-    /// the `reapplyResolution()` part needs the desktop-mode seam, see
-    /// [`Config::reapply_resolution`]).
+    /// C++ `resetConfigToDefaults()` (Config.cpp:538-544):
+    /// `resetAllFromDefault()` — ALL 101 `LinkedValue`s, the full
+    /// `X_LINKEDVALUES` macro (Config.cpp:294-373: the 73 non-bind values,
+    /// then the macro's tail `X_LINKEDVALUES_BINDS`, :290-291 — the 28
+    /// keyboard + joystick binds) — + the trailing `reapplyResolution()`
+    /// (Config.cpp:521-535).
+    ///
+    /// The trailing reapply's only desktop-mode-dependent half — the
+    /// auto-resolution branches' `sf::VideoMode::getDesktopMode()` reads
+    /// (`applyAuto*Resolution`, Config.cpp:478-489) — is dead after the
+    /// reset: both auto-resolution flags are back to their NSDMI default
+    /// `false` (Config.cpp:321-322), so the reapply reduces to its
+    /// `recalculateSizes()` tail (Config.cpp:625-639). The port calls
+    /// [`Config::reapply_resolution`] with the C++ no-monitor fallback
+    /// mode (`{0, 0}` — `sf::VideoMode::getDesktopMode()`'s zero
+    /// `VideoMode`, the headless / no-monitor case); the zero values are
+    /// provably unobservable on this path (both auto branches are dead).
     pub fn reset_config_to_defaults(&mut self) {
+        self.reset_all_from_default();
+        self.reapply_resolution(0, 0);
+    }
+
+    /// C++ `resetAllFromDefault()` (Config.cpp:455-460) — every
+    /// `LinkedValue` in the `X_LINKEDVALUES` macro order (the 73 non-binds,
+    /// then the 28 binds' `X_LINKEDVALUES_BINDS` tail, Config.cpp:290-291).
+    fn reset_all_from_default(&mut self) {
         reset_lv(&mut self.official);
         reset_lv(&mut self.no_pulse);
         reset_lv(&mut self.no_rotation);
@@ -990,10 +1012,16 @@ impl Config {
         reset_lv(&mut self.show_swap_blinking_effect);
         reset_lv(&mut self.use_lua_file_cache);
         reset_lv(&mut self.disable_game_rendering);
+        // `X_LINKEDVALUES`'s tail — the 28 bind `LinkedValue`s (the C++
+        // `resetAllFromDefault` resets them too — unlike
+        // `resetBindsToDefaults`'s binds-only scope).
+        self.reset_binds_from_default();
     }
 
-    /// C++ `resetBindsToDefaults()` — the 28 bind `LinkedValue`s only.
-    pub fn reset_binds_to_defaults(&mut self) {
+    /// C++ `resetBindsFromDefault()` (Config.cpp:462-467) — the 28 bind
+    /// `LinkedValue`s only (`X_LINKEDVALUES_BINDS`:
+    /// `X_LINKEDVALUES_BINDS_JOYSTICK` + `X_LINKEDVALUES_BINDS_TRIGGERS`).
+    fn reset_binds_from_default(&mut self) {
         reset_lv(&mut self.joystick_select);
         reset_lv(&mut self.joystick_exit);
         reset_lv(&mut self.joystick_focus);
@@ -1022,6 +1050,12 @@ impl Config {
         reset_lv(&mut self.t_previous);
         reset_lv(&mut self.t_lua_console);
         reset_lv(&mut self.t_pause);
+    }
+
+    /// C++ `resetBindsToDefaults()` (Config.cpp:546-550) — the 28 bind
+    /// `LinkedValue`s only.
+    pub fn reset_binds_to_defaults(&mut self) {
+        self.reset_binds_from_default();
     }
 
     // ------------------------------------------------------------------
