@@ -116,8 +116,15 @@ pub fn main_client(
     // AFTER the shared assets load; the headless branch has no window.)
 
     // Initialize assets (C++ main.cpp:380: `HGAssets{&steamManager,
-    // headless}`).
-    let assets = match oh_assets::Assets::new(base_dir, headless, false) {
+    // headless}` — the 29p1 workshop half: the live pack enumeration when
+    // the Steam manager initialized, the `workshopCache.json` fallback
+    // when it did not).
+    let assets = match oh_assets::Assets::new_with_workshop(
+        base_dir,
+        headless,
+        false,
+        Some(steam.clone() as std::sync::Arc<dyn oh_assets::WorkshopPacks>),
+    ) {
         Ok(a) => Arc::new(a),
         Err(e) => {
             // C++ would `std::terminate()` (Assets.cpp:323-352).

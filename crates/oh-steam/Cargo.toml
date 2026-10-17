@@ -15,6 +15,10 @@ edition.workspace = true
 steam = ["dep:steamworks", "dep:steamworks-sys"]
 
 [dependencies]
+# The C++'s `HGAssets` `mSteamManager` seam (issue 29p1 — the workshop-pack
+# discovery's `WorkshopPacks` impl for `SteamManager`;
+# already transitive through `oh-game` / `oh-net`, now a direct dep).
+oh-assets = { path = "../oh-assets" }
 # The engine's Steam surface (`oh_game::seams::SteamSink` — the C++
 # `steam_manager*` the `HexagonGame`/`MenuGame` composition points take,
 # main.cpp:415,434; the `impl` in `lib.rs`).

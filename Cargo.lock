@@ -2159,6 +2159,7 @@ dependencies = [
 name = "oh-steam"
 version = "0.1.0"
 dependencies = [
+ "oh-assets",
  "oh-game",
  "oh-net",
  "serde_json",

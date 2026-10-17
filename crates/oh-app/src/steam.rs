@@ -47,3 +47,10 @@ fn backend() -> Box<dyn SteamSdk> {
 pub fn steam_manager() -> Arc<SteamManager> {
     Arc::new(SteamManager::new(backend()))
 }
+
+// The C++'s `HGAssets{&steamManager, ...}` seam (`oh_assets::
+// WorkshopPacks` for `SteamManager` — the impl's in `oh-steam`,
+// `SteamManager`'s orphan-rule home) is used by the compositions'
+// `Assets::new_with_workshop` calls (the workshop-pack discovery half —
+// the live enumeration when initialized, the `workshopCache.json`
+// fallback when not, `Assets::load_all_pack_datas`, Assets.cpp:750-764).

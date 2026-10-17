@@ -359,8 +359,16 @@ pub fn run(app: AndroidApp) {
     let _config_save = ConfigSaveGuard::new(config.clone(), base_dir.join("config.json"));
 
     // C++ main.cpp:380 — the assets (`HGAssets{&steamManager, false}` —
-    // the android windowed build is non-headless; `levelsOnly` = false).
-    let assets = match oh_assets::Assets::new(&base_dir, false, false) {
+    // the android windowed build is non-headless; `levelsOnly` = false;
+    // the `&steamManager` half is the 29p1 workshop discovery — the
+    // no-SDK default's manager is uninitialized, so the
+    // `workshopCache.json` fallback is the live path there).
+    let assets = match oh_assets::Assets::new_with_workshop(
+        &base_dir,
+        false,
+        false,
+        Some(steam.clone() as std::sync::Arc<dyn oh_assets::WorkshopPacks>),
+    ) {
         Ok(a) => Arc::new(a),
         Err(e) => {
             // The C++ would `std::terminate()` (Assets.cpp:323-352).

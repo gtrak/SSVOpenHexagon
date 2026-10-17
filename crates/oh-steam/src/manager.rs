@@ -572,6 +572,28 @@ impl SteamManager {
     }
 }
 
+/// The C++'s `HGAssets{&steamManager, ...}` argument (main.cpp:211, :380)
+/// — the Assets' `mSteamManager` pointer's port seam
+/// (`oh_assets::WorkshopPacks`): the workshop-pack discovery half
+/// (`Assets::load_all_pack_datas`'s workshop branch, Assets.cpp:750-764)
+/// — the live enumeration when the manager initialized, the
+/// `workshopCache.json` fallback when it did not. (The impl lives in
+/// `oh-steam` — the orphan-rule home: `SteamManager` is this crate's
+/// type, `WorkshopPacks`'s is `oh-assets`'s.)
+impl oh_assets::WorkshopPacks for SteamManager {
+    fn is_initialized(&self) -> bool {
+        self.is_initialized()
+    }
+    fn workshop_pack_folders(&self) -> Vec<String> {
+        // C++ `for_workshop_pack_folders(f)` — the port's `Vec` mirror of
+        // the C++'s per-folder callback (the load-order-preserving storage
+        // above; the C++'s `unordered_set` order is unspecified).
+        let mut folders = Vec::new();
+        self.for_workshop_pack_folders(|f| folders.push(f.to_string()));
+        folders
+    }
+}
+
 impl Drop for SteamManager {
     /// C++ `~steam_manager_impl()` (Steam.cpp:268-275):
     /// `if(_initialized) shutdown_steamworks()` (Steam.cpp:81-86: the log

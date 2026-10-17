@@ -24,8 +24,13 @@
 //! What is intentionally deferred (documented, not silently dropped):
 //! - the actual SFML texture/font/sound/shader *handles* (render/audio
 //!   backend, issue 10) — the registry records `loaded`/ids only;
-//! - Steam Workshop pack enumeration (`steamManager == nullptr` here, so the
-//!   C++ `if(steamManager != nullptr)` branch is skipped; oh-steam owns it).
+//! - the Steam SDK itself (oh-steam owns it) — the C++'s
+//!   `if(steamManager != nullptr)` workshop half (Assets.cpp:750-764) is
+//!   the `WorkshopPacks` seam (issue 29p1): the compositions pass the
+//!   `oh_steam::SteamManager` through `new_with_workshop` (the live
+//!   enumeration when initialized, the `workshopCache.json` fallback
+//!   otherwise); `Assets::new` is the C++'s `nullptr` state (the
+//!   local-`Packs/`-only loads).
 //!
 //! Interior mutability (issue 29i1): the C++'s `HGAssets` is ONE object the
 //! menu and the engine share (main.cpp:381/:434), and the menu's F3/F4 debug
@@ -43,7 +48,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use oh_data::json::{self, read_file_with_errors, Obj};
 use oh_data::{
@@ -64,6 +69,33 @@ pub struct FatalLoadError {
     pub load_info: LoadInfo,
     /// A short description of the fatal condition.
     pub reason: String,
+}
+
+/// C++ `steam_manager` (Steam.cpp:860-880) — the Assets ctor's
+/// `mSteamManager` pointer (the C++'s `HGAssets{&steamManager, headless}`,
+/// main.cpp:380; `nullptr` = the no-Steam state, the port's `None`). Only
+/// the two methods the C++'s `loadAllPackDatas` uses (Assets.cpp:750-764)
+/// are on the trait — the rest of the Steam surface stays in `oh-steam`
+/// (the app layer implements this for `SteamManager`, keeping the
+/// oh-assets → oh-steam layering one-way).
+pub trait WorkshopPacks: Send + Sync {
+    /// C++ `steam_manager::is_initialized()` (Steam.cpp:973-975).
+    fn is_initialized(&self) -> bool;
+    /// C++ `steam_manager::for_workshop_pack_folders(f)`
+    /// (Steam.cpp:931-934) — the installed workshop pack folders
+    /// (absolute paths, the C++'s `GetItemInstallInfo` `folderBuf` shape;
+    /// empty when uninitialized — the C++'s `_initialized` gate, the port's
+    /// `oh-steam` mirror). The C++ iterates an `unordered_set` (unspecified
+    /// order); the port's `oh-steam` returns its load order (deterministic).
+    fn workshop_pack_folders(&self) -> Vec<String>;
+}
+
+/// The `Assets` derive's `Debug` half for the trait-object field (the C++
+///'s `steam_manager*` has no meaningful debug form either).
+impl std::fmt::Debug for dyn WorkshopPacks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("WorkshopPacks").finish()
+    }
 }
 
 /// C++ `profileDataMap` + `currentProfilePtr` (the local-profile store).
@@ -109,6 +141,11 @@ pub struct Assets {
     root: PathBuf,
     levels_only: bool,
 
+    // C++ `steamManager` pointer (the `WorkshopPacks` seam — the C++'s
+    // `loadAllPackDatas` workshop half; `None` = the C++'s `nullptr`
+    // state, the no-Steam compositions).
+    workshop: Option<Arc<dyn WorkshopPacks>>,
+
     // The reload-mutable tables + the storage (module docs).
     state: Mutex<AssetState>,
 
@@ -136,7 +173,10 @@ pub struct Assets {
 
 impl Assets {
     /// C++ `HGAssetsImpl(mSteamManager, mHeadless, mLevelsOnly)` constructor
-    /// flow, minus the Steam manager (see module docs) and the timing log.
+    /// flow, with `mSteamManager` = `nullptr` (the C++'s no-Steam state —
+    /// the local-`Packs/`-only loads) and the timing log elided. The
+    /// Steam-manager half is `new_with_workshop` (the C++'s
+    /// `HGAssets{&steamManager, headless}`, main.cpp:380).
     ///
     /// - `root` — the process CWD (the `_RELEASE` directory in tests);
     /// - `headless` — C++ `mHeadless`;
@@ -147,9 +187,28 @@ impl Assets {
         levels_only: bool,
     ) -> Result<Self, FatalLoadError> {
         let root = root.as_ref().to_path_buf();
+        Self::new_with_workshop(root, headless, levels_only, None)
+    }
+
+    /// The `new` constructor with the C++'s `mSteamManager` argument
+    /// (main.cpp:380's `HGAssets{&steamManager, headless}` — the C++'s
+    /// workshop-pack discovery: the live enumeration when Steam is up, the
+    /// `workshopCache.json` fallback when it is not —
+    /// `load_all_pack_datas`'s workshop half). `None` = the C++'s
+    /// `steamManager == nullptr` state (the local-`Packs/`-only loads, the
+    /// no-Steam compositions' `Assets::new`).
+    #[must_use = "mirrors the C++ [[nodiscard]] (the load errors)"]
+    pub fn new_with_workshop(
+        root: impl AsRef<Path>,
+        headless: bool,
+        levels_only: bool,
+        workshop: Option<Arc<dyn WorkshopPacks>>,
+    ) -> Result<Self, FatalLoadError> {
+        let root = root.as_ref().to_path_buf();
         let mut a = Self {
             root,
             levels_only,
+            workshop,
             state: Mutex::new(AssetState::default()),
             pack_datas: HashMap::new(),
             pack_infos: Vec::new(),
@@ -234,10 +293,111 @@ impl Assets {
             self.try_load_pack_from_path(&pack_path)?;
         }
 
-        // Steam Workshop packs (C++ `if(steamManager != nullptr) ...`): this
-        // port has no steam manager, so the branch is skipped (oh-steam).
+        // Steam Workshop packs (C++ `if(steamManager != nullptr)` half,
+        // Assets.cpp:750-764):
+        // - Steam initialized → the LIVE enumeration (the C++'s
+        //   `steamManager->for_workshop_pack_folders(tryLoadPackFromPath)`) —
+        //   the cache is NOT consulted (the live list fully replaces it);
+        // - Steam down (the manager exists but is uninitialized) → the
+        //   `workshopCache.json` FALLBACK (the C++'s
+        //   `loadWorkshopPackDatasFromCache` + the `cachedWorkshopPackIds`
+        //   loop) — the case the cache exists for: installed workshop packs
+        //   stay loadable exactly while Steam is unreachable.
+        if let Some(steam) = &self.workshop {
+            if steam.is_initialized() {
+                for folder in steam.workshop_pack_folders() {
+                    self.try_load_workshop_pack_from_path(&folder)?;
+                }
+            } else if let Some(cached_paths) = self.load_workshop_pack_datas_from_cache()? {
+                for cached_path in cached_paths {
+                    self.try_load_workshop_pack_from_path(&cached_path)?;
+                }
+            }
+        }
 
         Ok(true)
+    }
+
+    /// C++ `tryLoadPackFromPath` lambda's workshop half (the C++'s
+    /// `loadPackData` concatenates `packPath + "\/pack.json"` — the
+    /// workshop paths (the Steam `GetItemInstallInfo` `folderBuf` / the
+    /// cache's array entries) carry NO trailing slash, while the port's
+    /// `load_pack_data` expects the trailing-slash form the local `Packs/`
+    /// scan provides — the normalization is the `"\/"` the C++ adds).
+    fn try_load_workshop_pack_from_path(
+        &mut self,
+        pack_path: &str,
+    ) -> Result<(), oh_data::json::JsonError> {
+        let mut path = pack_path.to_string();
+        if !path.ends_with('/') {
+            path.push('/');
+        }
+        self.try_load_pack_from_path(&path)
+    }
+
+    /// C++ `loadWorkshopPackDatasFromCache` (Assets.cpp:662-710): reads
+    /// `workshopCache.json`'s `cachedPacks` array (the oh-steam manager's
+    /// `load_workshop_data` cache write, the C++'s
+    /// `ssvuj::writeToFile(cacheObj, "workshopCache.json")`, Steam.cpp:
+    /// 240-243). Returns the cached pack folder paths when the cache is
+    /// usable (the C++'s `cachedWorkshopPackIds` — the C++'s
+    /// `unordered_set` iteration order is unspecified; the port keeps the
+    /// cache array's order, which is deterministic), `Ok(None)` on the
+    /// C++'s four `return false` arms (each logged, verbatim). `Err` = the
+    /// C++'s uncaught `getExtr` type error (a non-string array element) —
+    /// the port's fatal-error class (the caller's `Assets` ctor mapping).
+    ///
+    /// The cache lives at `root/workshopCache.json` — the port's root
+    /// scope's equivalent of the C++'s CWD-relative `"workshopCache.json"`
+    /// (the oh-steam writer's `std::fs::write("workshopCache.json")`
+    /// targets the process CWD; in production the CWD IS the game root
+    /// the compositions resolve — the two coincide there).
+    fn load_workshop_pack_datas_from_cache(
+        &mut self,
+    ) -> Result<Option<Vec<String>>, oh_data::json::JsonError> {
+        let cache_path = self.root.join("workshopCache.json");
+        if !cache_path.is_file() {
+            println!(
+                "[::loadAssets] Workshop cache file does not exist. No workshop packs to load"
+            );
+            return Ok(None);
+        }
+
+        let (cache_object, mut cache_error) = read_file_with_errors(&cache_path);
+        println!("[::loadAssets] Loading workshop packs from cache");
+
+        // C++ `ssvuj::hasObj(cacheObject, "cachedPacks")` — a failed read
+        // leaves the Null object, so the missing-key arm below covers it
+        // (the C++'s `hasObj(null, ...) == false` half).
+        let Some(pack_value) = json::get_or_null(&cache_object, "cachedPacks") else {
+            println!("[::loadAssets] [ERROR]: Cannot locate cache array in workshop cache file");
+            return Ok(None);
+        };
+
+        // C++'s null / non-array check (`Json::ValueType::nullValue ||
+        // != arrayValue`) — the two arms share one log line.
+        let Obj::Array(items) = pack_value else {
+            println!("[::loadAssets] Cache array is null. No workshop packs to load");
+            return Ok(None);
+        };
+
+        if items.is_empty() {
+            println!("[::loadAssets] Cache array is empty. No workshop packs to load");
+            return Ok(None);
+        }
+
+        // C++ `getExtr<std::vector<std::string>>(cacheObject, "cachedPacks")`
+        // — a non-string element is the C++'s uncaught type error (the
+        // `Err` arm, the caller's fatal mapping).
+        let mut pack_array = Vec::with_capacity(items.len());
+        for item in items {
+            pack_array.push(json::as_str(item)?);
+        }
+
+        // C++'s success-only `loadInfo.addFormattedError(cacheError)` —
+        // the read error is discarded on the four `return false` arms.
+        self.load_info.add_formatted_error(&mut cache_error);
+        Ok(Some(pack_array))
     }
 
     /// C++ `tryLoadPackFromPath` lambda.
@@ -276,7 +436,12 @@ impl Assets {
         let pack_data = pack_data_from_json(&pack_root, pack_path, &pack_id)?;
 
         self.pack_infos.push(PackInfo::new(&pack_id, pack_path));
-        self.pack_datas.insert(pack_id, pack_data);
+        // C++ `packDatas.emplace(packId, ...)` — FIRST WINS: a duplicate
+        // packId (a cached workshop pack whose `pack.json` matches an
+        // already-loaded one — the local `Packs/` scan always runs first)
+        // keeps the first entry. (The C++'s `packInfos.emplace_back` is
+        // unconditional — the port's `push` above matches.)
+        self.pack_datas.entry(pack_id).or_insert(pack_data);
         Ok(true)
     }
 

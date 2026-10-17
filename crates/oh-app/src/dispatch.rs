@@ -77,6 +77,13 @@ impl ReplayExecutor for GameReplayExecutor {
 /// the server's own initialization failed: the constructor logged the
 /// failure and its `run()` never ran, `main.cpp:240-241`).
 pub fn main_server(base_dir: &Path) -> i32 {
+    // C++ main.cpp:199 — the server's Steam manager (the port's no-SDK
+    // default: `initialize_steamworks` fails, `is_initialized` false —
+    // the C++'s headless-server state; the assets' workshop half then
+    // runs the `workshopCache.json` fallback, the C++'s
+    // `!is_initialized` arm, Assets.cpp:755-763).
+    let steam = crate::steam::steam_manager();
+
     // C++ main.cpp:199-203 — the server loads the config WITHOUT the
     // `reapplyResolution` the `mainClient` path adds (main.cpp:283 is the
     // C++'s only `reapplyResolution` call site): a direct `load_config`
@@ -97,8 +104,16 @@ pub fn main_server(base_dir: &Path) -> i32 {
     let _config_save = ConfigSaveGuard::new(config.clone(), base_dir.join("config.json"));
 
     // C++ main.cpp:211-214: the headless `HGAssets` (the C++'s
-    // steam-manager argument is issue 20).
-    let assets = match oh_assets::Assets::new(base_dir, true, false) {
+    // `&steamManager` argument — the 29p1 workshop discovery; the
+    // server's manager is the no-SDK default's uninitialized state, so
+    // the live-enumeration arm never runs — the cache fallback is the
+    // server's workshop half).
+    let assets = match oh_assets::Assets::new_with_workshop(
+        base_dir,
+        true,
+        false,
+        Some(steam.clone() as std::sync::Arc<dyn oh_assets::WorkshopPacks>),
+    ) {
         Ok(a) => Arc::new(a),
         Err(e) => {
             // The C++ would `std::terminate()` (Assets.cpp:323-352).
@@ -124,11 +139,14 @@ pub fn main_server(base_dir: &Path) -> i32 {
         // false exactly as the C++'s `currentProfilePtr == nullptr`.
         Arc::new(RealProfiles::new(assets.clone())),
         config.clone(),
-        // C++ main.cpp:199 — `mainServer` also constructs a `steam_manager`
-        // (the NoSteam/feature-split backend; the server path never
+        // The C++'s `mainServer` passes `nullptr /* steamManager */` to
+        // the `HexagonGame` (main.cpp:216) but the port's engine needs a
+        // `SteamSink` seam value: the SAME manager object the assets
+        // half got (the C++'s one `steamManager`, main.cpp:199 — the
+        // no-SDK default's uninitialized state; the server path never
         // satisfies Steam requests without a client, exactly as the C++
         // headless server degrades).
-        crate::steam::steam_manager(),
+        steam.clone(),
         None, // C++ server: `nullptr /* discordManager */` (main.cpp:217)
         None, // C++ server: no window → no renderer (the headless `nullptr`)
         None, // C++ server: `audio == nullptr` (headless, main.cpp:392-401)
