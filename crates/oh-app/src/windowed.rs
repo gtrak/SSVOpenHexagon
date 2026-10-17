@@ -3359,6 +3359,16 @@ impl WindowedClient {
             cursor_last_mouse,
             cursor_last_keys,
             fps_bits,
+            // 029n1 (K6) + 031: fields the shared `tick_fields` contract gained
+            // after lane 026 branched (the pack-shader provider's `Assets`, and
+            // the touch overlay's pieces). This `run` compiles ONLY for the
+            // emscripten target, so the host gate never saw the drift - the
+            // emscripten build is what catches it.
+            assets,
+            touch_overlay,
+            touch_overlay_buttons,
+            touch_positions,
+            last_touch_positions,
         } = self;
         let mut timer = timer;
         window.run(move |window| {
@@ -3371,6 +3381,7 @@ impl WindowedClient {
                 &menu,
                 &interrupt,
                 &game,
+                &assets,
                 &config,
                 &ilc,
                 &render_size,
@@ -3379,6 +3390,10 @@ impl WindowedClient {
                 &cursor_last_keys,
                 &fps_bits,
                 &_app_draw,
+                &touch_overlay,
+                &touch_overlay_buttons,
+                &touch_positions,
+                &last_touch_positions,
             );
             let _ = &composed;
         });

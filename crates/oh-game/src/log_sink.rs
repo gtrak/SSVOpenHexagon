@@ -11,7 +11,11 @@
 
 use std::sync::Mutex;
 
-static SINK: Mutex<Option<Box<dyn Fn(&str, &str) + Send + Sync>>> = Mutex::new(None);
+/// The installed sink's shape, named here so the static below is not a
+/// `clippy::type_complexity` target and so the contract reads clearly.
+type LogSink = Box<dyn Fn(&str, &str) + Send + Sync>;
+
+static SINK: Mutex<Option<LogSink>> = Mutex::new(None);
 
 /// Install the sink that receives engine log lines (lane 026: the web
 /// browser-console sink). The pair is the raw `(channel, message)`.

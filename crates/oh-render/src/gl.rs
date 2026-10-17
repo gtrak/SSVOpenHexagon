@@ -80,10 +80,13 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use glow::HasContext;
 #[cfg(not(target_os = "emscripten"))]
 use glutin::config::ConfigTemplateBuilder;
+#[cfg(not(target_os = "emscripten"))]
 use glutin::config::GlConfig;
+#[cfg(not(target_os = "emscripten"))]
 use glutin::context::ContextApi;
 #[cfg(not(target_os = "emscripten"))]
 use glutin::context::PossiblyCurrentContext;
+#[cfg(not(target_os = "emscripten"))]
 use glutin::context::Version;
 #[cfg(not(target_os = "emscripten"))]
 use glutin::context::{
@@ -274,6 +277,12 @@ impl GlBackend {
     /// `gles` child mode (a fresh process) is the entry point.
     /// Returns `None` headless / without a GLES-capable EGL stack —
     /// the caller's skip-with-reason (D-011).
+    // Desktop/Android only: it bootstraps a winit loop plus an EGL/glutin GLES
+    // context, neither of which exists for emscripten (`glutin` is not even a
+    // dependency there). 026's gating rule, restored after the K6 landing left
+    // this ungated - the host gate cannot see it because the emscripten cfg
+    // path is never compiled there.
+    #[cfg(not(target_os = "emscripten"))]
     #[allow(deprecated)] // the desktop `create`'s same pre-`run_app` bootstrap
     pub fn try_create_gles(width: u32, height: u32, title: &str) -> Option<Self> {
         use std::num::NonZero;
@@ -360,6 +369,7 @@ fn finish_gl(
 /// over a caller-picked config (the desktop/android `finish_gl`'s
 /// first-config pick + the `try_create_gles` probe's GLES3-filtered
 /// pick).
+#[cfg(not(target_os = "emscripten"))]
 fn finish_gl_on_config(
     display: Display,
     window: WinitWindow,
@@ -581,6 +591,7 @@ impl GlBackend {
                 height,
                 passes: RefCell::new(crate::gl_passes::GlPasses::new()),
                 batch: RefCell::new(BatchSlot::default()),
+                pack_shaders: RefCell::new(crate::pack_shaders::PackShaderCache::default()),
                 _canvas: canvas,
                 _context_handle: ctx,
             },
