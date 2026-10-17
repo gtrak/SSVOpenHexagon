@@ -16,7 +16,7 @@ use crate::error::LuaError;
 use crate::metadata::{FnMeta, LuaMetadataProxy};
 use mlua::Value;
 
-/// The Lua context: a LuaJIT state with the standard libraries open
+/// The Lua context: a Luau state with the standard libraries open
 /// (C++: `lua_newstate` + `luaL_openlibs`), not yet sandboxed.
 ///
 /// # Sandboxing
@@ -37,44 +37,43 @@ impl LuaContext {
     /// C++ `LuaContext(bool openDefaultLibs = true)` — the game and menu both
     /// use `true` (`luaL_openlibs`).
     ///
-    /// `mlua::Lua::new()` loads the safe stdlib set: on the `luajit` feature
-    /// that is every C++ `luaL_openlibs` library **except** `debug` and `ffi`.
-    /// The C++ build compiles LuaJIT with `LUAJIT_DISABLE_FFI` (CMakeLists.txt
-    /// CPM pin) so `ffi` is absent there too, and `destroy_malicious_functions`
-    /// clears `debug` — the post-sandbox stdlib surface is identical.
+    /// `mlua::Lua::new()` loads the safe stdlib set: on the Luau build that
+    /// is the interpreter's standard libraries (no `debug` — `destroy_
+    /// malicious_functions` clears the C++'s `debug` too — and no `ffi` / no
+    /// `jit`: the C++'s FFI-less LuaJIT has neither registered either, so
+    /// the post-sandbox stdlib surface stays the documented shape, pinned by
+    /// `tests/stdlib_surface.rs`).
+    ///
+    /// D-037 (unified on Luau): the one capability the Luau base library
+    /// lacks that the C++ (LuaJIT) has is the chunk compiler — Luau has no
+    /// `load`/`loadstring` at all, so dropping it would be a parity
+    /// regression for third-party content. The port installs the one-line
+    /// Rust binding here: mlua's own `Lua::load` exposed as the global
+    /// `load`. The shipped 5.1 compat prelude's `loadstring = load` line
+    /// (`install_lua51_prelude`, run from `api::init_lua_api`) then
+    /// activates the 5.1 spelling; pinned by `loadstring('return 6*7')() ==
+    /// 42` (`crates/oh-parity/tests/lua51_compat_prelude.rs`).
+    ///
     /// (Creation failure is fatal: `mlua::Lua::new` panics, like a C++
     /// `bad_alloc` from `lua_newstate`.)
     #[must_use]
     pub fn new() -> Self {
-        let ctx = Self {
-            lua: mlua::Lua::new(),
-        };
+        let lua = mlua::Lua::new();
 
-        // K3 / issue 33: on arm64 Android the vendored LuaJIT's trace assembler
-        // never returns (device ANR traces: __clear_cache -> lj_asm_trace ->
-        // trace_start -> lj_vm_cpcall, with the Android UI thread idle in
-        // epoll_pwait), so the app is killed by "Input dispatching timed out".
-        // The interpreter has no trace assembler, so it removes the hang. Gated
-        // on the LuaJIT backend because the Luau backend has no `jit` table at
-        // all (`disable_jit` would simply error there).
-        #[cfg(all(target_os = "android", feature = "backend-luajit"))]
-        {
-            let _ = ctx.disable_jit();
-        }
+        let load_fn = lua
+            .create_function(
+                |lu: &mlua::Lua, code: String| -> mlua::Result<mlua::Function> {
+                    lu.load(code.as_str())
+                        .set_name("loadstring-chunk")
+                        .into_function()
+                },
+            )
+            .expect("installing the `load` binding on a fresh state cannot fail");
+        lua.globals()
+            .set("load", load_fn)
+            .expect("installing the `load` binding on a fresh state cannot fail");
 
-        ctx
-    }
-
-    /// Turn LuaJIT's JIT engine off (`jit.off()`), leaving the interpreter.
-    ///
-    /// **This is a recorded deviation (F29), not C++ parity**: the C++ never
-    /// disables the JIT. It exists because this build runs a *different* LuaJIT
-    /// than the C++ (K4's version skew) and this one's arm64 trace assembler
-    /// hangs — see `deviations.md` K3/F29 for the stack traces. Applied only
-    /// where the hang actually manifests (Android + the LuaJIT backend); the
-    /// Luau unification (issue 30 §12) deletes the whole class.
-    pub fn disable_jit(&self) -> Result<(), LuaError> {
-        self.execute_code("jit.off()")
+        Self { lua }
     }
 
     /// C++ `executeCode(std::string_view)` (void): load with chunk name

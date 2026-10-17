@@ -15,7 +15,7 @@ rustflags = ["-C", "link-arg=-ladvapi32"]
 
 # Issue 25 — Android NDK (aarch64): the NDK's per-API clang wrapper is a
 # self-contained linker (sysroot + libc++_shared semantics); the cc-rs crates
-# (luajit-src, libsodium-sys) get CC/AR/CXX_<target> env vars from
+# (luau0-src, libsodium-sys) get CC/AR/CXX_<target> env vars from
 # tools/android-env.sh (the cargo-ndk equivalent, without the tool).
 # Issue 25b SG6 — the 16KB-page-size alignment (Android 15's 16KB OEM
 # devices): the NDK r27c lld DEFAULT is 4KB ELF LOAD alignment (verified

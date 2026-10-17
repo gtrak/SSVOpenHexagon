@@ -70,6 +70,7 @@ use std::sync::Arc;
 
 use crate::context::LuaContext;
 use crate::error::LuaError;
+use crate::prelude::install_lua51_prelude;
 use crate::{destroy_malicious_functions, redefine_io_open, redefine_random};
 
 /// The shared state handle every registered closure locks (C++ captured
@@ -94,6 +95,16 @@ fn lock(state: &State) -> ReentrantMutexGuard<'_, GameApiState> {
 /// time (C++ captured the booleans into the lambdas).
 pub fn init_lua_api(ctx: &LuaContext, state: &State) -> Result<(), LuaError> {
     let shared = SharedLua::new(ctx);
+
+    // D-037 port addition (NOT a C++ step): the 5.1 compat prelude. The
+    // shipping VM is Luau, whose base library lacks the 5.1-isms third-
+    // party packs could use — the prelude (030c's file) installs them,
+    // guarded per global (a no-op on any construct the VM already has),
+    // with the one not-emulatable cell (`loadstring`) covered by the
+    // Rust-side `load` binding `LuaContext::new` installs. Shipped scripts
+    // use none of them (030c's census: zero), so this cannot move the C++
+    // column; it exists for the packs outside this repo.
+    install_lua51_prelude(ctx)?;
 
     random::register(ctx, state)?;
     // C++ `redefineIoOpen`/`redefineRandom`'s `catch(...)`

@@ -1,9 +1,18 @@
 //! Lane 030a: the explicit Lua-VM probes for the "unify everything on
-//! Luau?" decision (task §4).
+//! Luau?" decision (task §4). D-037 landed: the port ships ONE Lua VM
+//! (Luau), so the probe DIFF TABLE against the LuaJIT build is gone with
+//! it — each probe is now a **regression pin** against its fixed reference
+//! value (`probe_pins`): the values the Luau VM of this exact build
+//! produces, recorded from the 030a/030c measurement. The pins are the
+//! standing gate: a Luau version bump (or any VM-side behavior drift)
+//! changes a pinned value and fails loudly here. The two pins D-037's
+//! parity argument rests on are called out in the table below:
+//! `string_format_%.14g` and `port_number_to_string` are IDENTICAL to the
+//! C++'s (LuaJIT's) `lua_number2str` spelling — the only two probe paths
+//! that can reach game-visible text (030c: measured identical).
 //!
-//! Each probe pins a CONCRETE, observable difference (or agreement)
-//! between the two backends of the port (`oh_lua::LuaContext` on
-//! `backend-luajit` vs `backend-luau`) — the exact questions the
+//! Each probe pins a CONCRETE, observable dialect fact (or agreement with
+//! the C++ reference) of the shipping VM — the exact questions the
 //! differential simulation cannot answer on its own (the simulation's
 //! fingerprints proved the shipped corpus runs byte-identically; these
 //! probes document WHY, at the dialect level):
@@ -17,14 +26,13 @@
 //! * the post-sandbox global surface
 //! * `pairs` ordering (the per-process hash-randomization question, made
 //!   observable on a fixed key set)
-//! * the `mlua::Integer` width (LuaJIT 64-bit vs Luau 32-bit `lua_Integer`)
+//! * the `mlua::Integer` width (Luau's 32-bit `lua_Integer`)
 //!
-//! `emit_probes` writes `target/lua-parity/<backend>/run-<k>/probes.json`
-//! (same artifact convention as `lua_engine_parity.rs` — under
-//! `target/`, never committed) and prints the probe table.
-//! `compare_probes` (gated on `LUA_PARITY_PROBES=1`) reads both
-//! backends' artifacts and prints the per-probe diff table (the input
-//! to the report's probe-diff section).
+//! `emit_probes` writes `target/lua-parity/luau/run-<k>/probes.json`
+//! (artifact convention — under `target/`, never committed) for human /
+//! report inspection; `probe_pins` is the self-contained gate form (it
+//! re-runs the probes in-process and asserts the fixed values — no
+//! artifact, no cross-test race, runs under plain `cargo test`).
 
 use std::fs;
 use std::path::PathBuf;
@@ -33,26 +41,19 @@ use oh_lua::{destroy_malicious_functions, redefine_io_open, redefine_random, Lua
 
 const FINGERPRINT_DEF: &str = "lua-vm-probes/v1";
 
-/// The artifact root (`target/lua-parity/<backend>/run-<k>/probes.json`).
+/// The artifact root (`target/lua-parity/luau/run-<k>/probes.json`).
 fn artifact_dir() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let target = std::env::var("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| manifest.join("../target"));
-    target
-        .join("lua-parity")
-        .join(if cfg!(feature = "backend-luau") {
-            "luau"
-        } else {
-            "luajit"
-        })
-        .join(format!(
-            "run-{}",
-            std::env::var("LUA_PARITY_RUN")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0)
-        ))
+    target.join("lua-parity").join("luau").join(format!(
+        "run-{}",
+        std::env::var("LUA_PARITY_RUN")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0)
+    ))
 }
 
 /// The probe results: name -> observed value (one string per probe; the
@@ -228,7 +229,8 @@ fn run_all_probes() -> Vec<(String, String)> {
     ]
 }
 
-/// Emit the probe artifact + print the probe table.
+/// Emit the probe artifact + print the probe table (artifact form — for
+/// human / report inspection; the gate form is `probe_pins`).
 #[test]
 fn emit_probes() {
     let dir = artifact_dir();
@@ -236,7 +238,7 @@ fn emit_probes() {
     let probes = run_all_probes();
     let doc = serde_json::json!({
         "definition": FINGERPRINT_DEF,
-        "backend": if cfg!(feature = "backend-luau") { "luau" } else { "luajit" },
+        "backend": "luau",
         "probes": probes,
     });
     let path = dir.join("probes.json");
@@ -251,75 +253,87 @@ fn emit_probes() {
     }
 }
 
-/// Compare the two backends' probe artifacts and print the per-probe
-/// diff table (the report's probe-diff input). Gated on
-/// `LUA_PARITY_PROBES=1` (both artifacts must exist).
+// ---------------------------------------------------------------------------
+// The regression pins (D-037: the A/B diff table is gone - the shipping VM's
+// probe values are the fixed reference)
+// ---------------------------------------------------------------------------
+
+/// The pinned probe values: what the shipping VM of this exact build
+/// (Luau 0.663, `luau0-src 0.12.3`, mlua 0.10.5) produces - recorded from
+/// the 030a/030c measurement (the pre-unification A/B table in
+/// `.agents/plans/001-rust-port/30a-lua-parity.md` sec.3: `%.14g` and the
+/// port's number->string are IDENTICAL to the C++'s `lua_number2str`
+/// spelling - the two probe paths that can reach game-visible text - and
+/// the remaining probes carry the measured Luau dialect, pinned here so a
+/// Luau version bump or any VM-side drift fails loudly instead of drifting
+/// silently).
+const PINS: [(&str, &str); 8] = [
+    (
+        r#"tostring_spellings"#,
+        r#"100000000000000000000|0.5|1234567.89|0.0001|9999999999999.998|1|1|0.1|1e+30|10000000000|-0|9007199254740992|10000000000000000"#,
+    ),
+    (
+        r#"string_format_%.14g"#,
+        r#"1e+20|1234567.89|0.0001|0.1|1e+16|15000000000|9.007199254741e+15"#,
+    ),
+    (r#"port_number_to_string"#, r#"1|1e+20|0|42.5"#),
+    (
+        r#"error_x_shape"#,
+        r#"[string "chunk"]:1: x
+stack traceback:
+	[C]: in ?
+	[C]: in function 'error'
+	[string "chunk"]:1: in ?"#,
+    ),
+    (
+        r#"dotted_path_semantics"#,
+        r#"ok_dotted=true; nil_index=[[string "chunk"]:1: attempt to index nil with 'a']; exists(dp.a.b)=true exists(dp.a.missing)=false exists(dp.a.missing.deep)=Err("Variable \"dp.a.missing.deep\" doesn't exist in lua context")"#,
+    ),
+    (
+        r#"post_sandbox_surface"#,
+        r#"string:_G string:_VERSION string:assert string:bit32 string:buffer string:collectgarbage string:coroutine string:dp string:error string:gcinfo string:getfenv string:getmetatable string:ipairs string:load string:math string:n string:newproxy string:next string:package string:pairs string:pcall string:print string:rawequal string:rawget string:rawlen string:rawset string:require string:select string:setfenv string:setmetatable string:string string:table string:tonumber string:tostring string:type string:typeof string:unpack string:utf8 string:vector string:xpcall | require(ffi)=[[string "chunk"]:1: module 'ffi' not found] | os=true debug=true io.popen=<index-err> io.flush=<index-err> io.write=<index-err> io.setvbuf=<index-err> math.randomseed=true package.loadlib=true package.searchpath=true package.loaders=true package.loaded.os=true package.loaded.debug=true"#,
+    ),
+    (
+        r#"pairs_order_fixed_keyset"#,
+        r#"number:1 number:2 number:3 number:4 number:5 number:6 number:7 number:8 string:foxtrot string:papa string:november string:mike string:oscar string:lima string:delta string:hotel string:echo string:alpha string:india string:kilo string:juliet string:golf string:bravo string:charlie"#,
+    ),
+    (
+        r#"mlua_integer_width"#,
+        r#"width=4B; roundtrips[i32MAX=2147483647+1=2147483647, 2^62=2147483647]; floor4.9|mod4.5|mod-4.5|tostr42.0|type42 = 4|0.5|1.5|42|number"#,
+    ),
+];
+
+/// The self-contained gate form: re-runs every probe in-process and asserts
+/// the fixed values (no artifact, no cross-test race, no env gate - runs
+/// under plain `cargo test`). A changed value is a VM-drift finding:
+/// re-measure, re-review against the C++ reference, and update the pin with
+/// the reason.
 #[test]
-fn compare_probes() {
-    if std::env::var("LUA_PARITY_PROBES").is_err() {
-        eprintln!("lane 030a: probe comparison not requested (LUA_PARITY_PROBES unset) — passing vacuously");
-        return;
-    }
-    let target = std::env::var("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target"));
-    let read = |backend: &str| -> serde_json::Value {
-        let p = target
-            .join("lua-parity")
-            .join(backend)
-            .join("run-0")
-            .join("probes.json");
-        let text = fs::read_to_string(&p).unwrap_or_else(|e| {
-            panic!(
-                "read {}: {e} (run emit_probes for {backend} first)",
-                p.display()
-            )
-        });
-        serde_json::from_str(&text).unwrap()
-    };
-    let a = read("luajit");
-    let b = read("luau");
-    let pa: Vec<(String, String)> = a["probes"]
-        .as_array()
-        .expect("probes array")
-        .iter()
-        .map(|e| {
-            (
-                e[0].as_str().unwrap().to_string(),
-                e[1].as_str().unwrap().to_string(),
-            )
-        })
-        .collect();
-    let pb: Vec<(String, String)> = b["probes"]
-        .as_array()
-        .expect("probes array")
-        .iter()
-        .map(|e| {
-            (
-                e[0].as_str().unwrap().to_string(),
-                e[1].as_str().unwrap().to_string(),
-            )
-        })
-        .collect();
-    assert_eq!(pa.len(), pb.len(), "probe sets must match");
-    eprintln!("lane 030a: probe diff table (luajit vs luau)");
-    let mut divergent = 0usize;
-    for ((na, va), (nb, vb)) in pa.iter().zip(pb.iter()) {
-        assert_eq!(na, nb, "probe names must align");
-        let same = va == vb;
-        if !same {
-            divergent += 1;
-        }
-        if same {
-            eprintln!("  {na:32} IDENTICAL");
-        } else {
-            eprintln!("  {na:32} DIFFERENT");
-            eprintln!("    luajit: {va}");
-            eprintln!("    luau:   {vb}");
+fn probe_pins() {
+    let probes = run_all_probes();
+    assert_eq!(probes.len(), PINS.len(), "probe count drifted");
+    let mut failures = Vec::new();
+    for (name, expected) in PINS {
+        let actual = probes
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("probe {name} missing from the emitted set"))
+            .1
+            .as_str();
+        if actual != expected {
+            failures.push(format!(
+                "  {name}:\n    expected: {expected}\n    actual:   {actual}"
+            ));
         }
     }
+    assert!(
+        failures.is_empty(),
+        "PROBE PIN DIVERGENCE ({} probe(s) drifted from the pinned Luau reference - VM version bump or behavior drift):\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
     eprintln!(
-        "lane 030a: {divergent}/{} probes differ across backends",
-        pa.len()
+        "lane 030a: all {} probes match the pinned Luau reference (the shipping VM's dialect is unchanged)",
+        PINS.len()
     );
 }

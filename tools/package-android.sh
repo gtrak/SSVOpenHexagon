@@ -15,7 +15,7 @@
 # Environment (the issue-25 setup, do not reinstall):
 #   * tools/android-env.sh — the NDK r27c toolchain on PATH (the
 #     aarch64-linux-android28-clang linker, .cargo/config.toml) + the
-#     CC/AR env the C builds in the graph (luajit-src, libsodium-sys)
+#     CC/AR env the C builds in the graph (luau0-src, libsodium-sys)
 #     need.
 #   * cargo-apk 0.10 on PATH (`cargo install cargo-apk` — checked below).
 #   * the Android SDK build-tools 34.0.0 (aapt / zipalign / apksigner —

@@ -7,10 +7,17 @@
 //! §4 RNG mapping, §8 subtleties),
 //! `.agents/skills/lib-luajit.md`, `.agents/skills/lib-mlua.md`.
 //!
-//! Backend: `mlua` on the `luajit` + `vendored` features (LuaJIT 2.1, the
-//! same runtime the C++ build bundles — CMake CPM pin
-//! `vittorioromeo/LuaJIT @ 4dc5ffbf60b16e54274c470fcc022165685c96fe` with
-//! `LUAJIT_DISABLE_FFI`).
+//! Backend (D-037, 2026-10-17 — the unification): `mlua` on the `luau`
+//! feature — Luau, statically compiled from source by `luau0-src`. This is
+//! the port's ONE Lua VM; the LuaJIT machinery the port once vendored
+//! (`luajit-src` + `[patch.crates-io]`, the `ffi_stub.c` link shim, the
+//! Android `__clear_cache` shim, the per-target backend selection) is
+//! deleted by D-037. The C++ build still runs its own LuaJIT
+//! (`vittorioromeo/LuaJIT @ 4dc5ffbf60b16e54274c470fcc022165685c96fe`
+//! with `LUAJIT_DISABLE_FFI` — a C++-side fact, `.agents/skills/
+//! lib-luajit.md`); the parity guarantee holds because the C++ oracle
+//! fingerprints game STATE, not Lua internals, and 030c proved this exact
+//! configuration against the C++ column (3627/3627 frames).
 //!
 //! # Modules
 //!
@@ -28,6 +35,8 @@
 //! * [`snippets`] — every embedded/spliced Lua string the crate loads
 //!   (29v1: the per-snippet compile test is the mechanical guard against
 //!   the 29s1 bug class — a hand-transcribed Lua typo inside a snippet)
+//! * [`prelude`] — the Lua 5.1 compat prelude (D-037: the Luau-era safety
+//!   net for third-party packs; installed from `api::init_lua_api`)
 //! * [`api`] — the complete game API (issue 007): all 285 registered global
 //!   function names + the 12-callback dispatch + the `GameApiState` /
 //!   `GameApi` / `AssetsApi` state interface (issue 009 implements the real
@@ -45,6 +54,7 @@ mod convert;
 pub mod docs;
 mod error;
 mod metadata;
+mod prelude;
 mod sandbox;
 pub mod snippets;
 

@@ -1,5 +1,20 @@
 # Task 029k1 (K3) — the port does not run the C++'s LuaJIT, and the default first level ANRs
 
+> **K3 is CLOSED BY CONSTRUCTION — D-037 (2026-10-17, lane 030d, the Luau
+> unification).** The premise this task reconciled — "the port's Lua VM is
+> not the C++'s" — is resolved by the port no longer running a LuaJIT at
+> all: D-037 deleted the vendored LuaJIT (`extlibs/luajit-src` + the root
+> `[patch.crates-io]`), the `ffi_stub.c` link shim, the Android `cshim.c`
+> `__clear_cache` shim (K3's hang class), and the per-target backend
+> selection, and unified on Luau (mlua's `luau` feature, statically built
+> from `luau0-src`). The K3 `jit.off()` mitigation (deviation **F29**) went
+> with the VM it mitigated (the F29 row is removed from `deviations.md`);
+> K3/K4 are recorded there as closed by construction, citing D-037. The
+> C++ parity guarantee survives (the oracle fingerprints game STATE, not
+> Lua internals; 030c: 3627/3627 frames under the shipping configuration).
+> Everything below is the HISTORICAL record of the diagnosis (kept
+> verbatim, not rewritten).
+
 TOP PRIORITY. Master is green (gate 4/4, 753 tests). **No worktree** (D-035):
 main checkout, commit every 3-5 tool calls.
 
@@ -215,7 +230,13 @@ pins, NOT the same build".
 
 ### Residual risk
 
-- The K3 hang: unchanged (device-side, OPEN). If it persists on the phone,
+- **D-037 (2026-10-17): the K3 hang is CLOSED BY CONSTRUCTION** — the
+  Luau unification (lane 030d) deleted the vendored LuaJIT, the
+  `__clear_cache` shim, and the per-target split; the shipping VM (Luau)
+  has no trace assembler and no `jit` table, so the ANR class cannot
+  exist. See `DECISIONS.md` D-037 + `deviations.md` K3/K4 (closed by
+  construction) + `33-k3-jit-off.md` (the historical record).
+- The K3 hang (pre-D-037, historical): unchanged (device-side, OPEN). If it persists on the phone,
   the 029a1-completion lane should (a) run the two-arm device A/B (rebuild the
   port against `4dc5ffbf` FFI-off vs `jit.off()` on `a4f56a4`), (b) capture the
   pathological trace on-device (`jit.dump` / `traceinfo` from a hookable

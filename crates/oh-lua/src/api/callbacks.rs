@@ -21,17 +21,13 @@ use mlua::{MultiValue, Value};
 use crate::context::LuaContext;
 use crate::error::LuaError;
 
-/// `mlua::Integer` is **`i64` on the `backend-luajit` build but `i32` on
-/// `backend-luau`**, so an `i32` callback argument needs a real widening on one
-/// backend and is already exact on the other. One expression has to serve both,
-/// so `into()` stays and the configuration-dependent `useless_conversion` lint is
-/// silenced here, once, with this justification — found by 030c as a latent gate
-/// hole (the default-features clippy never saw the Luau configuration) and now
-/// gated by `tools/lua-parity.sh` stage 7.
+/// `mlua::Integer` is `i32` on the shipping Luau build (D-037: the port
+/// has one VM — Luau, whose `lua_Integer` is 32-bit), so an `i32`
+/// callback argument is already exactly the FFI integer width: no
+/// conversion.
 #[inline]
-#[allow(clippy::useless_conversion)]
 fn callback_int(v: i32) -> mlua::Integer {
-    v.into()
+    v
 }
 
 /// C++ `runLuaFunctionIfExists<T>`: skip (→ `None`) when the global does not

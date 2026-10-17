@@ -1,5 +1,20 @@
 # Issue 33 — the arm64 LuaJIT hang (K3): run the phone with the JIT off, and delete the class with Luau
 
+> **CLOSED BY CONSTRUCTION — D-037 landed (lane 030d, 2026-10-17).** The
+> revert condition below was met: the Luau unification landed, and this
+> whole class disappeared with the machinery it named — the `jit.off()`
+> call (deviation **F29**, removed from `deviations.md`), the
+> `__clear_cache` shim (`crates/oh-android/cshim.c`, deleted), the vendored
+> LuaJIT (`extlibs/luajit-src` + the root `[patch.crates-io]`, deleted),
+> and the per-target Lua split (deleted; the port now ships ONE VM, Luau —
+> mlua's `luau` feature, statically built from `luau0-src`). K3 and K4 are
+> recorded as closed by construction in `deviations.md` (citing D-037),
+> and the C++ parity guarantee is re-proven per gate against the committed
+> C++ vectors (030c: 3627/3627 frames under exactly this configuration).
+> Everything below is the HISTORICAL record of the confirmed hang, the
+> measured mitigation, and the reasoning that led to the unification —
+> kept verbatim, not rewritten.
+
 Read `.agents/WORKER-HYGIENE.md` first. This is **landed** (`249d268d`); the file exists
 because the code and `deviations.md` F29 reference it, and because the *revert* condition
 matters. Evidence and the full device session: `.agents/tasks/issue-029k1-luajit-version-and-anr.md`

@@ -5,9 +5,10 @@
 #   2. cargo build --workspace
 #   3. cargo clippy --workspace --all-targets -- -D warnings
 #   4. cargo test --workspace
-#   5. tools/lua-parity.sh (lane 030a: the Lua backend parity stage —
-#      differential-simulation fingerprints + VM probes across the
-#      backend-luajit / backend-luau feature pair; ~6-8 min)
+#   5. tools/lua-parity.sh (the Lua parity stage — D-037: the port ships
+#      ONE Lua VM, Luau; the stage compares the shipping column against
+#      the committed C++ vectors, the probe pins, the dialect census and
+#      the prelude tests, over N separate VM processes; ~6-8 min)
 #
 # Stage output goes to a log under target/ (gitignored); GATE_EXIT=<rc> is
 # printed per stage. Exits non-zero if any stage fails.

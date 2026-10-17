@@ -86,7 +86,3 @@ oh-app = { path = "../oh-app" }
 # target). Same `0.30` + `android-native-activity` feature the workspace
 # already unifies through oh-render (no lockfile change).
 winit = { version = "0.30", features = ["android-native-activity"] }
-
-# Issue 25 — the cshim build (cshim.c: the LuaJIT __clear_cache shim).
-[build-dependencies]
-cc = "1"

@@ -1,12 +1,14 @@
--- Lua 5.1 compat prelude over Luau (lane 030c prototype).
+-- Lua 5.1 compat prelude over Luau (lane 030c prototype; SHIPPED by D-037
+-- as the port's 5.1 compat set — installed by the port itself, see
+-- crates/oh-lua/src/prelude.rs + crates/oh-lua/src/api/mod.rs).
 --
 -- Task: .agents/tasks/issue-030c-three-way-parity.md §2.2 (issue 30 §12's
 -- "Removed 5.1-isms" blocker row: "implement them as a Lua-level 5.1 compat
--- prelude over Luau"). This file is the PROTOTYPE that classifies each of
--- the seven isms named in §12 — see the classification table in
--- `tests/lua51_compat_prelude.rs` (faithful / approximated / not
--- emulatable). It is Lua-level only: no Rust, no VM change; it runs in any
--- context BEFORE a 5.1-style script does.
+-- prelude over Luau"). This file classifies each of the seven isms named
+-- in §12 — see the classification table in
+-- `crates/oh-parity/tests/lua51_compat_prelude.rs` (faithful / approximated /
+-- not emulatable). It is Lua-level only: no Rust, no VM change; it runs in
+-- any context BEFORE a 5.1-style script does.
 --
 -- FINDING OF RECORD (the reason this prototype differs from the plan's
 -- assumption that "Luau removed the 5.1-isms"): it did not, at least not
@@ -46,18 +48,20 @@
 -- Install contract:
 --   * every shim is guarded by the target global's absence, so on any VM
 --     that already has the construct the prelude installs nothing for it
---     (on this Luau: unpack/getfenv/setfenv/newproxy; on LuaJIT: all
---     seven except the gcinfo option);
---   * the `collectgarbage` wrapper (installed on BOTH backends — neither
---     implements the 5.1 "gcinfo" option) forwards every native option
---     unmodified;
+--     (on this Luau: unpack/getfenv/setfenv/newproxy; on a LuaJIT context
+--     it would be: all seven except the gcinfo option);
+--   * the `collectgarbage` wrapper (installed where the VM's collectgarbage
+--     lacks the 5.1 "gcinfo" option — this Luau build included) forwards
+--     every native option unmodified;
 --   * the `loadstring` line installs ONLY when a `load` function exists.
---     On this Luau build `load` is absent and NO Lua-level code can create
---     a chunk compiler — the mitigation is a ONE-LINE RUST-SIDE binding
---     (expose `mlua::Lua::load` as the global `load`; the exact line is
---     demonstrated test-locally in lua51_compat_prelude.rs, not shipped
---     here). Without that companion, `loadstring` stays absent: that is
---     the not-emulatable-at-Lua-level cell of the classification.
+--     On a bare Luau build there is no chunk compiler in the language
+--     surface and NO Lua-level code can create one — the shipped
+--     companion is the ONE-LINE RUST-SIDE binding in
+--     crates/oh-lua/src/context.rs (`mlua::Lua::load` exposed as the
+--     global `load`, installed in every `LuaContext`). With that binding
+--     present, this line activates `loadstring` (pinned by
+--     `loadstring('return 6*7')() == 42` in
+--     crates/oh-parity/tests/lua51_compat_prelude.rs).
 
 do
 	-- 1. unpack — 5.1 global. NATIVE on this Luau build ("Lua 5.1 compat"

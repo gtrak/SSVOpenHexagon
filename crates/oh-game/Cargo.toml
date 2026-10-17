@@ -18,26 +18,14 @@ oh-assets = { path = "../oh-assets" }
 oh-discord = { path = "../oh-discord" }
 
 # Issue 009 composition/tests only — never a normal dependency (that would
-# cycle: oh-lua already depends on oh-game).
+# cycle: oh-lua already depends on oh-game). D-037: the Lua VM is Luau
+# (oh-lua's single `mlua/luau` build); oh-game's test builds (the
+# determinism harness runs Lua per frame) pick it up through oh-lua's own
+# dependency — no feature to forward.
 [dev-dependencies]
-# `default-features = false` (lane 030a): the Lua VM backend for oh-game's
-# own test builds (the determinism harness runs Lua per frame) comes from
-# this crate's `backend-*` feature, not oh-lua's default.
-oh-lua = { path = "../oh-lua", default-features = false }
+oh-lua = { path = "../oh-lua" }
 
 [features]
-# The Lua VM backend for oh-game's TEST builds (lane 030a): forwarded onto
-# the dev-dependency only, exactly like `produce-lua-metadata` below —
-# oh-game itself gains no dependency (oh-lua is dev-only here, D-013).
-# Default = `backend-luajit` (the C++ build's backend, unchanged);
-# `cargo test -p oh-game --no-default-features --features backend-luau`
-# runs the engine's determinism tests on Luau. (When oh-game is built as a
-# dependency, the dev-dependency — and with it the forwarding — does not
-# apply: the dependent's own oh-lua edge picks the backend.)
-backend-luajit = ["oh-lua/backend-luajit"]
-backend-luau = ["oh-lua/backend-luau"]
-default = ["backend-luajit"]
-
 # D-023/D-024: mirror oh-lua's `produce-lua-metadata` (the C++
 # `SSVOH_PRODUCE_LUA_METADATA` build gate, `CMakeLists.txt`'s literal
 # `if(FALSE)` = default OFF) for the engine's console tests: with the

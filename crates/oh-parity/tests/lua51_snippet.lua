@@ -1,15 +1,18 @@
 -- The 5.1-style snippet (lane 030c): uses the seven isms named in issue 30
 -- §12 in their canonical forms, in a single chunk. It must PASS with
--- `lua51_prelude.lua` installed (on either backend; on Luau the host also
--- supplies the one missing Rust-side binding — the global `load` — which
--- the test installs locally, see lua51_compat_prelude.rs), and on a bare
--- context it FAILS at the first gap that VM has:
---   * bare Luau (0.663, this build)  — at `loadstring`: Luau's base library
---     has no chunk compiler at all (no `load` either); `unpack` passes
---     because this Luau re-installed it natively as a 5.1-compat global;
---   * bare LuaJIT (2.1, this build)  — at `collectgarbage("gcinfo")`: the
---     one 5.1 option LuaJIT never implemented (everything before it is
---     native 5.1 there).
+-- `lua51_prelude.lua` installed (the shipped prelude, now with the product
+-- `load` binding in every context — D-037), and on a bare context (the
+-- product `load` binding present, the prelude NOT installed) it FAILS at
+-- the first gap:
+--   * bare Luau (0.663, this build) — at `loadstring`: the prelude's
+--     `loadstring = load` alias line is not installed (the `load` binding
+--     alone gives the 5.2 spelling only); `unpack` passes because this
+--     Luau re-installed it natively as a 5.1-compat global.
+--
+-- (Historical, pre-unification: bare LuaJIT failed one construct later,
+-- at `collectgarbage("gcinfo")` — the one 5.1 option LuaJIT never
+-- implemented. D-037 deleted the LuaJIT backend; that cell is recorded in
+-- the 030c report.)
 --
 -- FINDINGS recorded here (evidence for the report, not worked around):
 --
@@ -43,8 +46,10 @@ local a, b = unpack({ 10, 20 })
 assert(a == 10 and b == 20, "unpack")
 
 -- 2. loadstring — compile+run a string chunk (the 5.1 alias of load; ABSENT
---    on this Luau build unless the host supplies `load` — the one
---    Rust-side line the prelude cannot write itself).
+--    on this Luau build until the prelude's `loadstring = load` line
+--    aliases the product's Rust-side `load` binding — the one line the
+--    prelude cannot write itself, no Lua-level code can create a chunk
+--    compiler).
 local f = loadstring("return 3 + 4")
 assert(type(f) == "function", "loadstring must yield a function")
 assert(f() == 7, "the loadstring chunk must run")
@@ -61,10 +66,9 @@ collectgarbage("collect") -- finalization may need a second step; the idiom
 -- must not ERROR regardless of when the VM runs it
 
 -- 4. gcinfo — heap size in KB, in the 5.1 access FORM (the
---    collectgarbage option, absent on both backends here — the prelude's
---    wrapper adds it; the global gcinfo() function is native on BOTH
---    backends of this build, but is not the 5.1 form the census pattern
---    looks for).
+--    collectgarbage option, absent on this backend — the prelude's
+--    wrapper adds it; the global gcinfo() function is native on this
+--    build, but is not the 5.1 form the census pattern looks for).
 local kb = collectgarbage("gcinfo")
 assert(type(kb) == "number" and kb >= 0, "gcinfo must yield the heap size in KB")
 

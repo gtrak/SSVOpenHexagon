@@ -77,8 +77,13 @@ mod tests {
     fn embedded_snippets() -> Vec<(&'static str, Option<&'static str>, String)> {
         vec![
             (
+                // D-037: on the shipping Luau VM `io` is absent, so the
+                // product call site (`redefine_io_open`) guards on
+                // `io.open`'s existence and no-ops; the snippet itself
+                // assumes the C++'s context (where `io.open` exists), so
+                // the row carries that assumption as its prelude.
                 "redefineIoOpen (LuaScripting.cpp:144-147)",
-                None,
+                Some("io = { open = function(f, m) end }"),
                 REDEFINE_IO_OPEN.to_string(),
             ),
             (
@@ -93,6 +98,14 @@ mod tests {
                 Some("myScoreVar = 42"), // a numeric global, like the C++'
                                          // spliced `mVar` in a sane pack
                 OVERRIDE_SCORE_VALIDATION.replace("{variable}", "myScoreVar"),
+            ),
+            (
+                // D-037: the port's own snippet (not a C++ one — the C++'s
+                // LuaJIT needs no compat shims). It executes runtime guards
+                // (pcall probes) on load; a clean `Ok` is the assertion.
+                "lua51_prelude (D-037's shipped 5.1 compat set, oh-lua/lua51_prelude.lua)",
+                None,
+                crate::prelude::LUA51_PRELUDE.to_string(),
             ),
         ]
     }

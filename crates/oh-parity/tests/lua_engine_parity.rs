@@ -1,6 +1,13 @@
-//! Lane 030a — the LuaJIT↔Luau **differential-simulation harness** (the
-//! permanent test module behind the issue-30 "can we unify on Luau?"
-//! decision; task `.agents/tasks/issue-030a-lua-parity.md` §2/§7).
+//! Lane 030a — the Lua **differential-simulation harness** (the permanent
+//! test module behind the issue-30 "can we unify on Luau?" decision; task
+//! `.agents/tasks/issue-030a-lua-parity.md` §2/§7). D-037 landed: the port
+//! ships ONE Lua VM (Luau), so the A/B comparator against a second backend
+//! is gone with it — the committed C++ vectors (030b's
+//! `parity/cpp_fingerprints.json`, re-proven every gate by
+//! `parity_cpp_fingerprints.rs`) are the reference the fingerprints are
+//! compared against, and this harness's job is now the Luau column itself:
+//! per-process determinism (the multi-process repeat) + the fingerprint
+//! emission that the gate stage logs.
 //!
 //! # What this is
 //!
@@ -17,44 +24,37 @@
 //! artifact under `target/lua-parity/` (large + machine-specific ⇒ never
 //! committed; `target/` is gitignored).
 //!
-//! Two builds of this test (one per backend — `mlua` permits only one VM
-//! per build) produce the two artifacts; the comparator (below) reads both
-//! and fails on the **first divergent frame** — printing the case id, the
-//! frame index, and which fingerprint component diverged (first-divergence
-//! points at the construct that differs, which is the difference between a
-//! verdict and a mystery).
+//! # The VM (D-037 — one backend, no features)
 //!
-//! # Backends (lane 030a features)
-//!
-//! * `cargo test -p oh-parity` — the LuaJIT backend (default)
-//! * `cargo test -p oh-parity --no-default-features --features backend-luau`
+//! `mlua` on the `luau` feature — Luau, statically built from `luau0-src`.
+//! The C++ column it is compared against (the committed
+//! `cpp_fingerprints.json`) was 3627/3627 frames identical under this exact
+//! configuration (030c), which is the shipping configuration's proof —
+//! re-proven per gate by `parity_cpp_fingerprints.rs`.
 //!
 //! # The artifact (fingerprint definition travels WITH the data)
 //!
-//! `target/lua-parity/<backend>/run-<k>/cases.json`:
+//! `target/lua-parity/luau/run-<k>/cases.json`:
 //!
 //! ```json
 //! { "definition": { ...the full fingerprint + case-generator definition... },
-//!   "backend": "luajit", "run": 0,
+//!   "backend": "luau", "run": 0,
 //!   "cases": [ { "id": ..., "case": {...}, "result": {...},
 //!                 "frames": [ [ ...10 u64/hex components... ], ... ] }, ... ] }
 //! ```
 //!
 //! # Multi-process repeat (the pairs-order / per-process hashing question)
 //!
-//! If a VM randomized string/table hashing per process, `pairs` order would
-//! vary run-to-run *within that VM* — so any fingerprint that changes
-//! across separate processes of the SAME backend means nondeterministic
-//! gameplay, a red flag independent of the Luau question. Each run index is
-//! a separate `cargo test` process (see `tools/lua-parity.sh`);
-//! `repeat_determinism` below cross-checks run-`k` against run-`0`.
+//! If the VM randomized string/table hashing per process, `pairs` order
+//! would vary run-to-run *within the VM* — so any fingerprint that changes
+//! across separate processes of the shipping VM means nondeterministic
+//! gameplay, a red flag. Each run index is a separate `cargo test`
+//! process (see `tools/lua-parity.sh`); `repeat_determinism` below
+//! cross-checks run-`k` against run-`0`.
 //!
 //! # Environment
 //!
 //! * `LUA_PARITY_RUN` — the run index to emit (default `0`).
-//! * `LUA_PARITY_COMPARE=1` — make `compare_backends` run (it passes
-//!   vacuously otherwise, so a plain `cargo test` needs no counterpart
-//!   artifact; `tools/lua-parity.sh` drives the real A/B).
 //! * `LUA_PARITY_REPEATS=all` (or `LUA_PARITY_REPEATS=1,2,3`) — make
 //!   `repeat_determinism` cross-check the named run indexes against run-0.
 
@@ -671,11 +671,7 @@ fn run_case(assets: &Arc<oh_assets::Assets>, case: &Case) -> (CaseResult, Vec<Fr
 // ---------------------------------------------------------------------------
 
 fn backend_name() -> &'static str {
-    if cfg!(feature = "backend-luau") {
-        "luau"
-    } else {
-        "luajit"
-    }
+    "luau"
 }
 
 fn artifact_dir() -> PathBuf {
@@ -757,8 +753,10 @@ fn write_artifact(cases: &[(Case, CaseResult, Vec<FrameFp>)]) {
 }
 
 // ---------------------------------------------------------------------------
-// The comparator (reads BOTH backends' artifacts; fails with the case +
-// the first divergent frame + the divergent component)
+// The comparator (reads two of THIS VM's artifacts — the multi-process
+// repeat; fails with the case + the first divergent frame + the divergent
+// component. The committed C++ column is the other reference, and it is
+// compared by `parity_cpp_fingerprints.rs`, not here.)
 // ---------------------------------------------------------------------------
 
 struct Artifact {
@@ -871,10 +869,10 @@ fn compare_against_base(artifacts: &[(u32, &Artifact)]) -> Result<(), String> {
 // The tests
 // ---------------------------------------------------------------------------
 
-/// Emits this backend's per-case, per-frame fingerprints to
-/// `target/lua-parity/<backend>/run-<LUA_PARITY_RUN>/cases.json`.
+/// Emits this VM's per-case, per-frame fingerprints to
+/// `target/lua-parity/luau/run-<LUA_PARITY_RUN>/cases.json`.
 /// Always runs (a plain `cargo test -p oh-parity` produces the default
-/// run-0 artifact; `tools/lua-parity.sh` drives the A/B + repeats).
+/// run-0 artifact; `tools/lua-parity.sh` drives the multi-process repeat).
 #[test]
 fn emit_fingerprints() {
     let root = release_dir();
@@ -903,69 +901,8 @@ fn emit_fingerprints() {
     );
 }
 
-/// The A/B comparator: reads BOTH backends' run-0 artifacts (and, when
-/// `LUA_PARITY_COMPARE_ALL_RUNS=1`, every other run index present) and
-/// fails with the case id + first divergent frame. Gated on
-/// `LUA_PARITY_COMPARE=1` (so a plain `cargo test` of one backend alone
-/// passes vacuously; `tools/lua-parity.sh` runs the real comparison).
-#[test]
-fn compare_backends() {
-    if std::env::var("LUA_PARITY_COMPARE").is_err() {
-        eprintln!(
-            "lane 030a: comparison not requested (LUA_PARITY_COMPARE unset) — passing vacuously"
-        );
-        return;
-    }
-    let base = artifact_dir().join("luajit").join("run-0");
-    let other = artifact_dir().join("luau").join("run-0");
-    let a = read_artifact(&base.join("cases.json"));
-    let b = read_artifact(&other.join("cases.json"));
-    match compare_artifacts(&a, &b) {
-        Ok(()) => eprintln!(
-            "lane 030a: {} cases byte-identical across {} vs {} (run-0)",
-            a.cases.len(),
-            a.backend,
-            b.backend
-        ),
-        Err(msg) => panic!("BACKEND DIVERGENCE: {msg}"),
-    }
-
-    // Cross-run checks (every run index that exists, ≥ 1 runs per backend):
-    if std::env::var("LUA_PARITY_COMPARE_ALL_RUNS").is_ok() {
-        for backend in ["luajit", "luau"] {
-            let dir = artifact_dir().join(backend);
-            let mut runs = vec![0u32];
-            if let Ok(rd) = fs::read_dir(&dir) {
-                for e in rd.flatten() {
-                    if let Some(k) = e
-                        .file_name()
-                        .to_string_lossy()
-                        .strip_prefix("run-")
-                        .and_then(|s| s.parse().ok())
-                    {
-                        runs.push(k);
-                    }
-                }
-            }
-            runs.sort();
-            let artifacts: Vec<(u32, Artifact)> = runs
-                .iter()
-                .map(|k| {
-                    (
-                        *k,
-                        read_artifact(&dir.join(format!("run-{k}")).join("cases.json")),
-                    )
-                })
-                .collect();
-            let refs: Vec<(u32, &Artifact)> = artifacts.iter().map(|(k, a)| (*k, a)).collect();
-            compare_against_base(&refs)
-                .unwrap_or_else(|msg| panic!("REPEAT DIVERGENCE ({backend}): {msg}"));
-        }
-    }
-}
-
-/// Multi-process repeat: cross-checks run-`k` against run-`0` for this
-/// backend (separate `cargo test` PROCESSES per run index — if a VM
+/// Multi-process repeat: cross-checks run-`k` against run-`0` for the
+/// shipping VM (separate `cargo test` PROCESSES per run index — if the VM
 /// randomized string/table hashing per process, any per-frame fingerprint
 /// that varies across runs means nondeterministic gameplay). Gated on
 /// `LUA_PARITY_REPEATS` (`all` or a comma list).

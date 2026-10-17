@@ -4,35 +4,24 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-# mlua — the Lua VM is a per-build flag (issue 30 / lane 030a): exactly ONE
-# of the `backend-*` features below selects the backend (mlua permits only
-# one VM per build). `vendored` compiles the selected VM from source into
-# the binary — on `backend-luajit` that is the vendored LuaJIT (the C++
-# build bundles LuaJIT, see extlibs + CMakeLists.txt pin, and
-# .agents/skills/lib-luajit.md; NOTE (issue 029k1): this is NOT bit-for-bit
-# the C++ build — the C++ pins `vittorioromeo/LuaJIT @ 4dc5ffbf` (plain
-# upstream v2.1 + CMake, 2023-04-02) built with `LUAJIT_DISABLE_FFI=ON`,
-# while the port vendors upstream LuaJIT @ `a4f56a4` (2025-01-13) via
-# `luajit-src 210.5.12+a4f56a4`, patched locally (extlibs/luajit-src,
-# [patch.crates-io]) to compile with `-DLUAJIT_DISABLE_FFI` as well. See
-# .agents/plans/001-rust-port/deviations.md (K3 / LuaJIT rows) and
-# .agents/tasks/issue-029k1-luajit-version-and-anr.md). On `backend-luau`
-# the Luau VM is statically compiled from source by `luau0-src` (no
-# `vendored` needed — Luau has no prebuilt-dylib path; and no dlopen, which
-# is exactly the portability win of issue 30 §5(b)).
-mlua = { version = "0.10" }
+# mlua — the Lua VM is Luau (D-037, 2026-10-17): the port ships ONE Lua VM,
+# statically compiled from source by `luau0-src` via mlua's `luau` feature
+# (no prebuilt-dylib path, no dlopen — the portability win of issue 30
+# §5(b)). The C++ build still runs its own LuaJIT (the vendored
+# `vittorioromeo/LuaJIT @ 4dc5ffbf` CPM pin, `LUAJIT_DISABLE_FFI=ON` —
+# `.agents/skills/lib-luajit.md`); that machinery is now a C++-side fact,
+# not a build input of this crate. The VM difference and its measured
+# residual risks are D-037 (`.agents/plans/001-rust-port/DECISIONS.md`):
+# the C++ parity column (030b/030c — 3627/3627 frames under this exact
+# configuration) is the proof, and the 5.1 compat surface is the shipped
+# `lua51_prelude.lua` + the one-line `load` binding in `context.rs`.
+mlua = { version = "0.10", features = ["luau"] }
 thiserror = { workspace = true }
 # The game API (issue 007) registers over the concrete gameplay/data types
 # owned by these crates (LevelStatus, HexagonGameStatus, StyleData, the
 # timelines, the custom-wall manager, the RNG). The game loop (issue 009)
 # implements the `GameApi` backend trait against its own state.
-# Lane 030a: `default-features = false` — oh-game's `default` forwards
-# `backend-luajit` onto its dev-dependency on oh-lua; with the default ON
-# here, feature unification re-enabled it inside oh-game's own Luau test
-# builds (both backends → mlua-sys compile_error). For oh-game-as-a-dependency
-# the forwarding is a no-op (its dev-dependency is not built), so this is
-# observationally neutral for every build except the one it fixes.
-oh-game = { path = "../oh-game", default-features = false }
+oh-game = { path = "../oh-game" }
 oh-data = { path = "../oh-data" }
 oh-math = { path = "../oh-math" }
 oh-rng = { path = "../oh-rng" }
@@ -46,22 +35,3 @@ oh-rng = { path = "../oh-rng" }
 # feature mirrors the flag-ON build (the `LuaMetadataProxy` destructor
 # records the entry).
 produce-lua-metadata = []
-
-# The Lua VM backend (issue 30 / lane 030a): mutually exclusive, exactly
-# one per build (mlua raises `compile_error!` if more than one backend
-# feature is enabled). `backend-luajit` is the default — the C++ build's
-# backend, unchanged from before the features existed. The wasm branch's
-# per-target rule composes as FEATURES-FIRST: a target that needs a
-# different backend (emscripten cannot run LuaJIT, issue 30 §2) builds with
-# `--no-default-features --features backend-luau` — the explicit feature
-# wins; with no backend feature named, the target's default applies
-# (native: `backend-luajit` via the default feature).
-backend-luajit = ["mlua/luajit", "mlua/vendored"]
-backend-luau = ["mlua/luau"]
-default = ["backend-luajit"]
-
-# Compiles ffi_stub.c (the `luaopen_ffi` link-compat shim — see that file
-# and issue 029k1): mlua's `luajit` feature references the symbol at link
-# time even though the FFI-less VM and the port's safe mode never call it.
-[build-dependencies]
-cc = "1.0"

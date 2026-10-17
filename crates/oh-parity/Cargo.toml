@@ -9,17 +9,6 @@ edition.workspace = true
 
 [dependencies]
 
-[features]
-# The Lua VM backend (lane 030a): forwarded onto the `oh-lua` dev-dependency
-# so the whole parity suite (including the differential-simulation harness
-# and the VM probes) can run under EITHER backend — one backend per build
-# (mlua permits only one VM per build). Default = `backend-luajit` (the C++
-# build's backend, unchanged); `cargo test -p oh-parity
-# --no-default-features --features backend-luau` runs the suite on Luau.
-backend-luajit = ["oh-lua/backend-luajit", "mlua/luajit", "mlua/vendored"]
-backend-luau = ["oh-lua/backend-luau", "mlua/luau"]
-default = ["backend-luajit"]
-
 # Parity level-run composition — the same dev-only dependency shape oh-game
 # uses for its own determinism harness (oh-lua depends on oh-game, so it is
 # never a normal dependency; D-013).
@@ -30,14 +19,16 @@ oh-replay = { path = "../oh-replay" }
 oh-data = { path = "../oh-data" }
 oh-config = { path = "../oh-config" }
 oh-assets = { path = "../oh-assets" }
-# `default-features = false` (lane 030a): the backend comes from this
-# crate's `backend-*` feature, not oh-lua's default.
-oh-lua = { path = "../oh-lua", default-features = false }
-# Lane 030a: the `mlua::Integer` width probe names the FFI integer type
-# directly; the backend features mirror oh-lua's so exactly one VM is
-# enabled (mlua's default features would select a second backend and
-# mlua-sys rejects that).
-mlua = { version = "0.10", default-features = false }
+# D-037: the Lua VM is Luau (oh-lua's single `mlua/luau` build) — the whole
+# parity suite (including the differential-simulation harness, the VM probes
+# and the C++ fingerprint column) runs under it. The committed C++ vectors
+# (`parity/cpp_fingerprints.json`) are the reference: the port's shipping
+# configuration is the one compared against the C++ (030c: 3627/3627 frames).
+oh-lua = { path = "../oh-lua" }
+# The `mlua::Integer` width probe names the FFI integer type directly; the
+# `luau` feature (with mlua's defaults off) keeps exactly one VM in the
+# build graph, mirroring oh-lua's own dependency.
+mlua = { version = "0.10", default-features = false, features = ["luau"] }
 oh-game = { path = "../oh-game" }
 serde = { workspace = true }
 serde_json = { workspace = true }

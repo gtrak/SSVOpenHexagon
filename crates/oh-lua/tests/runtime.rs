@@ -58,18 +58,16 @@ fn round_trip_integers() {
         1_000_000_000_000_000u64 as i64,
     ] {
         lua.write_variable("iv", &v).unwrap();
-        if cfg!(feature = "backend-luau") {
-            // DIVERGENCE (documented): Luau's `lua_Integer` is 32-bit, so
-            // `mlua::Integer` is `i32` and out-of-width values saturate to
-            // i32::MAX (see `oh_lua::convert` and the lane-030a probe
-            // report). LuaJIT's 64-bit integers round-trip exactly.
-            if v <= i32::MAX as i64 {
-                assert_eq!(lua.read_variable::<i64>("iv").unwrap(), v);
-            } else {
-                assert_eq!(lua.read_variable::<i64>("iv").unwrap(), i32::MAX as i64);
-            }
-        } else {
+        // DIVERGENCE (documented, D-037 residual risk 2): Luau's
+        // `lua_Integer` is 32-bit, so `mlua::Integer` is `i32` and
+        // out-of-width values saturate to i32::MAX (see `oh_lua::convert`
+        // and the lane-030a probe report). The C++'s 64-bit LuaJIT
+        // integers round-trip exactly — the port's 32-bit width is the
+        // measured, pinned behavior of the shipping VM.
+        if v <= i32::MAX as i64 {
             assert_eq!(lua.read_variable::<i64>("iv").unwrap(), v);
+        } else {
+            assert_eq!(lua.read_variable::<i64>("iv").unwrap(), i32::MAX as i64);
         }
     }
     // typed reads go through the same C++ cast (`T(lua_tointeger(...))`)
@@ -155,23 +153,18 @@ fn execute_error_maps_to_execution_error() {
     let err = lua.execute_code("error('x')").unwrap_err();
     match &err {
         LuaError::ExecutionError { message } => {
-            if cfg!(feature = "backend-luau") {
-                // DIVERGENCE (documented): the Luau interpreter's
-                // `luaL_loadstring` prefixes the chunk location (the
-                // `error()` call lives in line 1 of the anonymous chunk),
-                // so the LuaJIT `starts_with("x")` assertion becomes a
-                // prefix-tolerant containment check here.
-                assert!(
-                    message.starts_with("[string \"chunk\"]:1: x")
-                        || (message.starts_with("[string \"\"]") && message.contains("x")),
-                    "unexpected error shape: {message:?}"
-                );
-            } else {
-                // LuaJIT's `error()` appends a `stack traceback:` section to
-                // the error object — the C++ build shows the same payload.
-                assert!(message.starts_with("x"), "unexpected message: {message:?}");
-            }
-            // Both backends append a traceback when `error()` gets no level arg.
+            // DIVERGENCE (documented, D-037 residual risk 3): the Luau
+            // interpreter's `luaL_loadstring` prefixes the chunk location
+            // (the `error()` call lives in line 1 of the anonymous chunk),
+            // so the C++'s (LuaJIT's) `starts_with("x")` assertion becomes
+            // a prefix-tolerant containment check on the shipping VM.
+            assert!(
+                message.starts_with("[string \"chunk\"]:1: x")
+                    || (message.starts_with("[string \"\"]") && message.contains("x")),
+                "unexpected error shape: {message:?}"
+            );
+            // The shipping VM appends a traceback when `error()` gets no
+            // level arg.
             assert!(
                 message.contains("stack traceback"),
                 "expected a 'stack traceback' suffix in: {message:?}"
@@ -304,22 +297,19 @@ fn sandbox_destroys_malicious_functions() {
     gone(&lua, "io.popen");
     gone(&lua, "io.flush");
     gone(&lua, "io.setvbuf");
-    if cfg!(feature = "backend-luau") {
-        // DIVERGENCE (documented): the Luau interpreter ships no `io`
-        // library at all, so `io.open` is absent — the C++'s
-        // `luaopen_io == NULL` short-circuit (replicated by
-        // `redefine_io_open`'s existence check) is what the LuaJIT arm
-        // pins below. `does_variable_exist` takes the throwing path walk
-        // (C++ semantics), which raises `VariableDoesntExist` when the
-        // intermediate `io` global is nil — the same conclusion
-        // (`io.open` absent) in a different shape.
-        assert!(lua
-            .does_variable_exist("io.open")
-            .map(|exists| !exists)
-            .unwrap_or(true));
-    } else {
-        assert!(lua.does_variable_exist("io.open").unwrap());
-    }
+    // io: the C++'s read-only subset remains (write/popen/flush/setvbuf
+    // gone); DIVERGENCE (documented, D-037 residual risk 3): the Luau
+    // interpreter ships no `io` library at all, so `io.open` is absent —
+    // the C++'s `luaopen_io == NULL` short-circuit (replicated by
+    // `redefine_io_open`'s existence check) is the exact C++ behavior this
+    // port replicates for an io-less VM. `does_variable_exist` takes the
+    // throwing path walk (C++ semantics), which raises
+    // `VariableDoesntExist` when the intermediate `io` global is nil —
+    // the same conclusion (`io.open` absent) in a different shape.
+    assert!(lua
+        .does_variable_exist("io.open")
+        .map(|exists| !exists)
+        .unwrap_or(true));
     // debug: gone.
     assert!(!lua.does_variable_exist("debug").unwrap());
     // math.randomseed: gone; math.random: the shim.
@@ -334,19 +324,14 @@ fn sandbox_destroys_malicious_functions() {
     gone(&lua, "package.loaded.debug");
 
     // `require` keeps working (the C++ comment: "needed for the require
-    // function to work properly").
-    if cfg!(feature = "backend-luau") {
-        // DIVERGENCE (documented): `require`-ing a built-in by name is a
-        // LuaJIT/PUC behavior — the Luau interpreter's module system does
-        // not expose built-ins as require-able modules ("module 'string'
-        // not found"). Probe `string` through the global instead (the
-        // behavior the shipped levels actually use).
-        lua.execute_code("local s = string; assert(s.rep('b', 3) == 'bbb')")
-            .unwrap();
-    } else {
-        lua.execute_code("local s = require('string'); assert(s.rep('b', 3) == 'bbb')")
-            .unwrap();
-    }
+    // function to work properly"). DIVERGENCE (documented, D-037 residual
+    // risk 3): `require`-ing a built-in by name is a LuaJIT/PUC behavior —
+    // the Luau interpreter's module system does not expose built-ins as
+    // require-able modules ("module 'string' not found"). Probe `string`
+    // through the global instead (the behavior the shipped levels actually
+    // use).
+    lua.execute_code("local s = string; assert(s.rep('b', 3) == 'bbb')")
+        .unwrap();
     // base stdlib still fine.
     lua.execute_code("assert(table.concat({'x', 'y'}, '-') == 'x-y')")
         .unwrap();
@@ -404,53 +389,19 @@ fn math_random_routes_to_u_rnd_switch() {
 fn io_open_mode_is_passed_through_or_coerced() {
     let lua = new_ctx();
 
-    if cfg!(feature = "backend-luau") {
-        // DIVERGENCE (documented): the Luau interpreter ships no `io`
-        // library at all (the C++'s `luaopen_io == NULL` short-circuit is
-        // the exact C++ behavior this port replicates for LuaJIT). The
-        // `io.open("x", "rb")` surface is therefore absent, not just
-        // single-argument.
-        let has_io: bool = lua.execute_code_typed("return (io ~= nil)").unwrap();
-        assert!(!has_io, "Luau must not expose the io library");
-        return;
-    }
-
-    let path = std::env::temp_dir().join("oh_lua_rb_test.bin");
-    std::fs::write(&path, b"1\r\n2").unwrap();
-    let p = path.to_string_lossy().to_string();
-
-    // 1) Mode routing, observed through a spy: the wrapper captures
-    //    `local open = io.open` at install time, so the spy's arguments
-    //    are exactly the mode that reaches the real `io.open`.
-    lua.execute_code(
-        "seen = {}; local real = io.open; io.open = function(f, m) table.insert(seen, m); return real(f, m) end",
-    )
-    .unwrap();
-    redefine_io_open(&lua).unwrap();
-
-    lua.execute_code(&format!(
-        "local f = assert(io.open('{p}', 'rb')); f:close()"
-    ))
-    .unwrap();
-    lua.execute_code(&format!(
-        "local f = assert(io.open('{p}', 'wb')); f:close()"
-    ))
-    .unwrap();
-    lua.execute_code("assert(seen[1] == 'rb', seen[1]); assert(seen[2] == 'r', seen[2])")
-        .unwrap();
-
-    // 2) The read-only guarantee: a write mode on a missing file is
-    //    coerced to 'r', so the real open fails (nil + error, and no file
-    //    is created) — exactly what a pack script would hit.
-    let r: (bool, String) = lua
-        .execute_code_typed(
-            "local f, e = io.open('/nonexistent/oh_lua_dir/x', 'wb') return f == nil, tostring(e)",
-        )
-        .unwrap();
-    assert!(r.0, "expected open-for-write to be refused, got Some file");
-    assert!(r.1.contains("No such file"), "unexpected error: {r:?}");
-
-    let _ = std::fs::remove_file(&path);
+    // DIVERGENCE (documented, D-037 residual risk 3): the Luau interpreter
+    // ships no `io` library at all (the C++'s `luaopen_io == NULL`
+    // short-circuit is the exact C++ behavior this port replicates for an
+    // io-less VM — `redefine_io_open`'s existence check). The
+    // `io.open("x", "rb")` surface is therefore absent, not just
+    // single-argument. The C++'s mode-routing itself ("rb" passes through,
+    // every other mode coerces to "r") is pinned by the verbatim C++
+    // snippet (snippets.rs's `REDEFINE_IO_OPEN`, the C++ reference tree's
+    // own behavior) — it is unobservable on the shipping VM, which has no
+    // `io.open` to wrap. The pre-unification LuaJIT build pinned it
+    // end-to-end with a spy (the 30a record).
+    let has_io: bool = lua.execute_code_typed("return (io ~= nil)").unwrap();
+    assert!(!has_io, "Luau must not expose the io library");
 }
 
 // ---------------------------------------------------------------------------

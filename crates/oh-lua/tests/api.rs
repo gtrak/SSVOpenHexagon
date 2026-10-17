@@ -512,7 +512,18 @@ fn registered_name_set_matches_source() {
     let observed = snapshot_globals(&lua);
     let registered: BTreeSet<String> = observed.difference(&baseline).cloned().collect();
 
-    let expected: BTreeSet<String> = REGISTERED_NAMES.iter().map(|s| s.to_string()).collect();
+    // D-037: the shipping Luau context additionally carries the 5.1 compat
+    // prelude's installed globals (the C++'s LuaJIT has them natively — no
+    // registration, no diff): `loadstring` (aliasing the Rust-side `load`
+    // binding) and `module` (the shim). Both are absent on Luau, so both
+    // are installed.
+    const PRELUDE_GLOBALS: [&str; 2] = ["loadstring", "module"];
+
+    let expected: BTreeSet<String> = REGISTERED_NAMES
+        .iter()
+        .chain(PRELUDE_GLOBALS.iter())
+        .map(|s| s.to_string())
+        .collect();
 
     let missing: Vec<&String> = expected.difference(&registered).collect();
     let extra: Vec<&String> = registered.difference(&expected).collect();
@@ -522,9 +533,13 @@ fn registered_name_set_matches_source() {
     );
     assert!(
         extra.is_empty(),
-        "globals registered beyond the C++ source set: {extra:?}"
+        "globals registered beyond the C++ source set + the D-037 prelude globals: {extra:?}"
     );
-    assert_eq!(registered.len(), 285, "exact count");
+    assert_eq!(
+        registered.len(),
+        REGISTERED_NAMES.len() + PRELUDE_GLOBALS.len(),
+        "exact count"
+    );
 
     // The pinned menu getters keep their shared-init types in the game
     // context: `u_getDifficultyMult` returns the level's 1.0, and a few
@@ -545,6 +560,9 @@ fn menu_context_registers_the_same_name_set() {
     // (mapping §8.10). The menu context drops the four game-only globals
     // (never registered outside `HexagonGame::initLua`) and gains
     // `u_timelineWait` (a historical name the C++ no-op list still writes).
+    // D-037: plus the 5.1 compat prelude's installed globals (`loadstring`,
+    // `module` — absent on the shipping Luau, installed by the shared
+    // init; see `registered_name_set_matches_source`).
     let lua = LuaContext::new();
     let baseline = snapshot_globals(&lua);
     let st = game_state(true);
@@ -558,6 +576,7 @@ fn menu_context_registers_the_same_name_set() {
         .map(|s| s.to_string())
         .filter(|name| !GAME_ONLY.contains(&name.as_str()))
         .chain(std::iter::once("u_timelineWait".to_string()))
+        .chain(["loadstring".to_string(), "module".to_string()])
         .collect();
     assert_eq!(registered, expected);
 

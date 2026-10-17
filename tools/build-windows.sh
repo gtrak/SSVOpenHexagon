@@ -23,13 +23,13 @@
 # and libsodium-sys links instead of building from source). The result is
 # cached under target/ (gitignored; 'cargo clean' / --force-sodium rebuilds).
 #
-# The other C deps cross-compile in place: LuaJIT (mlua 0.10.5 luajit+vendored
-# via luajit-src) builds through the same mingw cross-gcc (host make +
-# STATIC_CC/TARGET_LD=x86_64-w64-mingw32-gcc -> libluajit-5.1.a), and
-# rusqlite (bundled) + flate2 (system-zlib host build) go through cc as usual.
+# The other C deps cross-compile in place: Luau (mlua 0.10.5 `luau` feature
+# via luau0-src — D-037: the port's single Lua VM, statically built from
+# C++ source through the same mingw cross toolchain) plus rusqlite
+# (bundled) + flate2 (system-zlib host build) go through cc as usual.
 # NOTE: the MSVC target (x86_64-pc-windows-msvc) is NOT cross-buildable from
-# Linux (LuaJIT's msvc path needs the native MSVC toolchain) — it is covered
-# by the windows-latest CI job instead.
+# Linux (the C++/C deps' msvc path needs the native MSVC toolchain) — it is
+# covered by the windows-latest CI job instead.
 #
 # Linking: 'cargo check' never links, so the check path needs nothing beyond
 # the above. '--build' links with the target's default linker
