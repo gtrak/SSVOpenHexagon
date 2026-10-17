@@ -606,6 +606,16 @@ pub fn arch(obj: &mut Obj, key: &str, value: Obj) {
     }
 }
 
+/// C++ `ssvuj::Obj{}` — a default-constructed EMPTY object (the fork's
+/// `ObjImpl` = `VecMap` — a sorted map, default-empty). `pCreate` archives
+/// it for the fresh profile's `scores` / `favorites` (Assets.cpp:1553-1557),
+/// and the writer emits it as `{}` — the on-disk shape `pCreate`'s own
+/// reload then reads back through `loadProfileFromJson`.
+#[must_use = "mirrors the C++ [[nodiscard]]"]
+pub fn empty_obj() -> Obj {
+    SerdeValue::Object(serde_json::Map::new())
+}
+
 /// C++ `getArch(value)` for scalars: build a fresh Obj.
 #[must_use = "mirrors the C++ [[nodiscard]]"]
 pub fn get_arch_str(s: &str) -> Obj {

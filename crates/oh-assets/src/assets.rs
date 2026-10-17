@@ -8,24 +8,39 @@
 //! CWD in C++, the `_RELEASE` directory in tests) instead of a hidden global
 //! singleton, matching how `oh-config` threads its base dir.
 //!
+//! The local-profile WRITE/state surface (issue 029c1, the C++
+//! `Assets.cpp:1001-1058` `saveCurrentLocalProfile`/`saveAllProfiles`,
+//! `:1446-1454` `getLocalScore`/`setLocalScore`, `:1517-1566`
+//! `pIsValidLocalProfile`/`pSaveCurrent`/`pSaveAll`/`pSetCurrent`/
+//! `pCreate`/`pRemove`) lives on this type too: the C++ has ONE `HGAssets`
+//! shared by the engine and the menu (main.cpp:381/:434), so the port shares
+//! ONE `Arc<Assets>` between the engine's `Profiles` seam and the menu's
+//! `RealMenuAssets`, and the profile state (the C++ `profileDataMap` +
+//! `currentProfilePtr`) is the `Mutex<ProfileStore>` field below — interior
+//! mutability behind the `Arc` (the `Send + Sync` requirement of the
+//! engine's `Arc<dyn Profiles>`; the C++'s single-thread unsynchronized
+//! access generalizes to a short lock).
+//!
 //! What is intentionally deferred (documented, not silently dropped):
 //! - the actual SFML texture/font/sound/shader *handles* (render/audio
 //!   backend, issue 10) — the registry records `loaded`/ids only;
 //! - Steam Workshop pack enumeration (`steamManager == nullptr` here, so the
 //!   C++ `if(steamManager != nullptr)` branch is skipped; oh-steam owns it);
-//! - the profile mutation/save API (`pCreate`/`pSetCurrent`/`saveAllProfiles`
-//!   / `getLocalScore` ...) — profile *loading* is ported (needed by the
-//!   constructor flow), the profile *editor* API is out of this task's build
-//!   list;
+//! - the F1 favorite TOGGLE (`getCurrentLocalProfile().addFavoriteLevel` /
+//!   `removeFavoriteLevel`, MenuGame.cpp:4843-4895 — the menu's
+//!   `addRemoveFavoriteLevel`; the *read* half, `isLevelFavorite`, is the
+//!   `is_level_favorite` below) and the profile-selection menu's dynamic
+//!   item add/remove (29b6);
 //! - the `reloadPack` / `reloadLevel` / `reloadAllShaders` dev-tool paths.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use oh_data::json::{self, read_file_with_errors, Obj};
 use oh_data::{
     build_pack_id, load_music_from_json, load_profile_from_json, pack_data_from_json, LevelData,
-    LoadInfo, MusicData, PackData, PackInfo, ProfileData, StyleData,
+    LoadInfo, MusicData, PackData, PackInfo, ProfileData, StyleData, GAME_VERSION,
 };
 
 use crate::asset_storage::{AssetRef, AssetStorage};
@@ -41,6 +56,19 @@ pub struct FatalLoadError {
     pub load_info: LoadInfo,
     /// A short description of the fatal condition.
     pub reason: String,
+}
+
+/// C++ `profileDataMap` + `currentProfilePtr` (the local-profile store).
+///
+/// `current: Option<String>` mirrors the C++ `ProfileData* currentProfilePtr`
+/// (a pointer INTO the map): `None` until a `profile_set_current` picks one
+/// (the C++'s `pSetCurrent` — the ONLY writer; loading profiles never sets
+/// it, so a fresh `Assets` has no active profile, exactly the C++'s
+/// `currentProfilePtr{nullptr}` initial state), the profile's name when set.
+#[derive(Debug, Default)]
+struct ProfileStore {
+    profiles: BTreeMap<String, ProfileData>,
+    current: Option<String>,
 }
 
 /// C++ `hg::HGAssets` (the `HGAssetsImpl` body).
@@ -71,8 +99,11 @@ pub struct Assets {
     music_data_map: BTreeMap<String, MusicData>,
     style_data_map: BTreeMap<String, StyleData>,
 
-    // C++ `profileDataMap` (`std::map<string, ProfileData>`).
-    profile_data_map: BTreeMap<String, ProfileData>,
+    // C++ `profileDataMap` (`std::map<string, ProfileData>`) +
+    // `currentProfilePtr` (Assets.hpp:67-68) — the shared local-profile
+    // store (the struct docs: one object behind the `Arc`, the C++'s
+    // single `HGAssets` semantics).
+    profiles: Mutex<ProfileStore>,
 
     // C++ `packIdsWithMissingDependencies` (`unordered_set<string>`).
     pack_ids_with_missing_deps: BTreeSet<String>,
@@ -109,7 +140,7 @@ impl Assets {
             music_path_map: HashMap::new(),
             music_data_map: BTreeMap::new(),
             style_data_map: BTreeMap::new(),
-            profile_data_map: BTreeMap::new(),
+            profiles: Mutex::new(ProfileStore::default()),
             pack_ids_with_missing_deps: BTreeSet::new(),
             shaders: ShaderRegistry::new(),
             load_info: LoadInfo::default(),
@@ -146,7 +177,12 @@ impl Assets {
         a.verify_all_pack_dependencies();
 
         // (5) load local profiles (C++: non-fatal; missing Profiles/ -> log).
-        let _ = a.load_all_local_profiles();
+        if !a.load_all_local_profiles() {
+            // C++ `HGAssets` ctor (Assets.cpp:356-360): log + continue —
+            // "No need to terminate here, some tests do not require
+            // profiles."
+            println!("[HGAssets::HGAssets] Error loading local profiles");
+        }
 
         // (6) ordering (C++: after all the loads above).
         a.sort_level_ids_by_menu_priority();
@@ -458,28 +494,55 @@ impl Assets {
     }
 
     // ------------------------------------------------------------------
-    // PROFILES (C++ `loadAllLocalProfiles` / `addLocalProfile`)
+    // PROFILES (C++ `loadAllLocalProfiles` / `addLocalProfile` / the `p*`
+    // write + state surface, Assets.cpp:1001-1058, :1446-1566)
     // ------------------------------------------------------------------
 
     fn load_all_local_profiles(&mut self) -> bool {
-        if !self.root.join("Profiles").is_dir() {
-            // C++: log "Folder Profiles/ does not exist" and return false
-            // (NOT fatal).
-            return false;
+        let mut store = self.profiles.lock().expect("profile store poisoned");
+        let (ok, mut errors) = self.reload_local_profiles(&mut store);
+        for e in &mut errors {
+            self.load_info.add_formatted_error(e);
         }
+        ok
+    }
+
+    /// C++ `loadAllLocalProfiles` (Assets.cpp:849-870) over the locked
+    /// store: the `Profiles/` folder check (log + false), the `.json`
+    /// scan, the `addLocalProfile` invalid-favorite filter. The C++
+    /// `LoadInfo` error accumulation is RETURNED to the caller: the
+    /// constructor path appends it to `load_info` before boot (the C++'
+    /// `MenuGame` ctor copies `getLoadResults()` there —
+    /// MenuGame.cpp:232 — so the `profile_create` reload path's errors
+    /// are unobservable in the C++ and are not appended on it; only the
+    /// `read_file_with_errors` console line, `ssvuj::logReadError`, fires
+    /// on both, as in the C++).
+    fn reload_local_profiles(&self, store: &mut ProfileStore) -> (bool, Vec<String>) {
+        if !self.root.join("Profiles").is_dir() {
+            // C++ `ssvu::lo("::loadAssets") << "Folder Profiles/ does not
+            // exist" << std::endl` — log + return false (NOT fatal).
+            println!("[::loadAssets] Folder Profiles/ does not exist");
+            return (false, Vec::new());
+        }
+        // C++ `ssvu::lo("::loadAssets") << "loading local profiles\n"`.
+        println!("[::loadAssets] loading local profiles");
+        store.profiles.clear();
+        let mut errors = Vec::new();
         for p in pack_scan::scan_single_by_ext(&self.root, "Profiles/", ".json") {
-            let (object, mut error) = read_file_with_errors(&self.root.join(&p));
-            self.load_info.add_formatted_error(&mut error);
+            let (object, error) = read_file_with_errors(&self.root.join(&p));
+            if !error.is_empty() {
+                errors.push(error);
+            }
             if let Ok(profile) = load_profile_from_json(&object) {
-                self.add_local_profile(profile);
+                self.add_local_profile(store, profile);
             }
         }
-        true
+        (true, errors)
     }
 
     /// C++ `addLocalProfile`: drop favorite ids that are not valid level ids,
     /// then emplace by name.
-    fn add_local_profile(&mut self, mut profile: ProfileData) {
+    fn add_local_profile(&self, store: &mut ProfileStore, mut profile: ProfileData) {
         let to_remove: Vec<String> = profile
             .get_favorite_level_ids()
             .iter()
@@ -489,8 +552,226 @@ impl Assets {
         for id in to_remove {
             profile.remove_favorite_level(&id);
         }
-        self.profile_data_map
+        store
+            .profiles
             .insert(profile.get_name().to_string(), profile);
+    }
+
+    /// C++ `getCurrentLocalProfileFilePath()` (Assets.cpp:1491-1494):
+    /// `"Profiles/" + name + ".json"` in the CWD (the port's `root`).
+    fn profile_file_path(&self, name: &str) -> PathBuf {
+        self.root.join("Profiles").join(format!("{name}.json"))
+    }
+
+    /// The C++ `saveCurrentLocalProfile` / `saveAllProfiles` file content
+    /// (Assets.cpp:1010-1024, :1037-1052): the four keys, `version` = the
+    /// CURRENT `GAME_VERSION` (the C++ archives the compile-time constant,
+    /// NOT the profile's loaded version — which the C++'s
+    /// `isObj("version")` load bug, `LoadFromJson.cpp:40-44`, pins to
+    /// -1.0.0 for every file it reads; `profile_to_obj` is the stored-version
+    /// builder this lane deliberately does NOT reuse), `name`, `scores`
+    /// (the `BTreeMap` keys byte-sorted — the C++'s `std::map` storage +
+    /// writer), `favorites` (the set as an array), via the fork-faithful
+    /// `write_to_string`.
+    fn profile_file_contents(profile: &ProfileData) -> String {
+        let version = GAME_VERSION;
+        let mut version_obj = json::Obj::default();
+        json::arch(
+            &mut version_obj,
+            "major",
+            json::get_arch_int(i64::from(version.major)),
+        );
+        json::arch(
+            &mut version_obj,
+            "minor",
+            json::get_arch_int(i64::from(version.minor)),
+        );
+        json::arch(
+            &mut version_obj,
+            "micro",
+            json::get_arch_int(i64::from(version.micro)),
+        );
+        let mut scores = json::empty_obj();
+        for (id, score) in profile.get_scores() {
+            json::arch(&mut scores, id, json::get_arch_f32(*score));
+        }
+        let favorites: Vec<String> = profile.get_favorite_level_ids().iter().cloned().collect();
+        let mut root = json::Obj::default();
+        json::arch(&mut root, "version", version_obj);
+        json::arch(&mut root, "name", json::get_arch_str(profile.get_name()));
+        json::arch(&mut root, "scores", scores);
+        json::arch(&mut root, "favorites", json::get_arch_vec_str(&favorites));
+        json::write_to_string(&root)
+    }
+
+    // ------------------------------------------------------------------
+    // PROFILE STATE (C++ `currentProfilePtr` accessors, Assets.cpp:
+    // 1446-1524)
+    // ------------------------------------------------------------------
+
+    /// C++ `anyLocalProfileActive()` (Assets.cpp:1459-1462) —
+    /// `currentProfilePtr != nullptr`.
+    #[must_use]
+    pub fn any_local_profile_active(&self) -> bool {
+        self.profiles
+            .lock()
+            .expect("profile store poisoned")
+            .current
+            .is_some()
+    }
+
+    /// C++ `pGetName()` / `getCurrentLocalProfile().getName()` (Assets.cpp:
+    /// 1522-1524) — the active profile's name. The C++ asserts a profile is
+    /// active (`getCurrentLocalProfile`, Assets.cpp:1464-1468); `None` is
+    /// the port arm when it is not (the `NullProfiles`-legacy empty-name
+    /// behavior).
+    #[must_use]
+    pub fn current_local_profile_name(&self) -> Option<String> {
+        self.profiles
+            .lock()
+            .expect("profile store poisoned")
+            .current
+            .clone()
+    }
+
+    /// C++ `getLocalScore(mId)` (Assets.cpp:1446-1449) — the active
+    /// profile's `ProfileData::getScore` (missing id → 0.0). No active
+    /// profile: the C++ asserts; the port returns 0.0 (the `NullProfiles`
+    /// legacy arm).
+    #[must_use]
+    pub fn get_local_score(&self, level_id: &str) -> f32 {
+        let store = self.profiles.lock().expect("profile store poisoned");
+        store
+            .current
+            .as_deref()
+            .and_then(|n| store.profiles.get(n))
+            .map(|p| p.get_score(level_id))
+            .unwrap_or(0.0)
+    }
+
+    /// C++ `setLocalScore(mId, mScore)` (Assets.cpp:1451-1454) — the active
+    /// profile's `ProfileData::setScore` (the engine's PB/death path,
+    /// HexagonGame.cpp:871,908,915, writes through this). No active profile:
+    /// the C++ asserts; the port no-ops (the `NullProfiles` legacy arm —
+    /// `shouldSaveScore`'s `anyLocalProfileActive` reject, HexagonGame.cpp:
+    /// 1178-1183, already vetoes the call in the C++).
+    pub fn set_local_score(&self, level_id: &str, score: f32) {
+        let mut store = self.profiles.lock().expect("profile store poisoned");
+        if let Some(name) = store.current.clone() {
+            if let Some(p) = store.profiles.get_mut(&name) {
+                p.set_score(level_id, score);
+            }
+        }
+    }
+
+    /// C++ `getCurrentLocalProfile().isLevelFavorite(levelID)` (the menu's
+    /// F1 favorite read, MenuGame.cpp:2978-2979). No active profile: the C++
+    /// asserts; the port reports `false`.
+    #[must_use]
+    pub fn is_level_favorite(&self, level_id: &str) -> bool {
+        let store = self.profiles.lock().expect("profile store poisoned");
+        store
+            .current
+            .as_deref()
+            .and_then(|n| store.profiles.get(n))
+            .is_some_and(|p| p.is_level_favorite(level_id))
+    }
+
+    // ------------------------------------------------------------------
+    // PROFILE WRITE (C++ `saveCurrentLocalProfile` / `saveAllProfiles` /
+    // `pCreate` / `pRemove` / `pSetCurrent`, Assets.cpp:1001-1058,
+    // :1532-1566)
+    // ------------------------------------------------------------------
+
+    /// C++ `pSaveCurrent()` = `saveCurrentLocalProfile()` (Assets.cpp:
+    /// 1526-1529, :1001-1025): early-return when no current profile; write
+    /// the four keys to `Profiles/<name>.json`. The C++ `writeToFile` is an
+    /// unchecked `std::ofstream` — a failed write is unobservable through
+    /// the C++ surface, so the port's `fs::write` error is ignored too.
+    pub fn profile_save_current(&self) {
+        let store = self.profiles.lock().expect("profile store poisoned");
+        let Some(name) = store.current.clone() else {
+            return; // C++ `if(currentProfilePtr == nullptr) return;`
+        };
+        let Some(profile) = store.profiles.get(&name) else {
+            return;
+        };
+        let _ = std::fs::write(
+            self.profile_file_path(&name),
+            Self::profile_file_contents(profile),
+        );
+    }
+
+    /// C++ `pSaveAll()` = `saveAllProfiles()` (Assets.cpp:1532-1535,
+    /// :1027-1058): rewrites EVERY profile's file (the `std::map`
+    /// iteration = name-sorted; the port's `BTreeMap` matches). The
+    /// `mainClient` exit scope guard (main.cpp:382-388) calls this.
+    pub fn profile_save_all(&self) {
+        let store = self.profiles.lock().expect("profile store poisoned");
+        for (name, profile) in &store.profiles {
+            let _ = std::fs::write(
+                self.profile_file_path(name),
+                Self::profile_file_contents(profile),
+            );
+        }
+    }
+
+    /// C++ `pCreate(mName)` (Assets.cpp:1545-1561): write
+    /// `Profiles/<name>.json` with EXACTLY the C++'s three keys — `name`,
+    /// `scores` = an EMPTY object, `favorites` = an EMPTY object, and NO
+    /// `version` key. The C++ archives `ssvuj::Obj{}` for the two empties —
+    /// the fork's `ObjImpl` (a sorted map) default-constructed empty, which
+    /// the writer emits as `{}`; the files are on-disk compatibility
+    /// artifacts the C++ re-reads through `loadProfileFromJson` (where
+    /// `scores`/`favorites` extract as empty), so the shape is matched
+    /// byte-for-byte.
+    ///
+    /// Then `profileDataMap.clear()` + `loadAllLocalProfiles()`. The C++
+    /// `std::terminate()`s on a failed reload (Assets.cpp:1555-1560); the
+    /// port returns `Err` (the `Assets::new` `FatalLoadError` clean-exit
+    /// deviation class — the caller logs the C++'s line and keeps running,
+    /// where the C++ process dies).
+    pub fn profile_create(&self, name: &str) -> Result<(), String> {
+        let mut root = json::Obj::default();
+        json::arch(&mut root, "name", json::get_arch_str(name));
+        // C++ `ssvuj::arch(root, "scores", ssvuj::Obj{})` — the empty object.
+        json::arch(&mut root, "scores", json::empty_obj());
+        json::arch(&mut root, "favorites", json::empty_obj());
+        let _ = std::fs::write(self.profile_file_path(name), json::write_to_string(&root));
+
+        let mut store = self.profiles.lock().expect("profile store poisoned");
+        store.profiles.clear();
+        let (ok, _errors) = self.reload_local_profiles(&mut store);
+        if !ok {
+            // C++: `ssvu::lo("HGAssets::HGAssets") << "Error loading local
+            // profiles\n"` + `std::terminate()`.
+            println!("[HGAssets::HGAssets] Error loading local profiles");
+            return Err("Error loading local profiles".to_string());
+        }
+        Ok(())
+    }
+
+    /// C++ `pRemove(mName)` (Assets.cpp:1563-1566) — the store erase ONLY.
+    /// The FILE deletion is the menu's job (MenuGame.cpp:2419-2431:
+    /// `std::remove("Profiles/" + name + ".json")`, and only on success
+    /// `assets.pRemove(name)`); the menu seam exposes the two halves
+    /// separately for the same reason.
+    pub fn profile_remove(&self, name: &str) {
+        let mut store = self.profiles.lock().expect("profile store poisoned");
+        store.profiles.remove(name);
+    }
+
+    /// C++ `pSetCurrent(mName)` (Assets.cpp:1537-1543): locate (the C++
+    /// `SSVOH_ASSERT`s the name exists — a release build would dereference
+    /// `end()`, UB) and set the current profile. The port sets it iff the
+    /// name is present (documented deviation: a missing name is a no-op,
+    /// not a crash — every C++ call site passes a name the menu just
+    /// listed/created, so the assert never fires in the C++ either).
+    pub fn profile_set_current(&self, name: &str) {
+        let mut store = self.profiles.lock().expect("profile store poisoned");
+        if store.profiles.contains_key(name) {
+            store.current = Some(name.to_string());
+        }
     }
 
     // ------------------------------------------------------------------
@@ -670,22 +951,35 @@ impl Assets {
         &self.pack_ids_with_missing_deps
     }
 
-    /// C++ `getProfileData` (the loaded profile store; the profile *editor*
-    /// API is deferred — see module docs).
-    pub fn get_profile_data(&self, name: &str) -> Option<&ProfileData> {
-        self.profile_data_map.get(name)
+    /// C++ `getProfileData` (the loaded profile store; the C++ returns a
+    /// reference — the port clones, the `Mutex` guard is scope-local).
+    #[must_use]
+    pub fn get_profile_data(&self, name: &str) -> Option<ProfileData> {
+        self.profiles
+            .lock()
+            .expect("profile store poisoned")
+            .profiles
+            .get(name)
+            .cloned()
     }
 
     #[must_use]
     pub fn get_local_profiles_size(&self) -> usize {
-        self.profile_data_map.len()
+        self.profiles
+            .lock()
+            .expect("profile store poisoned")
+            .profiles
+            .len()
     }
 
     /// C++ `getLocalProfileNames` (Assets.cpp:1500-1511) — the profile names
     /// in `std::map` (byte-sorted) order, mirroring the C++ `std::map`.
     #[must_use]
     pub fn get_profile_names(&self) -> Vec<String> {
-        self.profile_data_map
+        self.profiles
+            .lock()
+            .expect("profile store poisoned")
+            .profiles
             .values()
             .map(|p| p.get_name().to_string())
             .collect()
