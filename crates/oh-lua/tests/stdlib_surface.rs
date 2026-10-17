@@ -191,6 +191,36 @@ fn jit_library_is_reachable_and_toggleable() {
 }
 
 #[test]
+fn disable_jit_turns_the_engine_off() {
+    // K3 / issue 33: `LuaContext::new()` applies this automatically on arm64
+    // Android, where the trace assembler hangs (see deviations.md K3/F29 for
+    // the on-device stack traces). This pins the seam's contract on the host.
+    let lua = LuaContext::new();
+
+    if cfg!(feature = "backend-luau") {
+        // DIVERGENCE (documented, as in the test above): the Luau interpreter
+        // exposes no `jit` library, so there is nothing to turn off and the
+        // call is expected to fail — which is also why `LuaContext::new`'s
+        // Android mitigation is feature-gated to the LuaJIT backend.
+        assert!(lua.disable_jit().is_err());
+        return;
+    }
+
+    assert!(
+        lua.execute_code_typed::<bool>("return jit.status()")
+            .unwrap(),
+        "the host starts with the JIT on (the C++ default)"
+    );
+    lua.disable_jit().unwrap();
+    assert_eq!(
+        lua.execute_code_typed::<(bool, bool)>("return false, jit.status()")
+            .unwrap(),
+        (false, false),
+        "disable_jit() must leave the engine off"
+    );
+}
+
+#[test]
 fn package_loaded_shape() {
     // C++ pre-sandbox: `luaL_openlibs` -> `luaL_register` puts every opened
     // library into `package.loaded` — including `debug` (the C++ removes it

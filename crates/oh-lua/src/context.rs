@@ -46,9 +46,35 @@ impl LuaContext {
     /// `bad_alloc` from `lua_newstate`.)
     #[must_use]
     pub fn new() -> Self {
-        Self {
+        let ctx = Self {
             lua: mlua::Lua::new(),
+        };
+
+        // K3 / issue 33: on arm64 Android the vendored LuaJIT's trace assembler
+        // never returns (device ANR traces: __clear_cache -> lj_asm_trace ->
+        // trace_start -> lj_vm_cpcall, with the Android UI thread idle in
+        // epoll_pwait), so the app is killed by "Input dispatching timed out".
+        // The interpreter has no trace assembler, so it removes the hang. Gated
+        // on the LuaJIT backend because the Luau backend has no `jit` table at
+        // all (`disable_jit` would simply error there).
+        #[cfg(all(target_os = "android", feature = "backend-luajit"))]
+        {
+            let _ = ctx.disable_jit();
         }
+
+        ctx
+    }
+
+    /// Turn LuaJIT's JIT engine off (`jit.off()`), leaving the interpreter.
+    ///
+    /// **This is a recorded deviation (F29), not C++ parity**: the C++ never
+    /// disables the JIT. It exists because this build runs a *different* LuaJIT
+    /// than the C++ (K4's version skew) and this one's arm64 trace assembler
+    /// hangs — see `deviations.md` K3/F29 for the stack traces. Applied only
+    /// where the hang actually manifests (Android + the LuaJIT backend); the
+    /// Luau unification (issue 30 §12) deletes the whole class.
+    pub fn disable_jit(&self) -> Result<(), LuaError> {
+        self.execute_code("jit.off()")
     }
 
     /// C++ `executeCode(std::string_view)` (void): load with chunk name
