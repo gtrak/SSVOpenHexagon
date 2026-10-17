@@ -54,6 +54,19 @@ Each spec states the expected baseline test count; your work should raise it, no
 lower it. If the gate cannot be green, **stop and report** rather than leaving a
 red tree for the next lane.
 
+- **The host gate is not a web/Android gate.** A change to target-gated code
+  (`#[cfg(target_os = "emscripten")]`, android, gles paths) is INVISIBLE to
+  `cargo build`/`cargo test` on the host: those branches are never compiled, and a
+  textual merge can happily produce a tree that does not compile for that target while
+  every host stage is green. This bit the 026 landing - git merged 026's cfg'd
+  emscripten paths against a master that had moved on (K6's `gl.rs` rework, 031's
+  overlay fields), so the web build did not compile AT ALL and the host gate did not
+  notice. If your change touches a target-gated path, BUILD THAT TARGET before calling
+  it done: `cargo check -p <crate> --target wasm32-unknown-emscripten` (emsdk container,
+  the recipe in `tools/`-adjacent notes) or `--target aarch64-linux-android`. Landing
+  such a change without it means the next person discovers it, usually in the target the
+  operator actually wants.
+
 ## 5. Stop-and-report beats grinding
 
 Long sessions degrade and spiral. If you are deep in a task and not converging,
