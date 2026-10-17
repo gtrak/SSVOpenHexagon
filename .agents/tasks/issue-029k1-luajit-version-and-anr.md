@@ -100,3 +100,131 @@ is a genuine deviation **and** a 1:1-port concern, not just a sandbox nit.
 - Keep the gate green: `bash tools/gate.sh` (753 tests). The issue-29 audit
   workflow is finished; `.agents/audits/*.md` are committed — don't rewrite them.
 - Do not touch non-phone processes. No emulator.
+
+## Report (029k1, 2026-10-17)
+
+### What was established
+
+**1. The "fork" is not a fork (fact 1 resolved).** `vittorioromeo/LuaJIT @
+4dc5ffbf` (the C++ CPM pin, 2023-04-02) contains **zero original commits**:
+every commit in its history — including every ARM64-fix commit and Wohlstand's
+CMake support — exists in upstream `LuaJIT/LuaJIT`. It is plain upstream v2.1
++ CMake. The port's vendored `luajit-src 210.5.12+a4f56a4` bundles upstream
+LuaJIT @ `a4f56a4` (2025-01-13, "v2.1 + master") — **~21 months NEWER** than
+the C++ pin. "Pin to the fork" therefore means pin to OLDER upstream. Between
+the two pins upstream refactored the arm64 trace assembler heavily (2023-09:
+IR_HREF/UREF/OBAR codegen rewrites; `43eff4aa` mcode-limit check fix;
+`0705ef6c` TBZ/TBNZ range checks; `91592899` HREF FP-key fix; ADRP/ADR
+constant handling) — those are the concrete regression candidates for an
+arm64-only trace-compile pathology. (Diffs: scratch clones at
+`/home/gary/dev/scratch` — `luajit-fork` @ 4dc5ffbf, `upstream-luajit`,
+`lj_asm_arm64.diff`, `fork_arm64_vs_beta3.diff`.)
+
+**2. The hang does NOT reproduce host-side, with EITHER LuaJIT (step 1 + 2
+resolved as far as the host can go).** `tools/k3-luajit-hang/` (committed):
+`driver.c` runs the **full-fidelity** `babysteps` — the real level script plus
+its real dependency scripts (`Packs/base/Scripts/{utils,common,
+commonpatterns}.lua` via C `u_execDependencyScript`/`u_execScript`), a minimal
+timeline model (`t_wait`/`w_wall`/`l_getNumTimelineEntries`/… in C), the
+scripted tutorial `onInput` events driving the complete state machine (steps
+0→6, incl. the mid-level `l_resetTime` and `onStep` pattern spawning), and
+`onUpdate` called from C per frame exactly like `call_on_update`. `build.sh`
+builds either LuaJIT tree at its exact pin (Makefile, `BUILDMODE=static`, the
+C++ pin additionally `-DLUAJIT_DISABLE_FFI=1`; `qemu` mode no-ops
+`lj_mcode_sync`) and links the driver (aarch64 needs `-fno-emulated-tls` + a
+referenced 64-aligned TLS probe — NDK 27 bionic's executable-TLS alignment
+check; `tls64.py` remains as fallback). Results (full-fidelity run, tutorial
+to `e_kill`):
+
+| arch | LuaJIT | JIT | result |
+|---|---|---|---|
+| x86_64 native | vendored `a4f56a4` (2025) | on | no hang |
+| aarch64 qemu-user | vendored `a4f56a4` (2025) | on | no hang |
+| aarch64 qemu-user | C++ pin `4dc5ffbf` (2023, FFI off) | on | no hang |
+| aarch64 qemu-user | vendored | off | no hang (expected) |
+
+So the decisive question (C++-pin vs `jit.off()`) **cannot be answered
+host-side**: the phone hang has no host-side signature in either VM. Residual
+candidates are phone-specific: CPU microarchitecture/erratum (QEMU models the
+ISA, not microarchitectural behavior), ASLR/trace layout (the 2025
+`asm_guardtnb` exit-stub distance checks are layout-dependent; the 029a1
+session already noted the hang may be ASLR-dependent), or the full game process
+context (K2 free-run feeding `onUpdate` at 360–500×/s vs the C++'s paced
+loop, the real `__clear_cache` shim — no-op'd in qemu-mode builds, and other
+Lua entry points / threads).
+
+**3. The stdlib surface a script can reach is C++-equivalent (step 3 done,
+pinned by `crates/oh-lua/tests/stdlib_surface.rs`, 6 tests, passing).**
+- `require('ffi')` FAILS in the port exactly like the C++ (pre-sandbox:
+  "module 'ffi' not found"; post-sandbox: `'package.loaders' must be a table` —
+  the verbatim sandbox's `package.loaders` clear makes any `require` raise that
+  error on both sides). Pre-029k1 the port's VM merely left FFI *compiled in
+  but unopened* (mlua safe-set); now it is compiled out (see 4).
+- `package.preload` empty in both; `jit.status`/`jit.off`/`jit.on` reachable
+  and working in both; `package.loaded` shape documented in the test (port:
+  `_G` present, `debug` absent; C++ pre-sandbox: the inverse — the sandbox's
+  `destroy_malicious_functions` makes the post-sandbox shape identical).
+- `jit.util.event` no longer exists in the 2025 tree (removed upstream) — the
+  driver counts traces by scanning `jit.util.traceinfo(n)`.
+
+**4. Fix applied: the port's LuaJIT is now built with the C++'s own FFI
+switch.** The C++'s `LUAJIT_DISABLE_FFI=ON` (CMakeLists.txt:127, "TODO (P2):
+revisit this decision about FFI") compiles in `-DLUAJIT_DISABLE_FFI` →
+`lj_arch.h` `LJ_HASFFI 0` → the FFI C sources compile to empty objects and
+`luaopen_ffi` is not exported. `luajit-src` exposed no hook, so the crate is
+vendored locally (`extlibs/luajit-src`, verbatim + the flag in `build_unix`
+`XCFLAGS` and in `msvcbuild.bat` `LJCOMPILE`) and wired through
+`[patch.crates-io]` (same crate name/version). Verified: the port's
+`libluajit-5.1.a` no longer exports `luaopen_ffi`; its `luaopen_*` set now
+matches the C++ FFI-off build. One coupling discovered and handled: mlua
+0.10.5's `luajit` feature references `luaopen_ffi` at LINK time even in safe
+mode (runtime-guarded, but the relocation is emitted) — so `oh-lua` now
+compiles `ffi_stub.c`, a documented, never-called link-compat stub (safe-mode
+states reject `StdLib::FFI` with a `SafetyError` before any load; the stub
+raises the C++-like error if ever reached). Observable behavior is unchanged
+(the 6 surface tests pass against the FFI-off VM).
+
+**5. Register + docs updated.** K3 row refreshed (version-skew facts + host
+A/B matrix + residual candidates); new K4 row for the LuaJIT divergence itself
+(FFI half fixed by 029k1; version half open pending the device A/B);
+`crates/oh-lua/Cargo.toml`'s "matching the C++ build" claim corrected;
+`.agents/skills/lib-luajit.md`'s "Two pins, one runtime" rewritten as "Two
+pins, NOT the same build".
+
+### What was NOT established (explicit)
+
+- **The on-device A/B was never run.** The phone's ADB-over-TCP listener
+  (`192.168.10.138:38721` and `:5555`) stayed closed for the entire lane
+  (the 029a1 residual: re-arming `adb tcpip` needs the device screen), so
+  neither "C++-pinned LuaJIT plays `babysteps` on the phone" nor "`jit.off()`
+  plays `babysteps` on the phone" was observed. The hang's root cause remains
+  OPEN.
+- **QEMU results are evidence, not device truth.** qemu-user emulates the ARM64
+  ISA generically (no SD439 microarchitecture/erratum modeling), does not
+  reproduce the phone's address-space layout, and runs with the cache flush
+  no-op'd (qemu-mode builds only — never run those on a real device).
+  A non-reproduction under QEMU does not clear the phone-specific hypotheses.
+- **No version pin decision was made.** Pinning the port to `4dc5ffbf` (the
+  C++'s exact 2023 snapshot) was time-boxed per this task and NOT done: it is
+  only warranted if the device A/B shows the C++-pinned VM avoids the hang;
+  if the hang is not the version, pinning would be a regression (older
+  assembler). The decision needs the device.
+- **The full gate was run at each commit step** (see the commit trail) but the
+  final full `tools/gate.sh` run for this Report is recorded in the commit
+  trail of the register/report commit.
+
+### Residual risk
+
+- The K3 hang: unchanged (device-side, OPEN). If it persists on the phone,
+  the 029a1-completion lane should (a) run the two-arm device A/B (rebuild the
+  port against `4dc5ffbf` FFI-off vs `jit.off()` on `a4f56a4`), (b) capture the
+  pathological trace on-device (`jit.dump` / `traceinfo` from a hookable
+  build), and (c) weigh mitigations (JIT off for level scripts, default-level
+  choice, the K2 fps cap).
+- The FFI stub (`ffi_stub.c`) is dead code by construction; the risk is a
+  future unsafe-mode state (`StdLib::FFI`) in oh-lua — impossible through the
+  current `LuaContext::new` (safe-only) and guarded by the `SafetyError`.
+- Vendored `extlibs/luajit-src` must stay in sync if the port ever bumps
+  `luajit-src` — the `[patch]` overrides the registry version, so a version
+  bump must update the local copy (README in `extlibs/luajit-src` documents
+  the patch).

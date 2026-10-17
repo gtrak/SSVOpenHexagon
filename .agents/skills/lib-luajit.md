@@ -1,11 +1,11 @@
 # lib-luajit — LuaJIT (C backend of the port)
 
-## Two pins, one runtime
+## Two pins, NOT the same build (verified 029k1)
 
-- **C++ baseline**: `vittorioromeo/LuaJIT @ 4dc5ffbf60b16e54274c470fcc022165685c96fe` (CPM, `CMakeLists.txt:123-134`), built with `LUAJIT_DISABLE_FFI=ON`. This is a fork of **LuaJIT 2.1** exposing the **Lua 5.1 C API**.
-- **Rust port**: `mlua 0.10.5` with `luajit`+`vendored` → **luajit-src 210.5.12** (upstream LuaJIT 2.1.0-beta3, `Cargo.lock`). Compiled from C at build time (`cc` + no system library).
+- **C++ baseline**: `vittorioromeo/LuaJIT @ 4dc5ffbf60b16e54274c470fcc022165685c96fe` (CPM, `CMakeLists.txt:123-134`), built with `LUAJIT_DISABLE_FFI=ON` (CMakeLists.txt:127). Despite the repo name, the pin is **not a fork with special commits** — every commit in that tree (including the ARM64 fixes and the CMake support) exists in upstream `LuaJIT/LuaJIT`; it is plain **upstream v2.1 as of 2023-04-02** + CMake (029k1 verified by commit-level diff; see the K3 row in `deviations.md`).
+- **Rust port**: `mlua 0.10.5` with `luajit`+`vendored` → **luajit-src 210.5.12+a4f56a4** (upstream LuaJIT @ `a4f56a4`, 2025-01-13, "v2.1 + master" — ~21 months NEWER than the C++ pin), vendored locally as `extlibs/luajit-src` and patched through `[patch.crates-io]` to build with **`-DLUAJIT_DISABLE_FFI`** (the C++'s own FFI switch; 029k1). The `oh-lua` `ffi_stub.c` link-compat shim satisfies mlua's link-time `luaopen_ffi` reference (never called: safe-mode states reject `StdLib::FFI`). Compiled from C at build time (`cc` + no system library).
 
-Both are LuaJIT 2.1 in 5.1-compat API mode; the observable behaviors below hold for both (the Rust-side facts were verified empirically through the vendored build — see `crates/oh-lua/tests/runtime.rs`).
+Both are LuaJIT 2.1 in 5.1-compat API mode and are now FFI-off at the compile level, but they are DIFFERENT upstream snapshots: between the two pins upstream refactored the arm64 assembler (the 2023-09 IR_HREF/UREF/OBAR codegen, mcode-limit and TBZ/TBNZ-range changes, ADRP/ADR constant handling) — the leading suspect in the on-device `babysteps` trace-compile hang (K3; the hang does not reproduce host-side, x86_64 or qemu-aarch64, with either pin). The observable behaviors below hold for both (the Rust-side facts were verified empirically through the vendored build — see `crates/oh-lua/tests/runtime.rs` + `crates/oh-lua/tests/stdlib_surface.rs`).
 
 ## Numbers are all doubles
 
