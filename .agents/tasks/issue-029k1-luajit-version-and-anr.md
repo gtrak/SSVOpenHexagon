@@ -291,3 +291,16 @@ just straddled the black bar.)
 `step1_trFocus` reads "yes!"), which needs the tutorial pack/level selected and MULTI-TOUCH
 (ADB's `input` drives one pointer; `sendevent` with the ABS_MT_* protocol would be needed),
 and the two PENDING visual items (029e's textures).
+
+**OPERATIONAL NOTE (a self-inflicted issue, recorded so nobody re-derives it):** the K3
+A/B install replaced a DEBUGGABLE build with `tools/package-android.sh`'s RELEASE APK
+(`cargo apk build --release`), and that APK is NOT debuggable — `dumpsys package` now shows
+`flags=[ALLOW_CLEAR_USER_DATA ALLOW_BACKUP]` (no DEBUGGABLE) and `run-as` fails with
+"package not debuggable". All `run-as`-based evidence collection (the profile/replay pulls,
+029c1's persistence check) therefore STOPPED WORKING after that install. To get it back:
+build with the DEV profile (`cargo apk build`, no `--release`) or add a temporary
+`debuggable = true` to the android metadata — per WORKER-HYGIENE §6, the latter must be
+reverted in its own commit and said so. What survives: 029a1 is already verified (the
+98-byte replay was pulled BEFORE the reinstall), and the app's data-dir wiring is still
+evidenced without run-as (config.json 8225 B, users.json/scores.json written at first run),
+so 029c1's ProfileStore remains plausible-but-unverified on device rather than suspicious.
