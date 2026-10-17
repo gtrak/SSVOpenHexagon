@@ -2,9 +2,11 @@
 //! [`oh_assets::Assets`] (the `_RELEASE` directory). This is the seam the
 //! app layer and the "list every pack/level" test drive `MenuGame` with.
 //!
-//! The profile-editor operations (`pCreate`/`pSetCurrent`/`pRemove`) and
-//! `getLocalProfileNames` are not yet exposed by `oh-assets` (it defers the
-//! profile *editor* API, issue 005); those are documented no-op seams here.
+//! The profile surface is the SHARED `oh-assets` store (issue 029c1):
+//! the C++ has ONE `HGAssets` (main.cpp:381/:434) — the menu and the engine
+//! observe the same profile state, so a score the engine's `Profiles` seam
+//! sets during play is visible here immediately. The `Arc<Assets>` is the
+//! same object the engine composition holds; no local mirror exists.
 //! Packs / levels / styles / load-results are fully backed.
 
 use std::path::Path;
@@ -18,17 +20,15 @@ use crate::seams::{LevelInfo, LoadResults, MenuAssets, PackDataInfo, StyleBackgr
 /// `MenuAssets` over a loaded `oh_assets::Assets`.
 ///
 /// `Arc`-shared: the windowed app builds ONE `Assets` and shares it between
-/// the engine composition and this seam (the C++ shares one `HGAssets`
-/// between `HexagonGame` and `MenuGame`, main.cpp:381/:434).
-///
-/// `current_profile` mirrors the C++ `HGAssets::pSetCurrent` bookkeeping
-/// (the profile *editor* API is deferred by `oh-assets`; this seam records
-/// the selection so the menu's "CURRENT PROFILE:" line and the local
-/// personal best read the selected profile's data, as the C++ does).
+/// the engine composition (whose `Profiles` seam is `compose::RealProfiles`
+/// over the same `Arc`) and this seam (the C++ shares one `HGAssets`
+/// between `HexagonGame` and `MenuGame`, main.cpp:381/:434). The profile
+/// state (the current profile, scores, favorites) lives in that one
+/// `Assets` store — a score set through the engine seam during play is
+/// read back here with no sync step (the C++'s single-object semantics).
 #[derive(Debug)]
 pub struct RealMenuAssets {
     pub assets: Arc<Assets>,
-    current_profile: std::cell::RefCell<Option<String>>,
 }
 
 impl RealMenuAssets {
@@ -36,17 +36,13 @@ impl RealMenuAssets {
     pub fn new(root: impl AsRef<Path>) -> Result<Self, oh_assets::FatalLoadError> {
         Ok(Self {
             assets: Arc::new(Assets::new(root, true, false)?),
-            current_profile: std::cell::RefCell::new(None),
         })
     }
 
     /// Wrap an already-loaded `Assets` (no second load).
     #[must_use]
     pub fn from_arc(assets: Arc<Assets>) -> Self {
-        Self {
-            assets,
-            current_profile: std::cell::RefCell::new(None),
-        }
+        Self { assets }
     }
 }
 
@@ -148,27 +144,52 @@ impl MenuAssets for RealMenuAssets {
         self.assets.get_local_profiles_size()
     }
 
-    // The profile-name list / editor API are not yet exposed by `oh-assets`;
-    // these are documented no-op seams (matching the C++ `p*` deferral).
+    // The profile surface is the shared `oh-assets` store (issue 029c1 —
+    // the C++'s single `HGAssets`; the struct docs above).
     fn profile_names(&self) -> Vec<String> {
         // C++ `getLocalProfileNames` (Assets.cpp:1500-1511) — name-keyed
         // store in `std::map` (byte-sorted) order.
         self.assets.get_profile_names()
     }
     fn has_current_profile(&self) -> bool {
-        self.current_profile.borrow().is_some()
+        self.assets.any_local_profile_active()
     }
     fn current_profile_name(&self) -> Option<String> {
-        self.current_profile.borrow().clone()
+        self.assets.current_local_profile_name()
     }
-    fn is_level_favorite(&self, _level_id: &str) -> bool {
-        false
+    fn is_level_favorite(&self, level_id: &str) -> bool {
+        self.assets.is_level_favorite(level_id)
     }
     fn profile_set_current(&self, name: &str) {
-        *self.current_profile.borrow_mut() = Some(name.to_string());
+        self.assets.profile_set_current(name)
     }
-    fn profile_create(&self, _name: &str) {}
-    fn profile_remove(&self, _name: &str) {}
+    fn profile_create(&self, name: &str) {
+        if let Err(e) = self.assets.profile_create(name) {
+            // C++ `pCreate` (Assets.cpp:1555-1560): the failed reload logs
+            // the line and `std::terminate()`s; the port's clean-exit
+            // deviation (the `Assets::new` `FatalLoadError` class) keeps
+            // running with the profile not created.
+            eprintln!("[HGAssets::HGAssets] {e}");
+        }
+    }
+    fn profile_remove(&self, name: &str) {
+        self.assets.profile_remove(name)
+    }
+    fn profile_save_current(&self) {
+        // C++ `playLocally`'s `assets.pSaveCurrent()` (MenuGame.cpp:2427).
+        self.assets.profile_save_current();
+    }
+    fn profile_remove_file(&self, name: &str) -> bool {
+        // C++ `std::remove("Profiles/" + name + ".json")` (MenuGame.cpp:
+        // 2421-2431) — the CWD-relative path rooted at the `Assets` root.
+        std::fs::remove_file(
+            self.assets
+                .root()
+                .join("Profiles")
+                .join(format!("{name}.json")),
+        )
+        .is_ok()
+    }
     fn reload_assets(&self, _entire_pack: bool, _current_level_id: &str) {}
     fn find_pack_id_by_name(&self, name: &str) -> Option<String> {
         // C++ `loadCommandLineLevel` (MenuGame.cpp:1696-1703): iterate
@@ -203,12 +224,7 @@ impl MenuAssets for RealMenuAssets {
     fn local_profile_score(&self, validator: &str) -> f32 {
         // C++ `assets.getCurrentLocalProfile().getScore(validator)`
         // (MenuGame.cpp:5494): 0 when no current profile / unset score.
-        self.current_profile
-            .borrow()
-            .as_ref()
-            .and_then(|name| self.assets.get_profile_data(name))
-            .map(|p| p.get_score(validator))
-            .unwrap_or(0.0)
+        self.assets.get_local_score(validator)
     }
 }
 

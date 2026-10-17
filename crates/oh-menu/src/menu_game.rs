@@ -626,10 +626,12 @@ impl Shared {
     // ---- playLocally (§11.2 / boot flow) ----
 
     /// C++ `playLocally()` — `assets.pSaveCurrent(); enteredStr = "";
-    /// state = getLocalProfilesSize() == 0 ? ETLPNewBoot : SLPSelectBoot`.
+    /// state = getLocalProfilesSize() == 0 ? ETLPNewBoot : SLPSelectBoot`
+    /// (MenuGame.cpp:2427-2432): a run's scores reach disk FIRST — the
+    /// C++'s `pSaveCurrent()` is the call (the no-current-profile early
+    /// return keeps the call a no-op on a fresh boot).
     pub fn play_locally(&mut self) {
-        self.assets
-            .profile_set_current(self.assets.current_profile_name().as_deref().unwrap_or(""));
+        self.assets.profile_save_current();
         self.entered_str.clear();
         self.state = if self.assets.profile_count() == 0 {
             States::ETLPNewBoot
@@ -1773,6 +1775,15 @@ impl MenuGame {
                     return;
                 }
             }
+        }
+        // C++ `std::remove("Profiles/" + name + ".json")` (MenuGame.cpp:
+        // 2421-2431) — the FILE deletion is the menu's job; the store
+        // erase (`pRemove`) runs only on success. A missing file is the
+        // C++'s `!= 0` branch: log + return (no store erase, no menu-item
+        // removal, no beep).
+        if !self.shared.borrow().assets().profile_remove_file(&name) {
+            println!("[eraseAction()] Error: file Profiles/{name}.json does not exist");
+            return;
         }
         self.shared.borrow_mut().assets().profile_remove(&name);
         // Remove the menu item (C++ removes the item from the category).

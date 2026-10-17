@@ -9,8 +9,8 @@
 //!   [`RichPresenceCallback`] — the `fnHG*` callbacks (the `HexagonGame`
 //!   boundary; the *game* supplies these closures).
 //! - [`MenuAssets`] — the asset/pack/level/style/profile surface `MenuGame`
-//!   reads (`RealMenuAssets` wraps `oh_assets::Assets`; the profile-editor
-//!   ops are a seam because `oh-assets` explicitly defers them).
+//!   reads (`RealMenuAssets` wraps the shared `oh_assets::Assets` — the
+//!   profile-editor ops drive that shared store, issue 029c1).
 //! - [`MenuConfig`] — the config getters/setters the menus and layout use.
 //! - [`NetworkClient`] — the `HexagonClient` online flow. **Issue 017
 //!   seam: no fake network behavior lives here.** The default
@@ -185,10 +185,20 @@ pub trait MenuAssets {
     fn current_profile_name(&self) -> Option<String>;
     /// `getCurrentLocalProfile().isLevelFavorite(levelID)`.
     fn is_level_favorite(&self, level_id: &str) -> bool;
-    // ---- profile editor (C++ `p*`; not yet in `oh-assets`, see module note)
+    // ---- profile editor (C++ `p*`, the shared `oh-assets` store) ----
     fn profile_set_current(&self, name: &str);
     fn profile_create(&self, name: &str);
     fn profile_remove(&self, name: &str);
+    /// C++ `playLocally`'s `assets.pSaveCurrent()` (MenuGame.cpp:2427-2432):
+    /// a run's scores reach disk BEFORE the profile-select/new-boot state
+    /// choice. No-op when no profile is active (the C++'s
+    /// `currentProfilePtr == nullptr` early return).
+    fn profile_save_current(&self);
+    /// C++ `std::remove("Profiles/" + name + ".json")` (MenuGame.cpp:
+    /// 2421-2431) — the FILE deletion, the menu's job (the `pRemove`
+    /// store erase is separate and runs only on success). `true` = the
+    /// file existed and was removed (the C++'s `std::remove` == 0).
+    fn profile_remove_file(&self, name: &str) -> bool;
     /// `reloadAssets(reloadEntirePack)` (F3/F4, debug only).
     fn reload_assets(&self, entire_pack: bool, current_level_id: &str);
     // ---- command-line boot (C++ `loadCommandLineLevel`, MenuGame.cpp:1688+)
@@ -589,6 +599,10 @@ pub struct FakeAssetsInner {
     pub current_profile: Option<String>,
     pub favorites: std::collections::BTreeSet<String>,
     pub reload_log: Vec<(bool, String)>,
+    /// C++ `pSaveCurrent()` call log — `Some(name)` = the save ran, `None`
+    /// = the no-current-profile early return (the `play_locally` test
+    /// asserts the first-save).
+    pub profile_save_log: Vec<Option<String>>,
 }
 
 impl FakeAssets {
@@ -607,6 +621,7 @@ impl FakeAssets {
                 current_profile: None,
                 favorites: std::collections::BTreeSet::new(),
                 reload_log: Vec::new(),
+                profile_save_log: Vec::new(),
             }),
         })
     }
@@ -662,6 +677,13 @@ impl FakeAssets {
 
     pub fn add_profile(&self, name: &str) {
         self.inner.borrow_mut().profiles.push(name.to_string());
+    }
+
+    /// The `pSaveCurrent` call log (the `play_locally` first-save test
+    /// asserts through it).
+    #[must_use]
+    pub fn profile_save_log(&self) -> Vec<Option<String>> {
+        self.inner.borrow().profile_save_log.clone()
     }
 
     /// Sets the pack's `name` (the C++ `PackData.name` the `-p` argument
@@ -761,6 +783,25 @@ impl MenuAssets for FakeAssets {
         if inner.current_profile.as_deref() == Some(name) {
             inner.current_profile = None;
         }
+    }
+    fn profile_save_current(&self) {
+        // C++ `pSaveCurrent()` (no disk in the fake): log the call so the
+        // menu call-site tests can observe it (`None` = the no-current-
+        // profile early return).
+        let current = self.inner.borrow().current_profile.clone();
+        self.inner.borrow_mut().profile_save_log.push(current);
+    }
+    fn profile_remove_file(&self, name: &str) -> bool {
+        // The fake's "file" is its `profiles` list: removal succeeds iff
+        // the profile is listed (the C++ `std::remove` == 0), else the
+        // fake reports the missing file (the C++'s `!= 0` → the menu's
+        // "file does not exist" branch).
+        let mut inner = self.inner.borrow_mut();
+        if !inner.profiles.iter().any(|p| p == name) {
+            return false;
+        }
+        inner.profiles.retain(|p| p != name);
+        true
     }
     fn reload_assets(&self, entire_pack: bool, current_level_id: &str) {
         self.inner
