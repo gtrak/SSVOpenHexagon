@@ -24,6 +24,15 @@
 //!    (`_inputs.resize(n_inputs)`, `s.resize(s_size)`), which OOMs/terminates
 //!    on hostile values; the port bounds-checks against the remaining buffer
 //!    up front and fails cleanly (`success = false`).
+//!
+//! The C++ `SSVOH_TRY` / `printTryFailure` diagnostic (Replay.cpp:25-41) is
+//! ported at the same 24 call sites with the same message shape: a failed
+//! [de]serialization step prints `Failed [de]serialization operation '<op>'`
+//! to stderr (the `op` is the C++'s stringified macro argument, e.g.
+//! `write(_version)`, `read_str(_player_name)`) before the result is
+//! returned. A nested failure (e.g. inside the `write_str` / `read_str`
+//! lambdas) prints at both the inner and the enclosing call site, exactly as
+//! the C++ macro nests.
 
 use std::cell::RefCell;
 use std::path::Path;
@@ -55,6 +64,25 @@ thread_local! {
     /// output buffer (used by `compress_replay_file`).
     static STATIC_COMPRESSION_BUF: RefCell<Box<[u8]>> =
         RefCell::new(vec![0u8; BUF_SIZE].into_boxed_slice());
+}
+
+// ---------------------------------------------------------------------------
+// SSVOH_TRY / printTryFailure — the [de]serialization failure diagnostic
+// ---------------------------------------------------------------------------
+
+/// C++ `printTryFailure` (Replay.cpp:25-30) — the line the `SSVOH_TRY` macro
+/// prints (to `std::cerr`, here `eprint!`) whenever a [de]serialization step
+/// fails. `code` is the C++'s stringified macro argument (`#__VA_ARGS__`) —
+/// the failed operation, named exactly as the C++ source spells it.
+fn print_try_failure(code: &str) {
+    eprint!("{}", try_failure_line(code));
+}
+
+/// The `print_try_failure` line (pure, for the shape test) — the C++
+/// `::std::cerr << "Failed [de]serialization operation '" << code << "'\n"`.
+#[must_use]
+fn try_failure_line(code: &str) -> String {
+    format!("Failed [de]serialization operation '{code}'\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -280,14 +308,18 @@ impl<'a> Writer<'a> {
     }
 
     /// C++ `write_str` lambda: `write(uint32(s.size()))` (truncating cast)
-    /// then the string one byte at a time.
+    /// then the string one byte at a time. The C++ lambda's two `SSVOH_TRY`
+    /// (`write(static_cast<std::uint32_t>(s.size()))`, `write(c)`) print on
+    /// failure; mirrored here.
     fn write_str(&mut self, s: &str) -> bool {
         let len = s.len() as u32;
         if !self.write_u32(len) {
+            print_try_failure("write(static_cast<std::uint32_t>(s.size()))");
             return false;
         }
         for &c in s.as_bytes() {
             if !self.write_u8(c) {
+                print_try_failure("write(c)");
                 return false;
             }
         }
@@ -388,11 +420,14 @@ impl<'a> Reader<'a> {
     }
 
     /// C++ `read_str` lambda: `read(uint32 s_size)` then the string one byte
-    /// at a time into `s`. See the module docs for the two hostile-input
-    /// deviations (up-front bounds check; UTF-8 validation).
+    /// at a time into `s`. The C++ lambda's two `SSVOH_TRY` (`read(s_size)`,
+    /// `read(c)`) print on failure; the port-only bounds-check and UTF-8
+    /// validation arms (module docs' deviations 1-2) stay silent — they have
+    /// no C++ `SSVOH_TRY` site.
     fn read_str(&mut self, s: &mut String) -> bool {
         let mut len: u32 = 0;
         if !self.read_u32(&mut len) {
+            print_try_failure("read(s_size)");
             return false;
         }
         // C++: `s.resize(s_size)` before the byte loop. A hostile `len` (up
@@ -408,6 +443,7 @@ impl<'a> Reader<'a> {
             // Mirrors the C++ per-char `SSVOH_TRY(read(c))` loop (cannot
             // fail given the pre-check above).
             if !self.read_u8(b) {
+                print_try_failure("read(c)");
                 return false;
             }
         }
@@ -459,10 +495,12 @@ impl ReplayData {
 
         let n_inputs: u64 = self.inputs.len() as u64;
         if !w.write_u64(n_inputs) {
+            print_try_failure("write(n_inputs)");
             return result;
         }
         for &ib in &self.inputs {
             if !w.write_u8(ib.to_u8()) {
+                print_try_failure("write(ib_byte)");
                 return result;
             }
         }
@@ -486,6 +524,7 @@ impl ReplayData {
 
         let mut n_inputs: u64 = 0;
         if !r.read_u64(&mut n_inputs) {
+            print_try_failure("read(n_inputs)");
             return result;
         }
         // C++: `_inputs.resize(n_inputs)` then the per-byte loop. A hostile
@@ -501,6 +540,7 @@ impl ReplayData {
         for slot in &mut self.inputs {
             let mut ib_byte: u8 = 0;
             if !r.read_u8(&mut ib_byte) {
+                print_try_failure("read(ib_byte)");
                 return result;
             }
             *slot = InputBits::from_byte(ib_byte);
@@ -608,12 +648,15 @@ impl ReplayFile {
         let mut w = Writer::new(&mut result, buffer);
 
         if !w.write_u32(self.version) {
+            print_try_failure("write(_version)");
             return result;
         }
         if !w.write_str(&self.player_name) {
+            print_try_failure("write_str(_player_name)");
             return result;
         }
         if !w.write_u64(self.seed) {
+            print_try_failure("write(_seed)");
             return result;
         }
 
@@ -633,18 +676,23 @@ impl ReplayFile {
             &mut buffer[pos + data_result.written_bytes()..],
         );
         if !w.write_str(&self.pack_id) {
+            print_try_failure("write_str(_pack_id)");
             return result;
         }
         if !w.write_str(&self.level_id) {
+            print_try_failure("write_str(_level_id)");
             return result;
         }
         if !w.write_bool(self.first_play) {
+            print_try_failure("write(_first_play)");
             return result;
         }
         if !w.write_f32(self.difficulty_mult) {
+            print_try_failure("write(_difficulty_mult)");
             return result;
         }
         if !w.write_f64(self.played_score) {
+            print_try_failure("write(_played_score)");
             return result;
         }
         result
@@ -666,12 +714,15 @@ impl ReplayFile {
         let mut r = Reader::new(&mut result, buffer);
 
         if !r.read_u32(&mut self.version) {
+            print_try_failure("read(_version)");
             return result;
         }
         if !r.read_str(&mut self.player_name) {
+            print_try_failure("read_str(_player_name)");
             return result;
         }
         if !r.read_u64(&mut self.seed) {
+            print_try_failure("read(_seed)");
             return result;
         }
 
@@ -687,18 +738,23 @@ impl ReplayFile {
 
         let mut r = Reader::new(&mut result, &buffer[pos + data_result.read_bytes()..]);
         if !r.read_str(&mut self.pack_id) {
+            print_try_failure("read_str(_pack_id)");
             return result;
         }
         if !r.read_str(&mut self.level_id) {
+            print_try_failure("read_str(_level_id)");
             return result;
         }
         if !r.read_bool(&mut self.first_play) {
+            print_try_failure("read(_first_play)");
             return result;
         }
         if !r.read_f32(&mut self.difficulty_mult) {
+            print_try_failure("read(_difficulty_mult)");
             return result;
         }
         if !r.read_f64(&mut self.played_score) {
+            print_try_failure("read(_played_score)");
             return result;
         }
         result
@@ -890,5 +946,48 @@ impl CompressedReplayFile {
             }
             None => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `SSVOH_TRY` / `printTryFailure` line is byte-exact with the C++
+    /// (`Replay.cpp:25-30`): `Failed [de]serialization operation '<code>'\n`
+    /// where `<code>` is the C++'s stringified macro argument. Pinned for the
+    /// top-level field ops and the nested `write_str` / `read_str` lambda ops.
+    #[test]
+    fn try_failure_line_matches_the_cpp_shape() {
+        for code in [
+            "write(_version)",
+            "write_str(_player_name)",
+            "read(_seed)",
+            "read_str(_level_id)",
+            "write(n_inputs)",
+            "read(ib_byte)",
+            // the nested lambda-internal ops (the C++ stringified forms).
+            "write(static_cast<std::uint32_t>(s.size()))",
+            "write(c)",
+            "read(s_size)",
+            "read(c)",
+        ] {
+            assert_eq!(
+                try_failure_line(code),
+                format!("Failed [de]serialization operation '{code}'\n")
+            );
+        }
+    }
+
+    /// A too-short buffer fails at the FIRST `SSVOH_TRY` site
+    /// (`read(_version)`) — the result is failed and nothing was read (the
+    /// diagnostic's path, pinned at the result level; the stderr line itself
+    /// is the thin `eprint!` wrapper over [`try_failure_line`]).
+    #[test]
+    fn too_short_buffer_fails_at_the_first_read_site() {
+        let mut rf = ReplayFile::default();
+        let dr = rf.deserialize(&[0u8; 3]); // < 4 bytes: `read(_version)` fails
+        assert!(!dr.is_success());
+        assert_eq!(dr.read_bytes(), 0);
     }
 }
