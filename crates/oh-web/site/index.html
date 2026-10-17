@@ -1,34 +1,40 @@
 <!doctype html>
 <!--
-  oh-web (issue 26c W0, D-029) - the browser page for the emscripten WEB
-  PLATFORM SKELETON: a <canvas id="c"> + a WebGL2 context created through the
-  emscripten_webgl_* C API + a clear + a #[wasm_bindgen] status() probe.
-  (oh-render's emscripten backend is W1; the real engine composition is W2.)
+  oh-web (issue 26c W5, D-029) - the browser page for the REAL composition:
+  oh_app::client::main_client (headless = false) boots config + assets over
+  the _RELEASE tree preloaded into emscripten MEMFS at /RELEASE, the
+  oh-render emscripten window over this <canvas id="c">, the engine +
+  MenuGame, dispatches to the MENU, and drives it via request_animation_frame.
 
-  SERVE (static, no build step): copy the two build artifacts next to this
-  file, then serve THIS folder:
+  SERVE (static, no build step): copy the THREE build artifacts next to this
+  file (the .data is the --preload-file package - a missing one shows
+  "still waiting on run dependencies"), then serve THIS folder:
 
       Copy-Item ..\..\..\target\wasm32-unknown-emscripten\debug\oh-web.js,`
-                 ..\..\..\target\wasm32-unknown-emscripten\debug\oh_web.wasm .
+                 ..\..\..\target\wasm32-unknown-emscripten\debug\oh_web.wasm,`
+                 ..\..\..\target\wasm32-unknown-emscripten\debug\deps\oh_web.data .
       python -m http.server 8000
 
   (Artifact names: the loader is `oh-web.js` (MODULARIZE + EXPORT_ES6,
   default-exports the Module factory) but emcc names the wasm after the
   object file - `oh_web.wasm` (underscore); the loader's locateFile looks
-  for exactly `oh_web.wasm` beside `oh-web.js`.)
+  for exactly `oh_web.wasm` beside `oh-web.js`. The `_RELEASE` tree is packed
+  into `oh_web.data` and fetched relative to this page.)
 
   URL: http://localhost:8000/
-  (Any static file server works - the page is plain ES-module + two files.)
+  (Any static file server works - the page is plain ES-module + three files.)
 
-  Expected browser console (the W0 skeleton boot - the emscripten
-  stdout/stderr redirect carries the Rust log/eprintln! lines):
+  Expected browser console (the W5 real-composition boot - the emscripten
+  stdout/stderr redirect carries the composition's Rust println!/eprintln!
+  lines; the menu's own boot logs follow, then it settles on the menu):
       oh-web: boot started (after __wasm_call_ctors)
-      oh-web: <canvas id="c"> ready (640x480)
-      oh-web: WebGL2 context created + current (via emscripten_webgl_*)
-      oh-web: cleared the canvas (a colour) - W0 boot skeleton complete
+      ... (oh-app / oh-config / oh-assets / oh-menu / oh-render boot lines) ...
+      oh-web: main_client returned 0 (the rAF loop keeps driving the menu)
       oh-web: module loaded
-      status booted=true;webgl2=true   (every 2s; the module stays loaded)
-  The 640x480 canvas is cleared a solid colour (no engine draw yet - W1/W2).
+      status booted=true;exit_code=0   (every 2s; the module stays loaded)
+  The 640x480 canvas shows the MENU (the composition's first representative
+  state); the rAF loop keeps driving it (emscripten EXIT_RUNTIME=0 keeps the
+  runtime alive after main returns).
 -->
 <html>
   <head>

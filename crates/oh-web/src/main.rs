@@ -42,7 +42,8 @@ fn main() {
         __wasm_call_ctors()
     };
 
-    // The boot (the W0 web platform skeleton — `web.rs`).
+    // The boot (the real composition — `oh_app::client::main_client` over
+    // the preloaded `_RELEASE` MEMFS tree, sub-goal W5 — `web.rs`).
     #[cfg(target_os = "emscripten")]
     web::boot();
 

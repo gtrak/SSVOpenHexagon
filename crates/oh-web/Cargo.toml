@@ -12,6 +12,12 @@ edition.workspace = true
 # (the root .cargo/config.toml's [target.wasm32-unknown-emscripten] table) so
 # emcc runs the wasm-bindgen CLI itself over the linked wasm.
 [target.'cfg(target_os = "emscripten")'.dependencies]
+# W5: the real composition — the C++ `mainClient` port
+# (`crates/oh-app/src/client.rs`): config + assets over the preloaded
+# `_RELEASE` MEMFS tree, the windowed client (the emscripten `oh-render`
+# window + engine + MenuGame), the boot dispatch to the menu, and the
+# `request_animation_frame` loop.
+oh-app = { path = "../oh-app" }
 wasm-bindgen = "0.2.129"
 js-sys = "0.3.106"
 web-sys = { version = "0.3.106", features = [
