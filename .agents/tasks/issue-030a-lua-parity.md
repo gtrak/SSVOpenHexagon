@@ -37,12 +37,32 @@ Run the **same tests** under both backends and diff the outcomes:
   per-backend arms, and **record every difference rather than papering over it**);
 - **the whole workspace gate** under each backend (oh-game's determinism tests
   run Lua per frame — they are a behavioral diff for free);
-- **a corpus smoke (new, the important one)**: load all 42 scripts under
-  `_RELEASE/Packs/**/*.lua`, run `onLoad` + N `onUpdate` frames with a
-  deterministic input script, and dump an **observable-state fingerprint** (engine
-  RNG draws, wall/entity counts and positions, level-status fields, spawn
-  timings) per backend, then diff. Reuse the existing headless harness rather than
-  writing a new engine driver. This is the gameplay-parity evidence.
+- **a differential-simulation harness (new — THE important one, and the reason
+  this lane is worth running)**: the same harness built twice (LuaJIT / Luau),
+  driving the engine headless as fast as it will go (no window ⇒ no vsync, no
+  `WaitUntil` cap — headless is already flat-out; a 60 s playthrough at 200 fps is
+  ~12k frames, sub-second). For each case — `(level, seed, input program, dt
+  schedule)` over all 42 scripts under `_RELEASE/Packs/**/*.lua` — emit a
+  **per-frame fingerprint** of gameplay-visible state (game-RNG state and draw
+  count, the wall set with positions/rotations, player pos/rot, score and
+  `customScore`, level-status timers, entity counts) and report the **first
+  divergent frame index**, not merely a final hash: first-divergence points at the
+  construct that differs, which is the difference between a verdict and a mystery.
+  Reuse the existing headless harness; generate the input programs as **synthetic
+  replays** so the harness rides the project's most oracle-pinned path (issue 02)
+  rather than inventing a new driver.
+- **a multi-process repeat (do not skip this)**: run each backend N times in
+  **separate processes** and compare fingerprints. If a VM randomizes
+  string/table hashing per process (LuaJIT has build-time hash options; Luau's
+  behaviour must be *measured*, not assumed), then `pairs` order varies run-to-run
+  *within* that VM — so any fingerprint that changes across runs means
+  **nondeterministic gameplay**, a red flag independent of the Luau question.
+  Nearly free, and it settles the biggest risk empirically. Report the exact
+  fingerprint definition alongside the results, so the claim is auditable.
+- **(optional, if cheap) a third column**: the C++ binary running the same replay
+  headless would give a transitive proof — port(LuaJIT) ↔ C++ and port(Luau) ↔
+  port(LuaJIT), therefore Luau ≈ C++ for gameplay. If building the C++ is more than
+  a bounded effort, skip it and say so; the A/B is what this lane must deliver.
 
 **Probes to write explicitly** (each one a documented difference or a pass):
 
