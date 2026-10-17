@@ -596,17 +596,31 @@ impl Config {
         base_dir: &Path,
         override_ids: &[impl AsRef<str>],
     ) -> Result<(), JsonError> {
+        // C++ `ssvu::lo("::loadConfig") << "loading config"` (Config.cpp:494)
+        // — the port's console channel convention is `[channel] message`
+        // (the `createFolderIfNonExistant` / `Saving config` lines).
+        println!("[::loadConfig] loading config");
+
         // C++ `root()`: "config.json" in the CWD if present (getFromFile
         // swallows parse failures -> root stays null).
         let config_path = base_dir.join("config.json");
         if config_path.is_file() {
-            match std::fs::read_to_string(&config_path) {
-                Ok(contents) => match json::parse(&contents) {
-                    Ok(obj) => self.root = obj,
-                    Err(_) => self.root = SerdeValue::Null,
-                },
-                Err(_) => self.root = SerdeValue::Null,
+            // C++ `ssvu::lo("hg::Config::root()") << "User-defined
+            // `config.json` file found" (Config.cpp:382-383). The read goes
+            // through `read_file_with_errors` = the C++ `getFromFile`
+            // (parse failure → the `ssvuj::logReadError` line + root stays
+            // null, exactly the C++ swallow).
+            println!("[hg::Config::root()] User-defined `config.json` file found");
+            let (obj, err) = json::read_file_with_errors(&config_path);
+            if err.is_empty() {
+                self.root = obj;
+            } else {
+                self.root = SerdeValue::Null;
             }
+        } else {
+            // C++ `ssvu::lo("hg::Config::root()") << "No suitable config
+            // file found, using defaults" (Config.cpp:388-389).
+            println!("[hg::Config::root()] No suitable config file found, using defaults");
         }
 
         if base_dir.join("ConfigOverrides").is_dir() {
@@ -629,8 +643,10 @@ impl Config {
                 if !override_ids.iter().any(|id| id.as_ref() == name) {
                     continue;
                 }
-                // C++ logs "applying config override '<name>'" and uses
+                // C++ `ssvu::lo("::loadConfig") << "applying config
+                // override '<name>'" (Config.cpp:504-506) and
                 // getFromFile (parse failure -> skipped, root untouched).
+                println!("[::loadConfig] applying config override '{name}'");
                 let (obj, err) = json::read_file_with_errors(&path);
                 if !err.is_empty() {
                     continue;
@@ -901,6 +917,8 @@ impl Config {
     /// C++ `saveConfig()` → `writeToFile(root(), "config.json")` with the
     /// CWD path made explicit.
     pub fn save_config(&mut self, path: &Path) -> std::io::Result<()> {
+        // C++ `ssvu::lo("::saveConfig") << "saving config"` (Config.cpp:555).
+        println!("[::saveConfig] saving config");
         self.sync_all_to_obj();
         std::fs::write(path, json::write_to_string(&self.root))
     }
@@ -931,6 +949,9 @@ impl Config {
     /// `VideoMode`, the headless / no-monitor case); the zero values are
     /// provably unobservable on this path (both auto branches are dead).
     pub fn reset_config_to_defaults(&mut self) {
+        // C++ `ssvu::lo("::resetConfigToDefaults") << "resetting configs"`
+        // (Config.cpp:540).
+        println!("[::resetConfigToDefaults] resetting configs");
         self.reset_all_from_default();
         self.reapply_resolution(0, 0);
     }
@@ -1055,6 +1076,9 @@ impl Config {
     /// C++ `resetBindsToDefaults()` (Config.cpp:546-550) — the 28 bind
     /// `LinkedValue`s only.
     pub fn reset_binds_to_defaults(&mut self) {
+        // C++ `ssvu::lo("::resetBindsToDefaults") << "resetting binds to
+        // defaults"` (Config.cpp:548).
+        println!("[::resetBindsToDefaults] resetting binds to defaults");
         self.reset_binds_from_default();
     }
 
@@ -1116,6 +1140,9 @@ impl Config {
     /// C++ `reapplyResolution()` with the desktop-mode read made a
     /// parameter (C++ `sf::VideoMode::getDesktopMode()`).
     pub fn reapply_resolution(&mut self, desktop_width: u32, desktop_height: u32) {
+        // C++ `ssvu::lo("::reapplyResolution") << "reapplying resolution"`
+        // (Config.cpp:523).
+        println!("[::reapplyResolution] reapplying resolution");
         if self.get_windowed_auto_resolution() {
             self.windowed_width.set(desktop_width);
             self.windowed_height.set(desktop_height);

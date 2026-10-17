@@ -335,8 +335,17 @@ pub fn run(app: AndroidApp) {
     // C++ main.cpp:279-283 — the config load + reapply (the base dir's
     // `config.json` — the extracted `_RELEASE/config.json` on SG4; the
     // C++'s `hg::Config::loadConfig(args)` with the empty android argv).
+    // The `reapplyResolution`'s desktop-mode read uses the C++ zero-mode
+    // fallback here: winit's monitor API (`primary_monitor`) exists only
+    // INSIDE a running event loop, and the activity's loop is consumed by
+    // the game's own `run` (a probe `run` here would consume it). Inert
+    // in practice — both auto-resolution flags default false, and the
+    // platform's `ANativeWindow` is screen-sized independent of the
+    // config's resolution values (module docs: the Android storage
+    // model) — so the C++'s android `getDesktopMode` read (the screen
+    // size) has no port-side effect on the window.
     let mut config = Config::default();
-    if let Err(e) = load_and_reapply(&mut config, &base_dir, &[]) {
+    if let Err(e) = load_and_reapply(&mut config, &base_dir, &[], oh_render::VideoMode::new(0, 0)) {
         eprintln!("[::mainClient] config load failed: {e}");
         return;
     }

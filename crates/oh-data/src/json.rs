@@ -660,6 +660,13 @@ pub fn read_file_with_errors(path: &std::path::Path) -> (Obj, String) {
         Ok(contents) => match parse(&contents) {
             Ok(obj) => (obj, String::new()),
             Err(e) => {
+                // C++ `tryParse` (Io.hpp:27-33): a parse failure logs
+                // `ssvuj::logReadError` with the formatted messages and a
+                // `From: [<contents>]` tail (the channel prefix applies
+                // once; the second line carries no prefix — the C++ log
+                // call's embedded newline).
+                println!("[ssvuj::logReadError] {}", e.formatted_messages());
+                println!("From: [{contents}]");
                 let name = path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())

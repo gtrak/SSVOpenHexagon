@@ -497,8 +497,14 @@ impl JsonConvertible for Combo {
                 } else if let Some(btn) = mbtn_from_name(&s) {
                     combo.add_btn(btn);
                 } else {
-                    // C++ logs "<elem> is not a valid input name, an empty
-                    // bind has been put in its place".
+                    // C++ `ssvu::lo("ssvs::getInputComboFromJSON") << "<" <<
+                    // i << "> is not a valid input name, an empty bind has
+                    // been put in its place" (UtilsJson.cpp:115-120). Only
+                    // reached for a NON-empty name (the empty case is the
+                    // legitimate unbind above, no warning in the C++).
+                    println!(
+                        "[ssvs::getInputComboFromJSON] <{s}> is not a valid input name, an empty bind has been put in its place"
+                    );
                     combo.add_key(Key::UNKNOWN);
                 }
             }

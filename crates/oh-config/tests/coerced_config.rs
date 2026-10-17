@@ -26,8 +26,9 @@ fn temp_dir(tag: &str) -> PathBuf {
 /// a boolean written `1`, a float written `true`, an int written as a
 /// real, a string written as a number, and a numeric element in a trigger
 /// combo array. The C++ loads all of it (`asBool` int arm, `asFloat` bool
-/// arm, `asInt` real arm, `asString` number arms, the combo item's
-/// `asString` coercion → invalid-name warning → unbound slot,
+/// arm, `asInt` real arm, `asString` number arms — and the scalar combo
+/// item yields the unbound slot: the C++ `Combo` converter iterates the
+/// item's members, and a jsoncpp scalar has none,
 /// `Global/UtilsJson.cpp:91-124`).
 #[test]
 fn a_hand_edited_coerced_config_loads() {
@@ -64,15 +65,41 @@ fn a_hand_edited_coerced_config_loads() {
         "123",
         "`\"server_ip\": 123` → \"123\" (asString's int arm)"
     );
-    // `\"t_select\": [123]` — the item coerces to \"123\", which is not a
-    // valid key/button name → the C++ warns and puts an empty bind in its
-    // place (UtilsJson.cpp:113-120): the combo is unbound, not an error.
+    // `\"t_select\": [123]` — the combo item is a SCALAR: the C++
+    // `Converter<Combo>::fromObj` iterates the item's members
+    // (`for(const auto& i : mObj)`, UtilsJson.cpp:91-124) and a jsoncpp
+    // scalar has no members → the combo stays cleared (unbound), silently
+    // (the port's `Combo::from_obj` is the same: non-array → the cleared
+    // combo). The invalid-NAME warning (below) needs an ARRAY item with a
+    // bad name element.
     let trigger = cfg.trigger_copy(oh_config::Tid::Select);
     assert_eq!(trigger.get_combos().len(), 1);
     assert!(
         trigger.get_combos()[0].is_unbound(),
-        "the coerced \"123\" is an invalid input name → the unbound slot"
+        "the scalar combo item → the unbound slot (both the C++ and the port)"
     );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The invalid-input-name warning (the C++
+/// `ssvs::getInputComboFromJSON` line, `Global/UtilsJson.cpp:115-120`):
+/// an ARRAY combo item whose (coerced) name is neither a key name nor a
+/// mouse-button name → the console warning + the empty bind in its place.
+/// The port now prints the line on the C++ channel (issue 029m, 29r1);
+/// the assertion here is the BEHAVIOR half (the unbound slot) — the line
+/// itself is pinned by the binary's subprocess tests' convention.
+#[test]
+fn an_invalid_combo_name_warns_and_binds_unbound() {
+    let dir = temp_dir("invalid_name");
+    fs::write(dir.join("config.json"), r#"{"t_select" : [["bogus"]]}"#).expect("write");
+
+    let mut cfg = Config::default();
+    cfg.load_config(&dir, &[] as &[String])
+        .expect("the C++ warns and continues — no error");
+
+    let trigger = cfg.trigger_copy(oh_config::Tid::Select);
+    assert_eq!(trigger.get_combos().len(), 1);
+    assert!(trigger.get_combos()[0].is_unbound(), "bogus → unbound slot");
     let _ = fs::remove_dir_all(&dir);
 }
 

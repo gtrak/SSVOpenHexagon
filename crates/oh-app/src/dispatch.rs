@@ -18,7 +18,7 @@ use oh_net::server::{GameExecutionResult, HexagonServer, ReplayExecutor};
 use crate::args::parse_args;
 use crate::client::main_client;
 use crate::compose::compose_with_config;
-use crate::lifecycle::{load_and_reapply, ConfigSaveGuard};
+use crate::lifecycle::ConfigSaveGuard;
 use crate::print_lua_docs::main_print_lua_docs;
 
 /// C++ `HexagonGame& _hexagonGame` → the port's `oh_net::ReplayExecutor`
@@ -77,9 +77,13 @@ impl ReplayExecutor for GameReplayExecutor {
 /// the server's own initialization failed: the constructor logged the
 /// failure and its `run()` never ran, `main.cpp:240-241`).
 pub fn main_server(base_dir: &Path) -> i32 {
-    // C++ main.cpp:199-203.
+    // C++ main.cpp:199-203 — the server loads the config WITHOUT the
+    // `reapplyResolution` the `mainClient` path adds (main.cpp:283 is the
+    // C++'s only `reapplyResolution` call site): a direct `load_config`
+    // here is the parity (the port's former `load_and_reapply` passed a
+    // desktop mode the C++ server never reads).
     let mut config = Config::default();
-    if let Err(e) = load_and_reapply(&mut config, base_dir, &[]) {
+    if let Err(e) = config.load_config(base_dir, &[] as &[&str]) {
         // The C++ would throw out of `loadConfig` (uncaught in
         // mainServer); the port exits non-zero (documented deviation,
         // the `main_client` precedent).

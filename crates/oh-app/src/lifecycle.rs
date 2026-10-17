@@ -7,17 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use oh_config::Config;
-
-/// C++ `sf::VideoMode::getDesktopMode()` placeholder (main.cpp:283 —
-/// `Config::reapplyResolution()` reads the desktop mode through SFML,
-/// which the step-(b) tree has no windowing backend for). The shipped
-/// `_RELEASE/config.json` has BOTH `windowed_auto_resolution` and
-/// `fullscreen_auto_resolution` false, so these values are inert for the
-/// shipped config (they only matter if a user enables auto-resolution),
-/// and the headless simulation never reads window dimensions at all.
-/// Step (c) wires the real desktop mode through the windowing layer.
-pub const DESKTOP_WIDTH: u32 = 1920;
-pub const DESKTOP_HEIGHT: u32 = 1080;
+use oh_render::VideoMode;
 
 /// C++ `createFolderIfNonExistant(folderName)` (main.cpp:65-79) with the
 /// CWD made explicit as `base_dir` (the binary passes the process CWD; the
@@ -60,17 +50,36 @@ pub fn create_folder_if_non_existant(base_dir: &Path, folder_name: &str) {
 /// deviation).
 ///
 /// (The C++ `::loadConfig` / `::reapplyResolution` channel lines
-/// (`Config.cpp:494` / `:515`) are not reproduced: `oh-config` (issue 04)
-/// is the data layer and its ported `load_config` / `reapply_resolution`
-/// carry no logging; re-printing them here would duplicate the logic the
-/// data layer owns.)
+/// (`Config.cpp:494` / `:523`) are printed by the data layer's own
+/// `load_config` / `reapply_resolution` — `oh-config` carries the ported
+/// console output, so `load_and_reapply` must not re-print them.)
+///
+/// `desktop_mode` is the C++ `sf::VideoMode::getDesktopMode()` read the
+/// `applyAuto*Resolution` branches use (Config.cpp:480, :487). The C++
+/// bootstrap performs this display query BEFORE the window exists (it is
+/// a display query, not a window query — `loadConfig` +
+/// `reapplyResolution` precede `window.emplace()`, main.cpp:279-303), so
+/// the ported `main_client` passes `oh_render::VideoMode::get_desktop_mode()`
+/// (the winit primary-monitor query over a throwaway event loop; the zero
+/// mode on a headless host — the C++'s no-monitor `VideoMode{0, 0}`
+/// fallback) for BOTH the windowed and the headless branch (the C++
+/// `mainClient` does the load + reapply once, before the
+/// `if(!headless)` window branch). The Android bootstrap passes the zero
+/// mode (winit's monitor API exists only inside a RUNNING event loop and
+/// the activity's loop is consumed by the game's own `run` — inert in
+/// practice: both auto-resolution flags default false and the platform
+/// window is screen-sized independently of the config values; `oh-app`
+/// `android::run`'s load-call comment) and the C++ `mainServer` path
+/// doesn't reapply at all (main.cpp:199-203 has no `reapplyResolution` —
+/// main.cpp:283 is the C++'s only call site).
 pub fn load_and_reapply(
     config: &mut Config,
     base_dir: &Path,
     override_ids: &[String],
+    desktop_mode: VideoMode,
 ) -> Result<(), oh_data::json::JsonError> {
     config.load_config(base_dir, override_ids)?;
-    config.reapply_resolution(DESKTOP_WIDTH, DESKTOP_HEIGHT);
+    config.reapply_resolution(desktop_mode.width, desktop_mode.height);
     Ok(())
 }
 
@@ -168,11 +177,40 @@ mod tests {
     fn load_and_reapply_missing_config_keeps_defaults() {
         let dir = temp_dir("defaults");
         let mut config = Config::default();
-        load_and_reapply(&mut config, &dir, &[]).expect("load");
+        load_and_reapply(&mut config, &dir, &[], oh_render::VideoMode::new(0, 0)).expect("load");
         assert_eq!(config.get_windowed_width(), 800, "NSDMI default");
         assert!(config.get_official(), "NSDMI default");
         // recalculateSizes: max(800, 600) * 1.3.
         assert_eq!(config.get_size_x(), 800.0_f32 * 1.3_f32);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The desktop-mode parameter reaches the `applyAuto*Resolution`
+    /// branches (Config.cpp:478-489): a config with
+    /// `windowed_auto_resolution` / `fullscreen_auto_resolution` enabled
+    /// takes its windowed/fullscreen sizes from the passed mode (the C++
+    /// `sf::VideoMode::getDesktopMode()` read) — the 1920x1080 hardcode
+    /// the port used to feed this (issue 029m, 29r1) is gone.
+    #[test]
+    fn load_and_reapply_feeds_the_desktop_mode_to_auto_resolution() {
+        let dir = temp_dir("auto_res");
+        fs::write(
+            dir.join("config.json"),
+            "{\"windowed_auto_resolution\": true, \"fullscreen_auto_resolution\": true}",
+        )
+        .expect("config");
+        let mut config = Config::default();
+        load_and_reapply(
+            &mut config,
+            &dir,
+            &[],
+            oh_render::VideoMode::new(2560, 1440),
+        )
+        .expect("load");
+        assert_eq!(config.get_windowed_width(), 2560, "windowed auto");
+        assert_eq!(config.get_windowed_height(), 1440, "windowed auto");
+        assert_eq!(config.get_fullscreen_width(), 2560, "fullscreen auto");
+        assert_eq!(config.get_fullscreen_height(), 1440, "fullscreen auto");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -195,12 +233,19 @@ mod tests {
             &mut config,
             &dir,
             &["open-hexagon".to_string(), "foo".to_string()],
+            oh_render::VideoMode::new(0, 0),
         )
         .expect("load");
         assert_eq!(config.get_windowed_width(), 640, "named override applied");
 
         let mut config = Config::default();
-        load_and_reapply(&mut config, &dir, &["open-hexagon".to_string()]).expect("load");
+        load_and_reapply(
+            &mut config,
+            &dir,
+            &["open-hexagon".to_string()],
+            oh_render::VideoMode::new(0, 0),
+        )
+        .expect("load");
         assert_eq!(
             config.get_windowed_width(),
             800,

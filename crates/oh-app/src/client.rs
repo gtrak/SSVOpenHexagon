@@ -9,6 +9,7 @@ use std::sync::{Arc, RwLock};
 
 use oh_config::Config;
 use oh_game::seams::NullProfiles;
+use oh_render::VideoMode;
 
 use crate::args::get_first_compressed_replay_filename_from_args;
 use crate::compose::compose_with;
@@ -82,9 +83,18 @@ pub fn main_client(
     create_folder_if_non_existant(base_dir, "Profiles/");
     create_folder_if_non_existant(base_dir, "Replays/");
 
-    // Load configuration (and overrides) (C++ main.cpp:279-283).
+    // Load configuration (and overrides) (C++ main.cpp:279-283). The
+    // desktop-mode read (`sf::VideoMode::getDesktopMode()`, the
+    // `applyAuto*Resolution` inputs — Config.cpp:480, :487) happens BEFORE
+    // the window exists in the C++ (the display query, not a window
+    // query): `VideoMode::get_desktop_mode()` (the winit
+    // primary-monitor query; the zero mode on a headless host — the C++
+    // no-monitor `VideoMode{0, 0}` fallback). The headless branch shares
+    // the same read: the C++ `mainClient` calls `loadConfig` +
+    // `reapplyResolution` ONCE, before the `if(!headless)` window branch.
+    let desktop_mode = VideoMode::get_desktop_mode();
     let mut config = Config::default();
-    if let Err(e) = load_and_reapply(&mut config, base_dir, args) {
+    if let Err(e) = load_and_reapply(&mut config, base_dir, args, desktop_mode) {
         // C++ would throw out of `syncAllFromObj` (uncaught in mainClient);
         // the port exits non-zero (documented deviation).
         eprintln!("[::mainClient] config load failed: {e}");

@@ -338,4 +338,59 @@ impl VideoMode {
             refresh: 60,
         }
     }
+
+    /// `sf::VideoMode::getDesktopMode()` (Config.cpp:480, :487 — the
+    /// `applyAuto*Resolution` reads) — the primary monitor's physical size.
+    ///
+    /// The winit equivalent is `ActiveEventLoop::primary_monitor()`, which
+    /// winit 0.30 exposes ONLY inside a running event loop — so the query
+    /// runs a throwaway loop in the winit docs' pre-run probe pattern:
+    /// build the loop, read the primary monitor's physical size on the
+    /// first `NewEvents`, exit. (The C++ bootstrap performs the same
+    /// display query BEFORE the window exists — `loadConfig` +
+    /// `reapplyResolution` precede `window.emplace()`, main.cpp:279-303 —
+    /// and the game window's own loop is created later, sized from the
+    /// config.)
+    ///
+    /// The C++'s no-monitor fallback is a zero `VideoMode` (SFML's
+    /// `getDesktopMode` failure mode) → `Self::new(0, 0)`. A headless host
+    /// (no display server) gets the same zero fallback from
+    /// `EventLoop::new()`'s `Err`; winit's `primary_monitor()` also
+    /// returns `None` on Wayland (winit's documented platform limit) and
+    /// on a probe failure — the zero fallback again.
+    ///
+    /// Android: `EventLoop::new()` panics on the android-activity backend
+    /// (and winit's monitor API exists only inside a RUNNING loop, which
+    /// the activity's loop cannot spare — it is consumed by the game's
+    /// own `run`), so the zero mode returns here; the android bootstrap's
+    /// `reapplyResolution` uses the zero fallback instead (the `oh-app`
+    /// `android::run` load-call comment — inert: both auto-resolution
+    /// flags default false and the platform window is screen-sized
+    /// independently of the config values).
+    #[must_use]
+    pub fn get_desktop_mode() -> Self {
+        #[cfg(target_os = "android")]
+        {
+            return Self::new(0, 0);
+        }
+        let el = match winit::event_loop::EventLoop::<()>::new() {
+            Ok(el) => el,
+            Err(_) => return Self::new(0, 0),
+        };
+        let mut mode: Option<(u32, u32)> = None;
+        // The deprecated 2-arg `run` (winit 0.30's pre-`run_app` API — the
+        // `gl.rs` `#[allow(deprecated)]` precedent): the probe only needs
+        // the `ActiveEventLoop` the first `NewEvents` carries.
+        #[allow(deprecated)]
+        let _ = el.run(|event, active| {
+            if let winit::event::Event::NewEvents(_) = event {
+                mode = active
+                    .primary_monitor()
+                    .map(|m| (m.size().width, m.size().height));
+                active.exit();
+            }
+        });
+        mode.map(|(w, h)| Self::new(w, h))
+            .unwrap_or_else(|| Self::new(0, 0))
+    }
 }
