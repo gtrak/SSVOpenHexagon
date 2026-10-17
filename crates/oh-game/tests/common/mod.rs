@@ -559,7 +559,37 @@ pub fn compose_with_renderer(
     joystick: Arc<dyn Joystick>,
     cosmetic_rng: Arc<dyn CosmeticRng>,
 ) -> Composed {
-    let config = Arc::new(RwLock::new(Config::default()));
+    compose_with_config(
+        assets,
+        root,
+        window,
+        Arc::new(RwLock::new(Config::default())),
+        renderer,
+        profiles,
+        replay_store,
+        joystick,
+        cosmetic_rng,
+    )
+}
+
+/// [`compose_with_renderer`] with an injectable `Arc<RwLock<Config>>` (the
+/// C++'s global `hg::Config` the engine's ctor side effects + the
+/// `newGame` hint block read/write — 29a2's character-for-character hint
+/// tests need specific `t_*` / `j_*` bind values; the C++'s default
+/// config is `compose_with_renderer`'s `Config::default()`).
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
+pub fn compose_with_config(
+    assets: Arc<oh_assets::Assets>,
+    root: PathBuf,
+    window: bool,
+    config: Arc<RwLock<Config>>,
+    renderer: Option<Arc<dyn oh_game::renderer::Renderer>>,
+    profiles: Arc<dyn Profiles>,
+    replay_store: Arc<dyn ReplayStore>,
+    joystick: Arc<dyn Joystick>,
+    cosmetic_rng: Arc<dyn CosmeticRng>,
+) -> Composed {
     // Heap-pinned before the `SharedLua` capture (see the `lua` field docs
     // on `Composed`): the host's `SharedLua` points at this box's slot.
     let lua = Box::new(LuaContext::new());

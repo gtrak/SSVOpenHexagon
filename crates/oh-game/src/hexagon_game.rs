@@ -974,10 +974,66 @@ impl<S: SharedStore> HexagonGame<S> {
         g.status.beat_pulse_delay += g.level_status.beat_pulse_initial_delay;
         e.time_until_rich_presence_update = -1.0; // immediate update
 
-        // C++ restart/replay input hint strings: windowed-only (and
-        // Config bind-name plumbing, issues 10/15); headless leaves
-        // `status.restartInput/replayInput` empty, exactly like the C++
-        // headless tests.
+        // C++ `newGame`'s "Prepare text for input hints on restart/
+        // replay" (HexagonGame.cpp:758-821) — VERBATIM, window-gated
+        // (`window != nullptr`): `getKeyboardBindNames(Tid::Restart/Replay)`
+        // (:763-764), trimmed to the FIRST key (the `find(',')` +
+        // `erase(commaPos)` half — "to avoid extremely long messages";
+        // a comma at position 0 is NOT erased, the C++ `commaPos > 0`
+        // gate), then `getJoystickBindName(Jid::Restart/Replay)` (:781/
+        // :801) — the vendor-aware button name (the C++ reads
+        // `isConnected(0) ? getIdentification(0).vendorId : 0` INSIDE the
+        // call, Config.cpp:1577-1581; the port's seam takes the `vendor_id`
+        // as a parameter — the `Joystick` seam's `vendor_id()`, 29j1,
+        // `NoJoystick` = 0 = the C++'s not-connected read). Headless
+        // leaves both strings empty, exactly like the C++.
+        if self.0.window {
+            let cfg = self.config();
+            let mut restart_input = cfg.get_keyboard_bind_names(oh_config::Tid::Restart);
+            let mut replay_input = cfg.get_keyboard_bind_names(oh_config::Tid::Replay);
+
+            // C++ `status.restartInput.find(',')` — `std::string::find`
+            // returns `npos` (= -1 as `int`) when absent; the port's
+            // `None` arm is that same "not > 0" case.
+            if let Some(comma_pos) = restart_input.find(',') {
+                if comma_pos > 0 {
+                    restart_input.truncate(comma_pos);
+                }
+            }
+            if let Some(comma_pos) = replay_input.find(',') {
+                if comma_pos > 0 {
+                    replay_input.truncate(comma_pos);
+                }
+            }
+
+            let joystick_button =
+                cfg.get_joystick_bind_name(oh_config::Jid::Restart, self.0.joystick.vendor_id());
+            if !restart_input.is_empty() {
+                if !joystick_button.is_empty() {
+                    restart_input.push_str(" OR JOYSTICK ");
+                    restart_input.push_str(&joystick_button);
+                }
+                g.status.restart_input = format!("PRESS {restart_input} TO RESTART\n");
+            } else if !joystick_button.is_empty() {
+                g.status.restart_input = format!("PRESS JOYSTICK {joystick_button} TO RESTART\n");
+            } else {
+                g.status.restart_input = "NO RESTART BUTTON SET\n".to_string();
+            }
+
+            let joystick_button =
+                cfg.get_joystick_bind_name(oh_config::Jid::Replay, self.0.joystick.vendor_id());
+            if !replay_input.is_empty() {
+                if !joystick_button.is_empty() {
+                    replay_input.push_str(" OR JOYSTICK ");
+                    replay_input.push_str(&joystick_button);
+                }
+                g.status.replay_input = format!("PRESS {replay_input} TO REPLAY\n");
+            } else if !joystick_button.is_empty() {
+                g.status.replay_input = format!("PRESS JOYSTICK {joystick_button} TO REPLAY\n");
+            } else {
+                g.status.replay_input = "NO REPLAY BUTTON SET\n".to_string();
+            }
+        }
     }
 
     /// C++ `setLevelData(mLevelData, mMusicFirstPlay)` (engine-internal
