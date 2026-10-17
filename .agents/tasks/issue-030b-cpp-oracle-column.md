@@ -57,19 +57,70 @@ counterpart. **Do not guess the output format** — quote the C++ source.
   parity-vector convention (`.agents/plans/001-rust-port/parity/` +
   `crates/oh-parity`), so the check survives without the C++ present.
 
-## 5. The triangle, and its asymmetry stated honestly
+## 5. Instrument the C++ for a per-frame fingerprint (authorized)
 
-- **C++ ↔ port(LuaJIT)** — at whatever granularity the C++ actually reports
-  (realistically **score/frametime level**; a per-frame trace would require
-  instrumenting the C++, which is out of scope — say so if that is the
-  limitation).
-- **port(LuaJIT) ↔ port(Luau)** — **frame level**, from 030a's fingerprint.
-- Together: if LuaJIT matches the C++ at score level and Luau matches LuaJIT
-  frame-by-frame, Luau matches the C++ for gameplay. **Be precise that this is
-  a transitive inference with a coarse first link**, not a direct proof.
+The operator has authorized instrumenting the C++. That removes the coarse link
+entirely — and it upgrades this lane from "a Lua cross-check" into a **whole-engine
+fidelity oracle**, which is the most valuable verification asset in the project
+(see §6).
 
-Report: the build outcome, the exact C++ invocation, the committed vectors, the
-triangle table, and what could not be established.
+**Where.** One hook at the end of the C++'s per-frame update — `HexagonGame::update`
+(`src/SSVOpenHexagon/Core/HGUpdate.cpp`) or the loop that calls it; pick the point
+where the port's fingerprint is taken so the two are commensurable. One hook, one
+hash function.
+
+**Definition symmetry is the whole game.** The field set, the field ORDER, and the
+hash algorithm must be identical on both sides. Document the definition once (in
+this task file or a short companion note) and implement it twice. **Hash floats as
+raw bit patterns** (`f32::to_bits`) — never an epsilon comparison, or a 1-ULP
+divergence is exactly what you will fail to see. Both sides use the port's
+`f32`/`f64` conventions.
+
+**Fields** (gameplay-visible, semantically equivalent in both): the wall set with
+positions/rotations/types in a defined order, player pos/rot, `score`,
+`customScore`, level-status timers, entity counts.
+
+**The RNG subtlety — do not get this wrong.** The C++ has **ONE** global
+`pcg32` stream serving gameplay *and* cosmetics, while the port deliberately splits
+`cosmetic_rng` from the game RNG (a documented deviation — `.agents/audits/game.md`,
+the "cosmetic RNG" seam). So putting the raw global RNG state in the fingerprint
+would flag that *known* deviation on every single frame and drown the real signal.
+Instead:
+
+- fingerprint the **state** (which is genuinely comparable), and
+- emit the per-frame **draw count** as a separate diagnostic column, so a
+  divergence can be attributed: same state + different draws = the documented
+  cosmetic split (expected; recordable); different state = a real gameplay
+  divergence.
+
+**Emission.** Text, one line per frame (`<frame> <hash>`), to a path given by a NEW
+FLAG (e.g. `-fingerprint <path>`). **Off by default, additive only: default
+behaviour and default output must be unchanged**, because this C++ tree is the
+project's citation reference and must stay faithful for everything else. Keep the
+diff minimal and clearly marked, and — if practical — capture it as a patch file
+under `tools/` so the instrumentation is reproducible and reviewable rather than an
+unrecorded local edit.
+
+## 6. The triangle — now frame-level on all three axes
+
+- **C++ ↔ port(LuaJIT)** — **frame-level**, via §5.
+- **port(LuaJIT) ↔ port(Luau)** — **frame-level**, via 030a's harness.
+- Therefore **C++ ↔ port(Luau) directly**, not merely by transitive inference.
+
+State plainly which fields were compared and which could not be (e.g.
+render-only or sampling-only state), and for every divergence report the **first
+divergent frame** plus the field that diverged first — that is what turns a
+mismatch into a diagnosis.
+
+**The larger prize, worth saying out loud:** with this instrumentation the oracle
+is no longer about Lua. It verifies the **port itself**, frame by frame, against
+the real implementation — so the remaining audit fixes, the wasm build, and every
+future change can be measured against the C++ instead of being argued about. Treat
+the fingerprint definition as a durable interface, since it will outlive this lane.
+
+Report: the build outcome, the exact C++ invocation, the instrumentation diff (or
+patch path), the fingerprint definition, the per-axis results, the committed
+vectors, and the first-divergent-frame analysis for every divergence found.
 
 ## Hygiene
 - **No worktree** (D-035); main checkout; one commit per logical step; **explicit
