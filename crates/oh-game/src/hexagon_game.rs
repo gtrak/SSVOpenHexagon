@@ -1199,6 +1199,9 @@ impl<S: SharedStore> HexagonGame<S> {
             {
                 cb(&rf);
             }
+            // C++ HexagonGame.cpp:980 — `ssvu::lo("Replay") <<
+            // "Attempting to send and save replay...\n"`.
+            self.log("Replay", "Attempting to send and save replay...\n");
             self.death_send_and_save_replay(&rf);
         }
 

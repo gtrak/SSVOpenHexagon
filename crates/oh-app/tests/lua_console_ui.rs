@@ -40,6 +40,10 @@ fn debug_composed() -> (oh_app::compose::Composed, Arc<RwLock<Config>>) {
         None, // no Discord (headless test)
         None, // no window touch sink (the headless test's `nullptr` renderer)
         None, // no audio (the headless test's `audio == nullptr`)
+        // issue 029a1 — the no-op store keeps this headless test
+        // disk-silent (the composition's `root` is `_RELEASE` — a death
+        // here must not write `Replays/` into the repo tree).
+        Arc::new(oh_game::seams::NullReplayStore),
     );
     (composed, config)
 }

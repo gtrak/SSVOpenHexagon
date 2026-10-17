@@ -2115,6 +2115,16 @@ impl WindowedClient {
             Some(discord.clone()),
             renderer,
             Some(audio.clone()),
+            // issue 029a1 — the C++ `death_saveReplay` filesystem half
+            // (HexagonGame.cpp:1067-1097): the windowed entries chdir to
+            // the game-data root before composing (the desktop
+            // `dispatch::run`'s main.cpp:653 port; Android's
+            // `chdir_to_base_dir`), so rooting on `base_dir` is the C++'
+            // CWD-relative `Replays/...` — a death persists
+            // `Replays/<levelId>/<diff>x/<name>.z` in the internal data
+            // dir on Android, beside `Profiles/` / `config.json` (the
+            // folders the C++ creates at main.cpp:275-276).
+            Arc::new(crate::replay_store::RealReplayStore::new(base_dir.to_path_buf())),
         );
 
         // The C++ `initText` fonts (HexagonGame.cpp:289-290:

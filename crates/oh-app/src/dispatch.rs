@@ -10,7 +10,7 @@ use std::sync::{Arc, RwLock};
 
 use oh_config::Config;
 use oh_game::hexagon_game::HexagonGame;
-use oh_game::seams::NullProfiles;
+use oh_game::seams::{NullProfiles, NullReplayStore};
 use oh_lua::api::state::GameApiState;
 use oh_net::database::Database;
 use oh_net::server::{GameExecutionResult, HexagonServer, ReplayExecutor};
@@ -122,6 +122,13 @@ pub fn main_server(base_dir: &Path) -> i32 {
         None, // C++ server: `nullptr /* discordManager */` (main.cpp:217)
         None, // C++ server: no window → no renderer (the headless `nullptr`)
         None, // C++ server: `audio == nullptr` (headless, main.cpp:392-401)
+        // issue 029a1 — the server's executor is the C++'
+        // `runReplayUntilDeathAndGetScore` replay-playback path, which
+        // never writes a replay file (`inReplay()` gates the save,
+        // HexagonGame.cpp:970; `shouldSaveScore`'s "No local profile
+        // active" reject, :1178-1183) — the no-op store keeps it
+        // disk-silent, exactly the C++ behavior.
+        Arc::new(NullReplayStore),
     );
     let executor = GameReplayExecutor {
         game: composed.game.clone(),

@@ -65,8 +65,8 @@ use oh_game::hexagon_game::HexagonGame;
 use oh_game::lua_state::{GameApi, ReentrantMutex};
 use oh_game::renderer::Renderer;
 use oh_game::seams::{
-    Audio, NoJoystick, NullReplayStore, PcgCosmeticRng, Profiles, ScriptError, ScriptHost,
-    SteamSink,
+    Audio, NoJoystick, NullReplayStore, PcgCosmeticRng, Profiles, ReplayStore, ScriptError,
+    ScriptHost, SteamSink,
 };
 use oh_game::{HexagonGameStatus, LevelStatus};
 use oh_lua::api::callbacks;
@@ -478,6 +478,7 @@ pub fn compose_with(
         discord,
         None, // the headless composition's renderer (the C++'s `nullptr`)
         None, // the headless composition's audio (the C++'s `audio == nullptr`)
+        Arc::new(NullReplayStore), // issue 029a1 — headless: disk-silent (the compose_with_config docs)
     )
 }
 
@@ -498,6 +499,20 @@ pub fn compose_with(
 /// and `HexagonGame`): the windowed composition passes the real
 /// `oh_audio::Audio` (issue 025e); the headless/server composition passes
 /// `None` (the C++'s `audio == nullptr`).
+///
+/// `replay_store` — the engine's `ReplayStore` seam (the C++
+/// `death_saveReplay`'s filesystem half, HexagonGame.cpp:1067-1097;
+/// issue 029a1): the WINDOWED composition passes
+/// [`crate::replay_store::RealReplayStore`] rooted at `root` (the C++'
+/// CWD — both windowed entries chdir to the game-data root before
+/// composing), so a death persists `Replays/<levelId>/<diff>x/<name>.z`;
+/// the headless client / server / print-lua-docs compositions keep
+/// `NullReplayStore` — the C++ headless modes never write a replay file
+/// (replay playback's `inReplay()` gates the save, HexagonGame.cpp:970 +
+/// `shouldSaveScore`'s rejects, :1178-1183/:1220-1227; the server's
+/// executor is the same `runReplayUntilDeathAndGetScore` path), so the
+/// no-op matches the C++ there (disk-silent) and keeps the headless
+/// determinism tests from writing files.
 #[allow(clippy::too_many_arguments)]
 #[must_use]
 pub fn compose_with_config(
@@ -510,6 +525,7 @@ pub fn compose_with_config(
     discord: Option<Arc<dyn Discord + 'static>>,
     renderer: Option<Arc<dyn Renderer + 'static>>,
     audio: Option<Arc<dyn Audio + 'static>>,
+    replay_store: Arc<dyn ReplayStore + 'static>,
 ) -> Composed {
     // Heap-pinned before the `SharedLua` capture (see the `lua` field docs
     // on `Composed`): the host's `SharedLua` points at this box's slot.
@@ -523,7 +539,7 @@ pub fn compose_with_config(
         assets.clone(),
         audio, // C++ `Audio* audio` — `oh_audio::Audio` windowed; `None` headless (issue 025e)
         profiles,
-        Arc::new(NullReplayStore),
+        replay_store, // issue 029a1 — the C++ `death_saveReplay`'s filesystem half (the fn docs)
         host.clone() as Arc<dyn ScriptHost>,
         Arc::new(NoJoystick),
         Arc::new(PcgCosmeticRng::new()),

@@ -49,5 +49,6 @@ pub mod lifecycle;
 pub mod lua_console_ui;
 pub mod menu_draw;
 pub mod print_lua_docs;
+pub mod replay_store;
 pub mod steam;
 pub mod windowed;
