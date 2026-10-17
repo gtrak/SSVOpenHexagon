@@ -114,6 +114,28 @@ versioned) and append a short summary to this task file: the commands to run eac
 backend, the diff table, the perf numbers, the Android result, the recommendation,
 and **explicitly what you could not establish** (e.g. no device confirmation).
 
+## 7. It must be a TEST MODULE, not a one-shot experiment
+
+The operator's requirement: this is a **permanent gate**, not an experiment that
+decays. So:
+
+- **Live in the repo as a test target.** `oh-parity` is the natural home — it
+already owns cross-implementation verification and the committed oracle vectors.
+  e.g. `crates/oh-parity/tests/lua_engine_parity.rs`.
+- **Two feature modes, artifact-based.** Each backend run emits a per-case
+  fingerprint artifact under `target/` (large + machine-specific ⇒ **never
+  committed**) together with the **fingerprint definition** that produced it, plus
+a comparator run that reads both artifacts, fails on divergence, and prints the
+case id + the **first divergent frame**. Reproducible: the case generator is
+seeded.
+- **Wired into the gate.** `tools/lua-parity.sh` runs both modes + the comparator,
+  and the gate gains a stage for it (the project already runs the suite in two
+  feature modes, so this is existing practice, not a new mechanism).
+- **The C++ column (task `030b`) commits its results as oracle vectors** under the
+  project's existing parity-vector convention, so the most valuable check keeps
+  running in CI **without** the C++ present. That is what makes it durable rather
+than "we ran it once on Gary's machine".
+
 ## Hygiene
 - **No worktree** (D-035); work in the main checkout; one commit per logical step;
   **stage explicit paths, never `git add -A`**; `cargo fmt --all` before
