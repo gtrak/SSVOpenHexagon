@@ -25,4 +25,4 @@ pub mod shaders;
 
 pub use asset_storage::{AssetRef, AssetStorage};
 pub use assets::{Assets, FatalLoadError, WorkshopPacks};
-pub use shaders::{LoadedShader, ShaderRegistry, ShaderType};
+pub use shaders::{LoadedShader, ShaderRegistry, ShaderSnapshot, ShaderType, UniformValue};

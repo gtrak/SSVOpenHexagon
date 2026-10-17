@@ -1122,9 +1122,79 @@ impl MenuConfig for ConfigMenuAdapter {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 029n1 (K6) — the pack-shader provider seam + the shader-bound draw.
+// ---------------------------------------------------------------------------
+
+/// The `PackShaderProvider` over the composition's `Arc<Assets>` (K6):
+/// the C++'s `assets.getShaderByShaderId(id)` payload (source + the
+/// uniform store) as the `oh-render` GL layer's
+/// [`oh_render::pack_shaders::PackShaderSnapshot`] — the `oh-assets`
+/// → `oh-render` type conversion at the seam (the `oh-render`
+/// `PackShaderProvider` trait's implementation; `oh-render` cannot
+/// depend on `oh-assets`, the cycle would run through `oh-game`).
+pub struct AssetsPackShaderProvider {
+    assets: Arc<oh_assets::Assets>,
+}
+
+impl AssetsPackShaderProvider {
+    #[must_use]
+    pub fn new(assets: Arc<oh_assets::Assets>) -> Self {
+        Self { assets }
+    }
+}
+
+impl oh_render::pack_shaders::PackShaderProvider for AssetsPackShaderProvider {
+    fn pack_shader_snapshot(
+        &self,
+        id: usize,
+    ) -> Option<oh_render::pack_shaders::PackShaderSnapshot> {
+        let snap = self.assets.shader_snapshot(id)?;
+        Some(oh_render::pack_shaders::PackShaderSnapshot {
+            source: snap.source,
+            shader_type: match snap.shader_type {
+                oh_assets::ShaderType::Fragment => oh_render::shader::ShaderType::Fragment,
+                oh_assets::ShaderType::Vertex => oh_render::shader::ShaderType::Vertex,
+                oh_assets::ShaderType::Geometry => oh_render::shader::ShaderType::Geometry,
+            },
+            uniforms: snap
+                .uniforms
+                .into_iter()
+                .map(|(name, value)| {
+                    let uniform = match value {
+                        oh_assets::UniformValue::F(x) => oh_render::shader::Uniform::F(x),
+                        oh_assets::UniformValue::FVec2(x, y) => {
+                            oh_render::shader::Uniform::FVec2(x, y)
+                        }
+                        oh_assets::UniformValue::FVec3(x, y, z) => {
+                            oh_render::shader::Uniform::FVec3(x, y, z)
+                        }
+                        oh_assets::UniformValue::FVec4(x, y, z, w) => {
+                            oh_render::shader::Uniform::FVec4(x, y, z, w)
+                        }
+                        oh_assets::UniformValue::I(x) => oh_render::shader::Uniform::I(x),
+                        oh_assets::UniformValue::IVec2(x, y) => {
+                            oh_render::shader::Uniform::IVec2(x, y)
+                        }
+                        oh_assets::UniformValue::IVec3(x, y, z) => {
+                            oh_render::shader::Uniform::IVec3(x, y, z)
+                        }
+                        oh_assets::UniformValue::IVec4(x, y, z, w) => {
+                            oh_render::shader::Uniform::IVec4(x, y, z, w)
+                        }
+                    };
+                    (name, uniform)
+                })
+                .collect(),
+        })
+    }
+}
+
 /// `DrawTarget` over a live [`GlParts`] context (the windowed loop's real
 /// target). `clear_black` is a real `glClear`; `draw_vertices` submits the
-/// scene batches through [`GlBatchUploader`]; the sprite / text /
+/// scene batches through [`GlBatchUploader`] (or — 029n1 K6 — through the
+/// bound stage's compiled pack fragment shader, the C++'s
+/// `sf::RenderStates{shader}`'s execution half); the sprite / text /
 /// rectangle passes are the issue-025c GL passes (the
 /// [`oh_render::gl_passes::GlPasses`] textured-quad pipeline for sprite +
 /// font-atlas text, the batch uploader's solid-colour stream for
@@ -1150,15 +1220,21 @@ impl MenuConfig for ConfigMenuAdapter {
 pub struct GlDrawTarget<'a> {
     parts: &'a GlParts,
     view: View,
+    /// 029n1 (K6): the pack-shader source (`None` = no pack shaders can
+    /// be resolved — the headless/fallback targets draw everything
+    /// through the default program; the C++'s `window == nullptr` / the
+    /// headless `Config::getDisableGameRendering` guards leave no draw
+    /// path at all, so the absence of a provider there is unobservable).
+    provider: Option<Arc<dyn oh_render::pack_shaders::PackShaderProvider>>,
 }
 
 impl<'a> GlDrawTarget<'a> {
     /// `parts` must outlive the target (the `WindowedClient`'s window does
     /// — the target is a per-frame scratch built and dropped in `tick`).
     /// The GL objects (the batch uploader, the texture cache, the textured
-    /// program, the font atlas) live in the `GlParts` — the target only
-    /// borrows them (the SG5 state-hygiene pin: nothing is re-created per
-    /// frame).
+    /// program, the font atlas, the pack-shader cache) live in the
+    /// `GlParts` — the target only borrows them (the SG5 state-hygiene pin:
+    /// nothing is re-created per frame).
     #[must_use]
     pub fn new(parts: &'a GlParts) -> Self {
         Self {
@@ -1167,7 +1243,103 @@ impl<'a> GlDrawTarget<'a> {
                 oh_math::ssvs::Vec2::new(parts.width as f32 / 2.0, parts.height as f32 / 2.0),
                 oh_math::ssvs::Vec2::new(parts.width as f32, parts.height as f32),
             ),
+            provider: None,
         }
+    }
+
+    /// 029n1 (K6): the pack-shader source for the shader-bound
+    /// `draw_vertices` (the C++'s `assets` behind the `getRenderStates`
+    /// lambda's `getShaderByShaderId`).
+    #[must_use]
+    pub fn with_provider(
+        mut self,
+        provider: Arc<dyn oh_render::pack_shaders::PackShaderProvider>,
+    ) -> Self {
+        self.provider = Some(provider);
+        self
+    }
+
+    /// 029n1 (K6): the shader-bound `draw_vertices` half — `true` when the
+    /// pack program drew (the caller skips the default program), `false`
+    /// when the draw falls through to it (the invalid id, the non-fragment
+    /// registry entry, the sticky compile failure — each the C++'s
+    /// default-render continuation).
+    fn draw_vertices_with_pack_shader(
+        &mut self,
+        vertices: &[Vertex],
+        id: usize,
+        provider: &Arc<dyn oh_render::pack_shaders::PackShaderProvider>,
+    ) -> bool {
+        // The C++'s `getShaderByShaderId`'s `nullptr` guard
+        // (`HGGraphics.cpp:93-94` — no default-state early return here:
+        // the states already carry the bound id, the fallback is the
+        // default program, not `RenderStates::Default`'s blend — the C++
+        // `RenderStates{shader}`'s blend IS the default Alpha anyway).
+        let Some(snapshot) = provider.pack_shader_snapshot(id) else {
+            return false;
+        };
+        // The C++ binds whatever `getShaderByShaderId` hands back; a
+        // vertex-only / geometry-only `sf::Shader` on a desktop GL
+        // context would leave the fragment stage at the GL default.
+        // The port's scene draws are the fragment-shader surface (the
+        // levels' `shdr_setActiveFragmentShader` binds `.frag` files —
+        // the only binding entry point, `LuaScripting.cpp:1549-1557`),
+        // so a non-fragment id draws through the default program (the
+        // equivalent visual result, the scope guard's geometry-shader
+        // exclusion).
+        if snapshot.shader_type != oh_render::shader::ShaderType::Fragment {
+            return false;
+        }
+        // The stored-uniform upload needs the snapshot's values through
+        // the (possibly first) compile — keep the owned copy beside the
+        // borrow of the compiled program.
+        let uniforms = snapshot.uniforms.clone();
+        let mut cache = self.parts.pack_shaders();
+        match cache.program(&self.parts.gl, id, &snapshot) {
+            Some(program) => {
+                program.upload_uniforms(&self.parts.gl, &uniforms);
+                program.draw(&self.parts.gl, vertices, self.view);
+                true
+            }
+            // The sticky compile failure (logged once by the cache) — the
+            // default program draws (the C++'s load-failure continuation).
+            None => false,
+        }
+    }
+
+    /// 029n1 (K6): the shader-bound `draw_text` half — `true` when the
+    /// pack program drew the glyph quads (the font atlas on unit 0,
+    /// the C++'s font texture — the C++'s `window->draw(text,
+    /// getRenderStates(RenderStage::Text))`, `HGGraphics.cpp:283`),
+    /// `false` when the draw falls through to the default textured-quad
+    /// pass (the invalid id, the non-fragment registry entry, the
+    /// sticky compile failure, the empty text / no-atlas case — each
+    /// the C++'s default-render continuation).
+    fn draw_text_with_pack_shader(
+        &mut self,
+        text: &Text,
+        id: usize,
+        provider: &Arc<dyn oh_render::pack_shaders::PackShaderProvider>,
+    ) -> bool {
+        let Some(snapshot) = provider.pack_shader_snapshot(id) else {
+            return false;
+        };
+        if snapshot.shader_type != oh_render::shader::ShaderType::Fragment {
+            return false;
+        }
+        let uniforms = snapshot.uniforms.clone();
+        let mut cache = self.parts.pack_shaders();
+        let Some(program) = cache.program(&self.parts.gl, id, &snapshot) else {
+            return false;
+        };
+        // The stored-uniform upload (the C++'s bind-time half — the
+        // values the hook / `onUpdate` stored before this draw).
+        program.upload_uniforms(&self.parts.gl, &uniforms);
+        // The glyph quads + the font atlas on unit 0 (the `GlPasses`
+        // owns the atlas — the two `GlParts` slots are independent
+        // `RefCell`s, the single-threaded GL's borrow soundness).
+        let mut passes = self.parts.passes();
+        passes.draw_text_with_pack_program(&self.parts.gl, text, self.view, program)
     }
 }
 
@@ -1187,13 +1359,29 @@ impl DrawTarget for GlDrawTarget<'_> {
         }
         // The C++ per-draw-call render states' blend (the `GlParts::
         // apply_blend` doc: the pre-025c pass left GL blending off — the
-        // correction); the per-stage shader binding is the issue-10 GL
-        // surface (the batch uploads with the default program).
+        // correction).
         self.parts.apply_blend(states.blend_mode);
-        // The per-stage `RenderStates` (shaders) are the issue-10 GL
-        // surface; the batch uploads with the default program. The
-        // uploader is the `GlParts`-shared one (the SG5 audit: the
-        // pre-025c per-frame re-creation leaked the GL objects).
+        // 029n1 (K6): the bound per-stage pack fragment shader (the C++'s
+        // `sf::RenderStates{assets.getShaderByShaderId(*fragmentShaderId)}`
+        // — `HGGraphics.cpp:77`): draw through the compiled pack program
+        // (the deferred load-time compile + the stored-uniform upload —
+        // `oh_render::pack_shaders`'s module docs for the set-time vs
+        // bind-time divergence), else fall through to the default
+        // pass-through program (the C++'s load-failure path,
+        // `Assets.cpp:889-892`'s "Failed to load shader" + the
+        // default-render continuation).
+        if let Some(id) = states.shader {
+            if let Some(provider) = self.provider.clone() {
+                if self.draw_vertices_with_pack_shader(vertices, id, &provider) {
+                    return;
+                }
+            }
+        }
+        // The default pass-through program (the C++'s no-shader / the
+        // load-failure draw — the batch uploads with the default
+        // program). The uploader is the `GlParts`-shared one (the SG5
+        // audit: the pre-025c per-frame re-creation leaked the GL
+        // objects).
         let mut slot = self.parts.batch();
         let failed = slot.failed;
         match slot.uploader.as_mut() {
@@ -1225,13 +1413,21 @@ impl DrawTarget for GlDrawTarget<'_> {
     }
 
     fn draw_text(&mut self, text: &Text, states: RenderStates) {
-        // C++ `window->draw(text, states)` — the font-atlas text pass
-        // (issue-025c SG3): the per-glyph quads (the SFML `Text::draw`
-        // geometry, `oh_render::glyphs`'s layout) through the textured quad
-        // with the shared atlas texture (the raster cache + the growth
-        // re-upload live in the `GlParts`-shared `GlPasses` — NOT the
-        // per-frame scratch, the frame order stays the C++'s).
+        // C++ `window->draw(text, states)` — the C++'s
+        // `drawText(getRenderStates(RenderStage::Text))`
+        // (`HGGraphics.cpp:283`): the font-atlas text pass
+        // (issue-025c SG3) with the per-draw-call render states —
+        // including 029n1 (K6)'s bound pack fragment shader (the
+        // `text_shader.lua` level's `text.frag` — the hue-shifting
+        // `font`-sampling text effect).
         self.parts.apply_blend(states.blend_mode);
+        if let Some(id) = states.shader {
+            if let Some(provider) = self.provider.clone() {
+                if self.draw_text_with_pack_shader(text, id, &provider) {
+                    return;
+                }
+            }
+        }
         let mut passes = self.parts.passes();
         passes.draw_text(&self.parts.gl, text, self.view);
     }
@@ -2183,6 +2379,12 @@ pub struct WindowedClient {
     cursor_last_keys: std::cell::Cell<[bool; oh_render::input::KEY_BITS]>,
     /// C++ `hg` (main.cpp:414-421) — the composition's engine handle.
     pub game: Rc<HexagonGame<GameApiState>>,
+    /// The 029n1 (K6) pack-shader source: the shared `HGAssets` the
+    /// GL layer's per-stage fragment shaders compile + upload from
+    /// (the C++'s single `HGAssets` — `assets.getShaderByShaderId`,
+    /// `HGGraphics.cpp:77`; the `tick`'s `GlDrawTarget` takes the
+    /// [`AssetsPackShaderProvider`] over this `Arc`).
+    assets: Arc<oh_assets::Assets>,
     /// The shared process config (the C++'s `hg::Config` singleton —
     /// `build`'s parameter): the egui console footer's statics
     /// seed/write back into it (HGUpdate.cpp:1549, 1555-1557) and the
@@ -2628,7 +2830,7 @@ impl WindowedClient {
         let cursor_visible = std::rc::Rc::new(std::cell::Cell::new(true));
 
         let menu = Rc::new(MenuGame::new(
-            Rc::new(RealMenuAssets::from_arc(assets)),
+            Rc::new(RealMenuAssets::from_arc(assets.clone())),
             Rc::new(ConfigMenuAdapter::new(
                 config.clone(),
                 refresh_binds_slot.clone(),
@@ -2765,6 +2967,7 @@ impl WindowedClient {
             cursor_last_mouse: std::cell::Cell::new(None),
             cursor_last_keys: std::cell::Cell::new([false; oh_render::input::KEY_BITS]),
             game,
+            assets,
             config,
             fps_bits,
             touch_overlay,
@@ -2960,6 +3163,7 @@ impl WindowedClient {
             timer,
             menu,
             game,
+            assets,
             config,
             fps_bits,
             touch_overlay,
@@ -3003,6 +3207,7 @@ impl WindowedClient {
                     &menu,
                     &interrupt,
                     &game,
+                    &assets,
                     &config,
                     &ilc,
                     &render_size,
@@ -3033,6 +3238,7 @@ impl WindowedClient {
             &self.menu,
             &self.interrupt,
             &self.game,
+            &self.assets,
             &self.config,
             &self.ilc,
             &self.render_size,
@@ -3060,6 +3266,7 @@ impl WindowedClient {
             &self.menu,
             &self.interrupt,
             &self.game,
+            &self.assets,
             &self.config,
             &self.ilc,
             &self.render_size,
@@ -3112,6 +3319,10 @@ impl WindowedClient {
         menu: &Rc<MenuGame>,
         interrupt: &AtomicBool,
         game: &Rc<HexagonGame<GameApiState>>,
+        // 029n1 (K6) — the pack-shader source (the C++'s `assets` behind
+        // the `getRenderStates` lambda): the per-frame `GlDrawTarget`
+        // takes the `AssetsPackShaderProvider` over it.
+        assets: &Arc<oh_assets::Assets>,
         config: &Arc<RwLock<Config>>,
         ilc: &Rc<RefCell<Option<crate::lua_console_ui::IlcConsole>>>,
         render_size: &std::sync::Arc<RenderWindowSize>,
@@ -3340,7 +3551,11 @@ impl WindowedClient {
         // explicit `window.swap_buffers()` above, measured in this span).
         let ms_draw_start = std::time::Instant::now();
         if let Some(gl) = window.gl() {
-            let mut target = GlDrawTarget::new(gl);
+            // 029n1 (K6): the pack-shader source (the C++'s `assets`
+            // behind the `getRenderStates` lambda) — the bound stages'
+            // `.frag` programs compile + upload from it at draw time.
+            let mut target = GlDrawTarget::new(gl)
+                .with_provider(Arc::new(AssetsPackShaderProvider::new(assets.clone())));
             engine.draw(&mut target);
             // issue 31 — the overlay's buttons (the §2.5 layout: only
             // while playing — the gate's draw half; after the game's

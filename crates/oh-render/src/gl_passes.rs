@@ -129,10 +129,18 @@ const TEX_CACHE_CAP: usize = 256;
 // ---------------------------------------------------------------------------
 
 /// The quad vertex: `position (vec2) + uv (vec2) + color (vec4)` — 8 f32.
+/// The SFML `Text`'s glyph-quad vertex (the port's textured-quad
+/// pipeline's layout: `position` + font-atlas `texCoord` + `color`,
+/// all floats, 32 bytes — the 029n1 pack-shader text stage consumes
+/// the same layout, `pack_shaders.rs`).
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct QuadVertex {
-    pos: [f32; 2],
+pub struct QuadVertex {
+    /// The glyph-quad position (view coords) — `pub(crate)` for the
+    /// 029n1 pack-shader text stage's CPU view transform (`
+    /// pack_shaders.rs`'s `view_to_clip` — the desktop fixed-function
+    /// path's pre-upload transform, module docs there).
+    pub(crate) pos: [f32; 2],
     uv: [f32; 2],
     color: [f32; 4],
 }
@@ -567,21 +575,65 @@ impl GlPasses {
     /// (position/origin/scale/rotation — SFML's `Transformable::
     /// getTransform`) is applied to the local quads here.
     pub fn draw_text(&mut self, gl: &Context, text: &crate::font::Text, view: View) {
-        if self.failed {
+        let Some(verts) = self.build_quad_vertices(gl, text) else {
             return;
+        };
+        let atlas = self
+            .atlas_tex
+            .expect("build_quad_vertices ensured the atlas");
+        self.upload_and_draw(gl, &verts, atlas, view);
+    }
+
+    /// 029n1 (K6): the bound pack fragment shader's TEXT draw (the C++
+    /// `window->draw(text, getRenderStates(RenderStage::Text))` —
+    /// `HGGraphics.cpp:283`): the text's glyph quads (the default
+    /// pass's geometry, `build_quad_vertices`) through the pack
+    /// program (the font atlas on unit 0 — the C++'s font texture, the
+    /// pack fragment shader's first sampler, the GL's default unit —
+    /// the `text.frag`'s `font` samples it with the stage's
+    /// `gl_TexCoord[0]`). `false` = the atlas is unavailable / the
+    /// text is empty — the caller falls back to the default
+    /// textured-quad pass (the C++'s load-failure continuation).
+    pub fn draw_text_with_pack_program(
+        &mut self,
+        gl: &Context,
+        text: &crate::font::Text,
+        view: View,
+        program: &mut crate::pack_shaders::PackShaderProgram,
+    ) -> bool {
+        let Some(verts) = self.build_quad_vertices(gl, text) else {
+            return false;
+        };
+        let atlas = self
+            .atlas_tex
+            .expect("build_quad_vertices ensured the atlas");
+        program.draw_text(gl, &verts, atlas, view);
+        true
+    }
+
+    /// The text pass's shared geometry (the `draw_text` + the 029n1
+    /// pack-shader text pass): the quads' build + the atlas's ensure
+    /// (the growth re-upload) + the UV normalisation against the
+    /// atlas's FINAL size (the module docs' font-cache pin, the
+    /// `build_quad_vertices` caller never sees a stale normalisation).
+    fn build_quad_vertices(
+        &mut self,
+        gl: &Context,
+        text: &crate::font::Text,
+    ) -> Option<Vec<QuadVertex>> {
+        if self.failed {
+            return None;
         }
         let quads = glyphs::text_quads(text, &mut self.store);
         if quads.is_empty() {
             // An empty string / a zero character size draws nothing
             // (the C++'s `Text::draw` — the SFML semantics).
-            return;
+            return None;
         }
         if !self.ensure_program(gl) {
-            return;
+            return None;
         }
-        let Some(atlas) = self.ensure_atlas_texture(gl) else {
-            return;
-        };
+        self.ensure_atlas_texture(gl)?;
         // The atlas's FINAL size (the texture the upload just wrote): the
         // quads' cells are atlas-relative, the UV normalisation happens
         // HERE — a mid-string atlas growth (the `text_quads`'s first pass)
@@ -651,7 +703,7 @@ impl GlPasses {
                 ]
             })
             .collect();
-        self.upload_and_draw(gl, &verts, atlas, view);
+        Some(verts)
     }
 
     // ---- the shared upload + draw ------------------------------------------

@@ -129,31 +129,76 @@ impl AssetsApi for RealAssetsApi {
         usize::try_from(shader_id).is_ok_and(|id| self.assets.is_valid_shader_id(id))
     }
 
-    fn set_shader_uniform_f(&self, _shader_id: u64, _name: &str, _a: f32) {}
-    fn set_shader_uniform_f_vec2(&self, _shader_id: u64, _name: &str, _a: f32, _b: f32) {}
-    fn set_shader_uniform_f_vec3(&self, _shader_id: u64, _name: &str, _a: f32, _b: f32, _c: f32) {}
+    // 029n1 (K6): the C++ `shader.setUniformUnsafe(name, v)` on the
+    // shader with `shader_id` — the pinned SFML fork's SET-time upload
+    // (`Shader.cpp:759-836`'s `UnsafeUniformBinder`) is the port's
+    // store write (the `Assets`' uniform cache, keyed by the same
+    // shader id; the GL upload is the draw-time bind half — the 029n1
+    // report's set-time-vs-bind-time divergence; the C++'s `getShader`
+    // throw-on-invalid-id is the Lua layer's `withValidShaderId` guard
+    // here, the store's no-op the unreachable path's landing).
+    fn set_shader_uniform_f(&self, shader_id: u64, name: &str, a: f32) {
+        if let Ok(id) = usize::try_from(shader_id) {
+            self.assets.set_shader_uniform_f(id, name, a);
+        }
+    }
+
+    fn set_shader_uniform_f_vec2(&self, shader_id: u64, name: &str, a: f32, b: f32) {
+        if let Ok(id) = usize::try_from(shader_id) {
+            self.assets.set_shader_uniform_f_vec2(id, name, a, b);
+        }
+    }
+
+    fn set_shader_uniform_f_vec3(&self, shader_id: u64, name: &str, a: f32, b: f32, c: f32) {
+        if let Ok(id) = usize::try_from(shader_id) {
+            self.assets.set_shader_uniform_f_vec3(id, name, a, b, c);
+        }
+    }
+
     fn set_shader_uniform_f_vec4(
         &self,
-        _shader_id: u64,
-        _name: &str,
-        _a: f32,
-        _b: f32,
-        _c: f32,
-        _d: f32,
+        shader_id: u64,
+        name: &str,
+        a: f32,
+        b: f32,
+        c: f32,
+        d: f32,
     ) {
+        if let Ok(id) = usize::try_from(shader_id) {
+            self.assets.set_shader_uniform_f_vec4(id, name, a, b, c, d);
+        }
     }
-    fn set_shader_uniform_i(&self, _shader_id: u64, _name: &str, _a: i32) {}
-    fn set_shader_uniform_i_vec2(&self, _shader_id: u64, _name: &str, _a: i32, _b: i32) {}
-    fn set_shader_uniform_i_vec3(&self, _shader_id: u64, _name: &str, _a: i32, _b: i32, _c: i32) {}
+
+    fn set_shader_uniform_i(&self, shader_id: u64, name: &str, a: i32) {
+        if let Ok(id) = usize::try_from(shader_id) {
+            self.assets.set_shader_uniform_i(id, name, a);
+        }
+    }
+
+    fn set_shader_uniform_i_vec2(&self, shader_id: u64, name: &str, a: i32, b: i32) {
+        if let Ok(id) = usize::try_from(shader_id) {
+            self.assets.set_shader_uniform_i_vec2(id, name, a, b);
+        }
+    }
+
+    fn set_shader_uniform_i_vec3(&self, shader_id: u64, name: &str, a: i32, b: i32, c: i32) {
+        if let Ok(id) = usize::try_from(shader_id) {
+            self.assets.set_shader_uniform_i_vec3(id, name, a, b, c);
+        }
+    }
+
     fn set_shader_uniform_i_vec4(
         &self,
-        _shader_id: u64,
-        _name: &str,
-        _a: i32,
-        _b: i32,
-        _c: i32,
-        _d: i32,
+        shader_id: u64,
+        name: &str,
+        a: i32,
+        b: i32,
+        c: i32,
+        d: i32,
     ) {
+        if let Ok(id) = usize::try_from(shader_id) {
+            self.assets.set_shader_uniform_i_vec4(id, name, a, b, c, d);
+        }
     }
 }
 

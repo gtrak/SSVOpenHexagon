@@ -37,7 +37,10 @@ use crate::draw::{PrimitiveType, Vertex, VertexBatch};
 use crate::error::RenderError;
 use crate::view::View;
 
-const VERTEX_SHADER_SOURCE: &str = r#"
+/// The pass-through vertex source (the built-in view transform — the
+/// 029n1 pack-shader scene stage reuses it byte-identically on GLES
+/// contexts, where the desktop `gl_Color` builtin does not exist).
+pub const VERTEX_SHADER_SOURCE: &str = r#"
 attribute vec2 a_position;
 attribute vec4 a_color;
 uniform vec2 u_center;

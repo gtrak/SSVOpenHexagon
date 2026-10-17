@@ -347,13 +347,24 @@ impl SharedState {
         self.get_dependent_asset_filename("Shaders", shader_name)
     }
 
-    /// C++ `getDependentAssetFilename(subfolder, ctx, currentPackPath, name)`.
+    /// C++ `getDependentAssetFilename(subfolder, ctx, currentPackPath, name)`
+    /// (Utils.cpp:166-175): `concat(context, assetSubfolder, '/',
+    /// mAssetName)` — `context` (the pack folder path) already carries the
+    /// C++ `Path` trailing slash (the port's `PackData::folder_path`
+    /// normalization, `oh-data`'s `pack_data_from_json`), so NO separator
+    /// goes between the context and the subfolder: `"Packs/artwork/" +
+    /// "Shaders" + "/" + name` = `"Packs/artwork/Shaders/name"`. An extra
+    /// `/` after the context yields `"Packs/artwork//Shaders/name"`, which
+    /// the filesystem tolerates (the `exec_script` loads) but the
+    /// registry's exact-key `getShaderIdByPath` does not (the C++'s
+    /// `shadersPathToId` is an exact `std::string` map —
+    /// `Utils::concat` normalizes nothing).
     fn get_dependent_asset_filename(&self, subfolder: &str, name: &str) -> String {
         let context = self
             .exec_script_pack_path_context
             .last()
             .map_or(&self.pack_path, |s| s);
-        format!("{context}/{subfolder}/{name}")
+        format!("{context}{subfolder}/{name}")
     }
 }
 
@@ -548,7 +559,13 @@ mod tests {
             MusicData::default(),
             false,
             true,
-            "packs/base".into(),
+            // The C++ `LevelData::packPath` = `PackData::folderPath` — the
+            // trailing-slash form (the C++ `Path`'s folder normalization,
+            // mirrored by `oh-data`'s `pack_data_from_json` — the `pack_data`
+            // fixture below carries the same value). `get_dependent_*_filename`
+            // joins it the C++ way (`context + subfolder + "/" + name`), so
+            // the slash comes from the context, not the join.
+            "packs/base/".into(),
             "level".into(),
             "pack".into(),
             PackData {

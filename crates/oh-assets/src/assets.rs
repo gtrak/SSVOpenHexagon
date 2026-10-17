@@ -58,7 +58,7 @@ use oh_data::{
 
 use crate::asset_storage::{AssetRef, AssetStorage};
 use crate::pack_scan;
-use crate::shaders::{ShaderRegistry, ShaderType};
+use crate::shaders::{ShaderRegistry, ShaderType, UniformValue};
 
 /// A fatal asset-load condition (the C++ constructor `std::terminate()`s on
 /// these). The port instead returns this, carrying the `LoadInfo` accumulated
@@ -167,6 +167,17 @@ pub struct Assets {
     // C++ `shaders` / `shadersPathToId` / `shadersById`.
     shaders: ShaderRegistry,
 
+    // K6: the uniform store — the C++'s per-`sf::Shader` uniform cache
+    // (`Shader.cpp`'s `setUniform*` storage; the C++ keys it by shader
+    // OBJECT, the port by the same shader id the Lua `shdr_*` API passes
+    // around). The GL upload is the draw-time bind half.
+    // `Mutex`: the C++'s `HGAssets` is one shared object whose shader
+    // uniforms the Lua `shdr_setUniform*` calls mutate; the port's
+    // `Assets` is `Arc`-shared behind the `Send + Sync` `AssetsApi`
+    // trait, so the mutation is interior (the C++ is single-threaded at
+    // this call site — the `Mutex` never contends).
+    shader_uniforms: Mutex<BTreeMap<usize, BTreeMap<String, UniformValue>>>,
+
     // C++ `loadInfo`.
     load_info: LoadInfo,
 }
@@ -216,6 +227,7 @@ impl Assets {
             profiles: Mutex::new(ProfileStore::default()),
             pack_ids_with_missing_deps: BTreeSet::new(),
             shaders: ShaderRegistry::new(),
+            shader_uniforms: Mutex::new(BTreeMap::new()),
             load_info: LoadInfo::default(),
         };
 
@@ -531,15 +543,24 @@ impl Assets {
         let mut load_of_type = |ext: &str, stype: ShaderType| {
             for p in pack_scan::scan_single_by_ext(&self.root, &format!("{pack_path}Shaders/"), ext)
             {
-                // `sf::Shader::loadFromFile` stand-in: the file must exist.
-                if !self.root.join(&p).is_file() {
+                // `sf::Shader::loadFromFile` stand-in: the file must
+                // exist (the C++'s compile failure → log + skip).
+                let real = self.root.join(&p);
+                if !real.is_file() {
                     // C++: log "Failed to load shader '<p>'" and continue.
                     continue;
                 }
+                // K6: read the source (the C++ compiles it into the
+                // `sf::Shader` here; the port keeps the text for the
+                // draw-time GL compile). A read failure is the C++'s
+                // load-failure path (log + skip).
+                let Ok(source) = std::fs::read_to_string(&real) else {
+                    continue;
+                };
                 // C++ `p.getFileName()` = the bare file name (with ext).
                 let file_name = logical_filename(&p);
                 let name_key = format!("{pack_id}_{file_name}");
-                self.shaders.add(&name_key, &p, stype);
+                self.shaders.add(&name_key, &p, &source, stype);
                 self.load_info.assets += 1;
             }
         };
@@ -1332,6 +1353,87 @@ impl Assets {
     #[must_use]
     pub fn is_valid_shader_id(&self, id: usize) -> bool {
         self.shaders.is_valid_id(id)
+    }
+
+    /// The registered shader count (the C++'s `shadersById.size()` —
+    /// the diagnostics' full-registry size).
+    #[must_use]
+    pub fn shader_count(&self) -> usize {
+        self.shaders.len()
+    }
+
+    /// K6: the shader's source + the current uniform store (the draw-time
+    /// snapshot the GL layer compiles + uploads from — the C++'s
+    /// `getShader(id)` hands `renderTexture` the live `sf::Shader`,
+    /// program + uniform cache, `HGGraphics.cpp:92-97`).
+    #[must_use]
+    pub fn shader_snapshot(&self, id: usize) -> Option<crate::shaders::ShaderSnapshot> {
+        let shader = self.shaders.get_by_id(id)?;
+        Some(crate::shaders::ShaderSnapshot {
+            path: shader.path.clone(),
+            shader_type: shader.shader_type,
+            source: shader.source.clone(),
+            uniforms: self
+                .shader_uniforms
+                .lock()
+                .expect("shader uniforms poisoned")
+                .get(&id)
+                .cloned()
+                .unwrap_or_default(),
+        })
+    }
+
+    /// K6: the C++ `sf::Shader::setUniform` family's storage half (all
+    /// eight kinds the Lua `shdr_setUniform*` API exposes,
+    /// `LuaScripting.cpp:1337-1407`). The value lands in the per-shader
+    /// store NOW (the C++ stores it at `setUniform` time,
+    /// `Shader.cpp:102-196`; the GL upload is the port's lazy bind-time
+    /// half, `Shader.cpp:294-303`). An unknown `id` is a no-op (the C++
+    /// `getShader` would have thrown first; the Lua layer's
+    /// `withValidShaderId` guard makes the call unreachable).
+    pub fn set_shader_uniform_f(&self, id: usize, name: &str, value: f32) {
+        self.set_shader_uniform(id, name, UniformValue::F(value));
+    }
+
+    pub fn set_shader_uniform_f_vec2(&self, id: usize, name: &str, x: f32, y: f32) {
+        self.set_shader_uniform(id, name, UniformValue::FVec2(x, y));
+    }
+
+    pub fn set_shader_uniform_f_vec3(&self, id: usize, name: &str, x: f32, y: f32, z: f32) {
+        self.set_shader_uniform(id, name, UniformValue::FVec3(x, y, z));
+    }
+
+    pub fn set_shader_uniform_f_vec4(&self, id: usize, name: &str, x: f32, y: f32, z: f32, w: f32) {
+        self.set_shader_uniform(id, name, UniformValue::FVec4(x, y, z, w));
+    }
+
+    pub fn set_shader_uniform_i(&self, id: usize, name: &str, value: i32) {
+        self.set_shader_uniform(id, name, UniformValue::I(value));
+    }
+
+    pub fn set_shader_uniform_i_vec2(&self, id: usize, name: &str, x: i32, y: i32) {
+        self.set_shader_uniform(id, name, UniformValue::IVec2(x, y));
+    }
+
+    pub fn set_shader_uniform_i_vec3(&self, id: usize, name: &str, x: i32, y: i32, z: i32) {
+        self.set_shader_uniform(id, name, UniformValue::IVec3(x, y, z));
+    }
+
+    pub fn set_shader_uniform_i_vec4(&self, id: usize, name: &str, x: i32, y: i32, z: i32, w: i32) {
+        self.set_shader_uniform(id, name, UniformValue::IVec4(x, y, z, w));
+    }
+
+    /// The store write (all eight `set_shader_uniform_*` funnels here).
+    fn set_shader_uniform(&self, id: usize, name: &str, value: UniformValue) {
+        if !self.shaders.is_valid_id(id) {
+            return;
+        }
+        self.shader_uniforms
+            .lock()
+            .expect("shader uniforms poisoned")
+            .entry(id)
+            .or_default()
+            .insert(name.to_string(), value);
     }
 
     // ------------------------------------------------------------------

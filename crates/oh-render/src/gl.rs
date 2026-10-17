@@ -76,12 +76,13 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 use glow::HasContext;
 use glutin::config::ConfigTemplateBuilder;
-#[cfg(target_os = "android")]
+use glutin::config::GlConfig;
 use glutin::context::ContextApi;
 use glutin::context::PossiblyCurrentContext;
-#[cfg(target_os = "android")]
 use glutin::context::Version;
-use glutin::context::{ContextAttributes, ContextAttributesBuilder, NotCurrentGlContext};
+use glutin::context::{
+    ContextAttributes, ContextAttributesBuilder, GlProfile, NotCurrentGlContext,
+};
 use glutin::display::{Display, DisplayApiPreference, GlDisplay};
 use glutin::surface::{GlSurface, Surface, SurfaceAttributesBuilder, WindowSurface};
 #[cfg(target_os = "android")]
@@ -110,6 +111,14 @@ pub struct GlParts {
     /// deleted them: the GL object-name leak the issue-025c SG5 audit
     /// found, the `GlDrawTarget` borrows it via [`Self::batch`]).
     batch: RefCell<BatchSlot>,
+
+    /// The 029n1 (K6) pack-shader cache (the bound stages' compiled
+    /// pack `.frag` programs — the lazy per-id compile of the C++'s
+    /// load-time `sf::Shader::loadFromFile`; the `GlDrawTarget`'s
+    /// shader-bound `draw_vertices` borrows it via
+    /// [`Self::pack_shaders`]; the GL objects live for the window's
+    /// life, the `BatchSlot` pattern).
+    pack_shaders: RefCell<crate::pack_shaders::PackShaderCache>,
 
     /// Keep-alives (drop order: glow context, glutin context, surface, window,
     /// display last — so the GL context drops before its surface/window).
@@ -189,28 +198,111 @@ impl GlBackend {
             (display, window, window_handle)
         };
 
-        // The desktop context: no explicit API request (`ContextAttributes`
-        // `api == None` — the EGL/CGl config's API decides: desktop GL on
-        // desktop EGL, the Cgl context on macOS, WGL on Windows). The
-        // shared tail is `finish_gl` (the android path, below, passes the
-        // GLES 3.0 request through the same tail). The context attributes
-        // carry Some(window_handle) (windows-testing fix 1: build(None) made
-        // WGL fall back to the screen DC and wglCreateContextAttribsARB fail
-        // silently — the window never appeared).
-        let ctx_attrs = ContextAttributesBuilder::new().build(Some(window_handle));
+        // The desktop context: EXPLICIT desktop GL + the COMPATIBILITY
+        // profile. The C++'s SFML fork's desktop context (`sfml-src`
+        // `Window/Unix/GlxContext.cpp`): the C++ passes no
+        // `ContextSettings` (`majorVersion == 0`, no `Core` flag) —
+        // the legacy `glXCreateContext` path = the compatibility profile
+        // at the implementation's default version (the explicit-profile
+        // arm, `:688-691`, picks `GLX_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB`
+        // unless `ContextSettings::Core`). That profile is load-bearing
+        // for the 029n1 pack shaders: a fragment-only pack program's
+        // vertex stage is the fixed-function pipeline (the
+        // `pack_shaders` module docs), which only exists in a
+        // compatibility context — in a core context `gl_Color` is not a
+        // writable vertex output, the port's fixed-function-stand-in
+        // vertex stages fail to compile, and the bound stages fall back
+        // to the default program (the C++'s fixed-function model is
+        // unrepresentable there). glutin's own default is Core 3.3
+        // (`glutin::context::pick_profile`'s `(None, None)` arm) — so the
+        // desktop-GL + compatibility request is explicit here. The
+        // built-in programs' GLSL-1.20 sources (`gl_FragColor` /
+        // `texture2D` + the varyings) are the compatibility profile's
+        // native language. The shared tail is `finish_gl` (the android
+        // path, below, passes the GLES 3.0 request through the same tail
+        // — unaffected: the `GlProfile` request is a desktop-GL concept,
+        // the android builder never sets it). The context attributes
+        // carry Some(window_handle) (windows-testing fix 1: build(None)
+        // made WGL fall back to the screen DC and wglCreateContextAttribsARB
+        // fail silently — the window never appeared).
+        let ctx_attrs = ContextAttributesBuilder::new()
+            .with_context_api(ContextApi::OpenGl(None))
+            .with_profile(GlProfile::Compatibility)
+            .build(Some(window_handle));
         let parts = finish_gl(display, window, width.get(), height.get(), &ctx_attrs)?;
 
         Some(Self { event_loop, parts })
     }
+
+    /// A GLES-3.0-requested backend over the EGL display (the 029n1
+    /// §4.2 compile guard's translated-source column's context — the
+    /// `translate_for_gles` output is GLSL ES 1.00, the 25b-SG3
+    /// target; a desktop-GL context cannot be its assertion home).
+    /// Returns `None` headless / without a GLES-capable EGL stack —
+    /// A GLES-3.0-requested backend over the EGL display (the 029n1
+    /// §4.2 compile guard's translated-source column's context — the
+    /// `translate_for_gles` output is GLSL ES 1.00, the 25b-SG3
+    /// target; a desktop-GL context cannot be its assertion home).
+    /// winit 0.30 allows ONE `EventLoop` per process (`RecreationAttempt`
+    /// on the second), so a caller that already bootstrapped a desktop
+    /// backend cannot reach this one — the `pack_shaders_gl` example's
+    /// `gles` child mode (a fresh process) is the entry point.
+    /// Returns `None` headless / without a GLES-capable EGL stack —
+    /// the caller's skip-with-reason (D-011).
+    #[allow(deprecated)] // the desktop `create`'s same pre-`run_app` bootstrap
+    pub fn try_create_gles(width: u32, height: u32, title: &str) -> Option<Self> {
+        use std::num::NonZero;
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let event_loop = winit::event_loop::EventLoop::new().ok()?;
+            let width = NonZero::new(width).unwrap_or(NonZero::new(1).unwrap());
+            let height = NonZero::new(height).unwrap_or(NonZero::new(1).unwrap());
+            let attrs = winit::window::WindowAttributes::new()
+                .with_title(title)
+                .with_inner_size(winit::dpi::PhysicalSize::new(width.get(), height.get()));
+            let window = event_loop.create_window(attrs).ok()?;
+            let display = unsafe {
+                Display::new(
+                    event_loop.display_handle().ok()?.as_raw(),
+                    DisplayApiPreference::Egl,
+                )
+            }
+            .ok()?;
+            // The GLES-capable config (the shared tail's first-config
+            // pick is the desktop-GL one — a GLES context request
+            // against a non-ES config fails the EGL context creation):
+            let template = glutin::config::ConfigTemplateBuilder::new()
+                .with_api(glutin::config::Api::GLES3)
+                .build();
+            let config = unsafe { display.find_configs(template) }
+                .ok()?
+                .into_iter()
+                .find(|c| c.api().contains(glutin::config::Api::GLES3))?;
+            let ctx_attrs = ContextAttributesBuilder::new()
+                .with_context_api(ContextApi::Gles(Some(Version::new(3, 0))))
+                .build(None);
+            let parts = finish_gl_on_config(
+                display,
+                window,
+                width.get(),
+                height.get(),
+                &config,
+                &ctx_attrs,
+            )?;
+            Some(Self { event_loop, parts })
+        }));
+        result.ok().and_then(|o| o)
+    }
 }
 
 /// The shared GL bootstrap tail (desktop `create` + the android
-/// `create_android_parts`, issue 25b SG2): pick the first config, build the
-/// window surface on the winit window's raw handle, create + make current
-/// the context with the given attributes, load the `glow` API, and wrap
-/// everything in the keep-alive `GlParts` (drop order: glow context →
-/// glutin context → surface → window → display last). `window` MOVES into
-/// the `GlParts` (winit's `Window` is not `Clone` — the handle is read
+/// `create_android_parts`, issue 25b SG2): pick the FIRST config, then
+/// `finish_gl_on_config` (build the window surface on the winit
+/// window's raw handle, create + make current the context with the
+/// given attributes, load the `glow` API, and wrap everything in the
+/// keep-alive `GlParts` — drop order: glow context → glutin context →
+/// surface → window → display last). `window` MOVES into the
+/// `GlParts` (winit's `Window` is not `Clone` — the handle is read
 /// first).
 ///
 /// `width`/`height` are the SURFACE (framebuffer) size: the desktop's
@@ -223,16 +315,40 @@ fn finish_gl(
     height: u32,
     ctx_attrs: &ContextAttributes,
 ) -> Option<GlParts> {
-    let window_handle = window.window_handle().ok()?.as_raw();
     let width = NonZero::new(width).unwrap_or(NonZero::new(1).unwrap());
     let height = NonZero::new(height).unwrap_or(NonZero::new(1).unwrap());
     let config = unsafe { display.find_configs(ConfigTemplateBuilder::new().build()) }
         .ok()?
         .next()?;
+    finish_gl_on_config(
+        display,
+        window,
+        width.get(),
+        height.get(),
+        &config,
+        ctx_attrs,
+    )
+}
+
+/// The tail's config-explicit half: the surface/context/glow bootstrap
+/// over a caller-picked config (the desktop/android `finish_gl`'s
+/// first-config pick + the `try_create_gles` probe's GLES3-filtered
+/// pick).
+fn finish_gl_on_config(
+    display: Display,
+    window: WinitWindow,
+    width: u32,
+    height: u32,
+    config: &glutin::config::Config,
+    ctx_attrs: &ContextAttributes,
+) -> Option<GlParts> {
+    let window_handle = window.window_handle().ok()?.as_raw();
+    let width = NonZero::new(width).unwrap_or(NonZero::new(1).unwrap());
+    let height = NonZero::new(height).unwrap_or(NonZero::new(1).unwrap());
     let surface_attrs =
         SurfaceAttributesBuilder::<WindowSurface>::new().build(window_handle, width, height);
-    let surface = unsafe { display.create_window_surface(&config, &surface_attrs) }.ok()?;
-    let not_current = unsafe { display.create_context(&config, ctx_attrs) }.ok()?;
+    let surface = unsafe { display.create_window_surface(config, &surface_attrs) }.ok()?;
+    let not_current = unsafe { display.create_context(config, ctx_attrs) }.ok()?;
     let context = not_current.make_current(&surface).ok()?;
     let gl =
         unsafe { glow::Context::from_loader_function_cstr(|name| display.get_proc_address(name)) };
@@ -242,6 +358,7 @@ fn finish_gl(
         height: height.get(),
         passes: RefCell::new(crate::gl_passes::GlPasses::new()),
         batch: RefCell::new(BatchSlot::default()),
+        pack_shaders: RefCell::new(crate::pack_shaders::PackShaderCache::default()),
         _context: context,
         _surface: surface,
         _window: window,
@@ -330,6 +447,40 @@ impl GlParts {
     #[must_use]
     pub fn batch(&self) -> RefMut<'_, BatchSlot> {
         self.batch.borrow_mut()
+    }
+
+    /// The 029n1 (K6) pack-shader cache (the bound stages' compiled
+    /// pack `.frag` programs — the module-docs' lazy per-id compile;
+    /// the `GlDrawTarget`'s shader-bound `draw_vertices` lazily
+    /// compiles the id's program here so it survives across frames,
+    /// the `BatchSlot` pattern).
+    #[must_use]
+    pub fn pack_shaders(&self) -> RefMut<'_, crate::pack_shaders::PackShaderCache> {
+        self.pack_shaders.borrow_mut()
+    }
+
+    /// One framebuffer pixel at (`x`, `y`) — GL origin BOTTOM-LEFT
+    /// (`glReadPixels`'s coordinates), the §4.3 GL column's + the
+    /// `pack_shaders_gl` example's pixel assertion (the D-022 caveat:
+    /// the `oh-app`'s `glow 0.17` console type cannot call this
+    /// crate's `glow 0.18` `Context` — the example reads pixels
+    /// through this helper instead of a direct `read_pixels` call).
+    #[must_use]
+    pub fn read_pixel(&self, x: i32, y: i32) -> [u8; 4] {
+        let mut pixel = [0u8; 4];
+        let gl = &self.gl;
+        unsafe {
+            gl.read_pixels(
+                x,
+                y,
+                1,
+                1,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelPackData::Slice(Some(&mut pixel)),
+            );
+        }
+        pixel
     }
 
     /// The SFML per-draw-call blend application (issue-025c SG2 — the C++

@@ -49,6 +49,7 @@ pub mod glyphs;
 pub mod graphics;
 pub mod input;
 pub mod input_manager;
+pub mod pack_shaders;
 pub mod shader;
 pub mod text_draw;
 pub mod texture;
@@ -87,6 +88,9 @@ pub use input_manager::{combo_is_down, Bind, Manager, Mode, Type};
 pub use oh_config::{Button, Key};
 pub use oh_math::hg::color::Color;
 pub use oh_math::ssvs::vector2::Vec2;
+pub use pack_shaders::{
+    PackShaderCache, PackShaderProgram, PackShaderProvider, PackShaderSnapshot,
+};
 pub use shader::{Shader, ShaderRegistry, ShaderType, Uniform};
 pub use text_draw::{
     diff_format, draw_text, draw_text_message, draw_text_personal_best, draw_text_time_and_status,
