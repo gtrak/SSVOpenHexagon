@@ -30,6 +30,7 @@ static double g_dt;
 static long g_report_every = 20000;
 static volatile sig_atomic_t g_alarm_armed = 0;
 static double g_start_wall;
+static long g_dump_iter = 0;
 
 // NDK clang emulates TLS by default for static Android executables
 // (`__emutls_v.*`), which would leave Bionic's own 8-byte-aligned static TLS
@@ -101,9 +102,12 @@ static int cb_reset_time(lua_State *L) {
     g_level_time = 0.0;
     g_tl_cursor = 0.0;
     g_tl_free_at = 0.0;
-    lua_pushnumber(L, 0.0);
-    lua_setglobal(L, "levelTime");
     return 0;
+}
+
+static int cb_level_time(lua_State *L) {
+    lua_pushnumber(L, g_level_time);
+    return 1;
 }
 
 // u_execDependencyScript(disambiguator, name, author, file) /
@@ -148,6 +152,7 @@ static void register_c_api(lua_State *L) {
         {"w_owall", cb_tl_entry},
         {"l_getNumTimelineEntries", cb_num_entries},
         {"l_getNextTimelineStep", cb_next_step},
+        {"l_getLevelTime", cb_level_time},
         {"l_resetTime", cb_reset_time},
         {"u_execDependencyScript", cb_exec_dep_script},
         {"u_execScript", cb_exec_script},
@@ -196,7 +201,6 @@ static const char *STUBS =
     "l_getDelayMult = function() return 1.65 end\n"
     "l_getRotation = function() return 0 end\n"
     "l_getSwapEnabled = function() return false end\n"
-    "l_getLevelTime = function() return levelTime end\n"
     "u_getDifficultyMult = function() return 1 end\n"
     "u_getSpeedMultDM = function() return 0.65 end\n"
     "u_getDelayMultDM = function() return 1.65 end\n"
@@ -253,7 +257,7 @@ int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr,
                 "usage: %s <level.lua> [--iters N] [--dt s] [--jit-off] "
-                "[--report N] [--watchdog s] [--pack-root DIR]\n",
+                "[--report N] [--watchdog s] [--pack-root DIR] [--dump N]\n",
                 argv[0]);
         return 2;
     }
@@ -276,6 +280,8 @@ int main(int argc, char **argv) {
             watchdog_s = atol(argv[++i]);
         else if (strcmp(argv[i], "--pack-root") == 0 && i + 1 < argc)
             g_pack_root = argv[++i];
+        else if (strcmp(argv[i], "--dump") == 0 && i + 1 < argc)
+            g_dump_iter = atol(argv[++i]);
     }
 
     lua_State *L = luaL_newstate();
@@ -335,6 +341,30 @@ int main(int argc, char **argv) {
             return 4;
         }
         g_iter = i;
+
+        if (g_dump_iter != 0 && i == g_dump_iter) {
+            static const char *state_vars[] = {
+                "step0", "step1", "step2", "step25", "step3", "step35",
+                "step4", "step5", "step6", "step0_trRotateLeft",
+                "step0_trRotateRight", "step1_trFocus", "levelTime",
+            };
+            fprintf(stderr, "K3-DRIVER: state dump at iter %ld:\n", i);
+            for (size_t v = 0; v < sizeof state_vars / sizeof state_vars[0]; v++) {
+                lua_getglobal(L, state_vars[v]);
+                char val[128];
+                if (lua_isboolean(L, -1)) snprintf(val, sizeof val, "%s",
+                                                 lua_toboolean(L, -1) ? "true" : "false");
+                else if (lua_isnumber(L, -1))
+                    snprintf(val, sizeof val, "%.3f", lua_tonumber(L, -1));
+                else if (lua_isstring(L, -1)) snprintf(val, sizeof val, "\"%s\"",
+                                                       lua_tostring(L, -1));
+                else if (lua_isnil(L, -1)) snprintf(val, sizeof val, "nil");
+                else snprintf(val, sizeof val, "<? %s ?>", lua_typename(L, lua_type(L, -1)));
+                fprintf(stderr, "  %-20s = %s\n", state_vars[v], val);
+                lua_pop(L, 1);
+            }
+            fflush(stderr);
+        }
 
         if (i % g_report_every == 0) {
             double wall = now_s();
