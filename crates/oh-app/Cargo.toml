@@ -33,13 +33,6 @@ oh-lua = { path = "../oh-lua" }
 oh-assets = { path = "../oh-assets" }
 oh-vfs = { path = "../oh-vfs" }
 oh-menu = { path = "../oh-menu" }
-# C++ main.cpp:340-349 — the SIGINT handler, the SAFE port (the C++'s
-# `TODO (P2): UB`, main.cpp:339: the C++ handler called
-# `globalWindow.stop()` — non-atomic engine state — inside the signal
-# context). `signal-hook`'s `flag::register` keeps the signal context to
-# a single atomic store on the `WindowedClient`'s interrupt flag; the
-# loop head (the C++'s `while(isRunning())` position) performs the stop.
-signal-hook = "0.3"
 oh-replay = { path = "../oh-replay" }
 oh-rng = { path = "../oh-rng" }
 # Issue 21: the Discord manager (the C++ `main.cpp:264-269` `discordManager`,
@@ -57,6 +50,23 @@ oh-net = { path = "../oh-net" }
 # backend (feature `steam` = the real SDK, default = `NoSteam`).
 oh-steam = { path = "../oh-steam" }
 
+# The windowed / console / server stack is desktop-only (sub-goal 4A):
+# `winit` has no emscripten backend (its web backend is
+# `target_os = "unknown"`-only — D-029 drops winit on the web path), and
+# the egui console + the `-server` path are not part of the web vertical
+# slice (26c §5). Gating them off `wasm32-unknown-emscripten` (same
+# versions) keeps the desktop build byte-identically unchanged while
+# letting `oh-app` COMPILE for emscripten; the real web client lands in
+# the `oh-web` crate (sub-goal 4B).
+[target.'cfg(not(target_os = "emscripten"))'.dependencies]
+# C++ main.cpp:340-349 — the SIGINT handler, the SAFE port (the C++'s
+# `TODO (P2): UB`, main.cpp:339: the C++ handler called
+# `globalWindow.stop()` — non-atomic engine state — inside the signal
+# context). `signal-hook`'s `flag::register` keeps the signal context to
+# a single atomic store on the `WindowedClient`'s interrupt flag; the
+# loop head (the C++'s `while(isRunning())` position) performs the stop.
+# The web loop is a plain `request_animation_frame` — no signal handler.
+signal-hook = "0.3"
 # Issue 014b — the egui Lua console overlay (DECISIONS.md D-022, verified
 # against the D-011 stack: egui 0.37 + egui-winit 0.37 + egui_glow 0.37
 # coexist with winit 0.30.13). The overlay lives HERE (composition, like

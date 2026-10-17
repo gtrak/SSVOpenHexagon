@@ -41,13 +41,31 @@ pub mod android;
 pub mod args;
 pub mod bridge;
 pub mod camera;
+// The `mainClient` entry (issue 15 step (b)) loads content through
+// `oh_vfs::RealFs`, which is `#[cfg(not(target_arch = "wasm32"))]` (the web
+// content path is `MemoryVfs` / in-memory bytes — sub-goal 4B). So the
+// client + its dispatch + the `-printLuaDocs` entry do not COMPILE for
+// emscripten yet; the web client lands in the `oh-web` crate (sub-goal 4B).
+#[cfg(not(target_os = "emscripten"))]
 pub mod client;
 pub mod compose;
+#[cfg(not(target_os = "emscripten"))]
 pub mod dispatch;
 pub mod game_state;
 pub mod lifecycle;
+// The egui console overlay (issue 014b) is the windowed-only half of the
+// composition (D-022): it needs `egui` / `egui-winit` / `egui_glow` /
+// `glow 0.17`, which are gated off `wasm32-unknown-emscripten` (sub-goal
+// 4A — the web vertical slice ships without the console, 26c §5).
+#[cfg(not(target_os = "emscripten"))]
 pub mod lua_console_ui;
 pub mod menu_draw;
+#[cfg(not(target_os = "emscripten"))]
 pub mod print_lua_docs;
 pub mod steam;
+// The windowed loop (issue 15 step (c)) drives `oh_render::window::Window`
+// through the winit event loop + the egui console hook; both are
+// desktop-only (sub-goal 4A). The web client's windowed composition lands
+// in the `oh-web` crate (sub-goal 4B).
+#[cfg(not(target_os = "emscripten"))]
 pub mod windowed;
