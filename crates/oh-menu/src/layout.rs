@@ -36,6 +36,47 @@ pub const OFFSET_SNAP: f32 = 0.25;
 pub const BASE_SCROLL_SPEED: f32 = 30.0;
 /// §11.1 `difficultyBumpEffectMax`.
 pub const DIFFICULTY_BUMP_EFFECT_MAX: f32 = 24.0;
+/// C++ `Utils::epsilon` (Utils/Geometry.hpp:11) — the level-list scroll
+/// easing's "arrived at the target" threshold (MenuGame.cpp:4579).
+pub const EPSILON: f32 = 1.0e-4;
+
+/// C++ `updateLevelSelectionDrawingParameters` (MenuGame.cpp:4298-4312) —
+/// the level-selection layout constants derived from the selection font's
+/// probed heights. The scroll machinery (the 29b5 port) consumes these in
+/// `oh-menu`; `oh-app`'s `menu_draw` refresh caches the SAME values for the
+/// draw side (its `text_to_quad_border` / `slct_frame_size` /
+/// `pack_label_height` / `level_label_height` fields are this formula's
+/// output).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LevelSelectionLayout {
+    /// C++ `textToQuadBorder` (`txtSelectionMedium.height * frameSizeMulti`).
+    pub text_to_quad_border: f32,
+    /// C++ `slctFrameSize` (`textToQuadBorder * 0.3f`).
+    pub slct_frame_size: f32,
+    /// C++ `packLabelHeight`.
+    pub pack_label_height: f32,
+    /// C++ `levelLabelHeight`.
+    pub level_label_height: f32,
+}
+
+impl LevelSelectionLayout {
+    /// The C++ :4304-4312 arithmetic, verbatim.
+    #[must_use]
+    pub fn new(h_selection_medium: f32, h_selection_big: f32, h_selection_small: f32) -> Self {
+        let text_to_quad_border = h_selection_medium * FRAME_SIZE_MULTI;
+        let slct_frame_size = text_to_quad_border * 0.3;
+        let pack_label_height = h_selection_medium + 2.0 * text_to_quad_border + slct_frame_size;
+        let level_label_height =
+            h_selection_big + h_selection_small + text_to_quad_border + 2.0 * text_to_quad_border
+                - slct_frame_size;
+        Self {
+            text_to_quad_border,
+            slct_frame_size,
+            pack_label_height,
+            level_label_height,
+        }
+    }
+}
 
 /// C++ `getFPSMult()` — `200.f / window.getFPS()` (MenuGame.cpp:5985-5989;
 /// the menu's offset animations run at the C++'s 200-unit rate — NOT the

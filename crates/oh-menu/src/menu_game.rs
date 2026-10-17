@@ -824,32 +824,48 @@ impl Shared {
 
     // ---- per-state animation step (§11.9) ----
 
-    /// C++ `update()` `LevelSelection` pack-change fold/stretch machine.
+    /// C++ `update()` `LevelSelection` pack-change fold/stretch machine
+    /// (MenuGame.cpp:2882-2934). The `Rest` arm runs the level-list scroll
+    /// easing (`scrollLevelListToTargetY`, the 29b5 port); `Folding` / `Stretching` carry the C++
+    /// per-frame `calcPackChangeScrollFold` / `calcPackChangeScrollStretch` calls.
     pub(crate) fn step_pack_change(&mut self, ft: f32) {
         match self.pack_change_state {
-            PackChange::Rest => {}
+            PackChange::Rest => {
+                self.scroll_level_list_to_target_y(ft);
+            }
             PackChange::Folding => {
                 let list_height = self.get_level_list_height();
+                // C++ :2887-2891 — fold the level list of the current pack.
                 self.pack_change_offset =
                     (self.pack_change_offset + ft * self.scroll_speed).min(list_height);
+                // C++ :2894-2895 — scroll the level list to show the current level.
+                self.calc_pack_change_scroll_fold(list_height);
                 if self.pack_change_offset < list_height {
                     return;
                 }
+                // C++ :2900-2906 — switch pack + set the stretch info.
                 self.change_pack();
                 self.pack_change_offset = self.get_level_list_height();
+                self.calc_scroll_speed();
                 self.pack_change_state = PackChange::Stretching;
             }
             PackChange::Stretching => {
+                // C++ :2912-2914 — stretch the level list of the new pack.
                 self.pack_change_offset =
                     (self.pack_change_offset - ft * self.scroll_speed).max(0.0);
+                // C++ :2917-2918 — scroll to show the current level.
+                self.calc_pack_change_scroll_stretch(self.get_level_list_height());
                 if self.pack_change_offset > 0.0 {
                     return;
                 }
+                // C++ :2923-2926 — the fold is over.
                 self.pack_change_offset = 0.0;
                 self.adjust_levels_offset();
                 self.pack_change_state = PackChange::Rest;
             }
         }
+        // C++ :2930-2932 — make sure there is no empty space above the
+        // first element of the level list.
         let d = if self.favorites_active {
             &mut self.fav_slct
         } else {
@@ -858,8 +874,10 @@ impl Shared {
         d.y_offset = d.y_offset.min(0.0);
     }
 
-    /// C++ `getLevelListHeight()` (coarse — proportional to the level count;
-    /// the exact value needs the level-selection layout constants, slice 13b).
+    /// C++ `getLevelListHeight()` (MenuGame.cpp:4388-4395) — the level
+    /// list's height in the selection layout: `levelLabelHeight * (
+    /// focusHeld ? 1 : levelCount) + slctFrameSize` (the focused list
+    /// shows ONE collapsed row — the draw side's `...` rows, :5018-5138).
     #[must_use]
     pub fn get_level_list_height(&self) -> f32 {
         let drawer = if self.favorites_active {
@@ -867,7 +885,368 @@ impl Shared {
         } else {
             &self.lvl_slct
         };
-        30.0 * drawer.level_data_ids.len() as f32
+        let layout = self.level_selection_layout();
+        let rows = if self.focus_held {
+            1.0
+        } else {
+            drawer.level_data_ids.len() as f32
+        };
+        layout.level_label_height * rows + layout.slct_frame_size
+    }
+
+    /// C++ `getLevelSelectionHeight()` (MenuGame.cpp:4315-4326) — the whole
+    /// selection's height (pack labels + level list + the pack borders). No
+    /// C++ call site (the method is declared and defined but never invoked
+    /// in MenuGame.cpp — ported for API parity; the scroll machinery
+    /// consumes `getLevelListHeight` instead).
+    #[must_use]
+    pub fn get_level_selection_height(&self) -> f32 {
+        let layout = self.level_selection_layout();
+        let pack_count = self.get_selectable_pack_infos_size() as f32;
+        let pack_idx = if self.favorites_active {
+            self.fav_slct.pack_idx
+        } else {
+            self.lvl_slct.pack_idx
+        };
+        let border = if pack_idx != self.get_selectable_pack_infos_size() as i32 - 1 {
+            2.0
+        } else {
+            1.0
+        };
+        layout.pack_label_height * pack_count + self.get_level_list_height()
+            - self.pack_change_offset
+            + border * layout.slct_frame_size
+    }
+
+    /// C++ `updateLevelSelectionDrawingParameters` (MenuGame.cpp:4298-4312)
+    /// as a pure function of the selection font's probed heights — the
+    /// scroll machinery's layout constants (`LevelSelectionLayout::new`).
+    /// The C++ recomputes them on `refreshCamera` (the port's
+    /// `refresh_if_stale`); the heights are the `char_sizes`-keyed probes
+    /// (the (b) menu-draw lane caches the same values per refresh — this
+    /// computes them on demand in oh-menu, where the oracle is cheap).
+    #[must_use]
+    pub fn level_selection_layout(&self) -> crate::layout::LevelSelectionLayout {
+        crate::layout::LevelSelectionLayout::new(
+            self.font_height(19.0),
+            self.font_height(self.char_sizes.selection_big),
+            self.font_height(self.char_sizes.selection_small),
+        )
+    }
+
+    /// C++ `calcScrollSpeed()` (MenuGame.cpp:4397-4402) — the level-count
+    /// scaling: long lists (more than 16 levels) scroll faster.
+    pub fn calc_scroll_speed(&mut self) {
+        let drawer = if self.favorites_active {
+            &self.fav_slct
+        } else {
+            &self.lvl_slct
+        };
+        self.scroll_speed =
+            crate::layout::BASE_SCROLL_SPEED * (drawer.level_data_ids.len() as f32 / 16.0).max(1.0);
+    }
+
+    /// C++ `scrollLevelListToTargetY(ft)` (MenuGame.cpp:4578-4598) — the
+    /// level-list scroll easing: `YOffset` approaches `YScrollTo` at
+    /// `scrollSpeed` units/s, clamped to land exactly on the target, with
+    /// the `Utils::epsilon` arrival gate (a sub-epsilon distance is treated
+    /// as arrived — the C++ `std::abs(YOffset − YScrollTo) <= epsilon`).
+    pub(crate) fn scroll_level_list_to_target_y(&mut self, ft: f32) {
+        let (y_offset, y_scroll_to) = if self.favorites_active {
+            (self.fav_slct.y_offset, self.fav_slct.y_scroll_to)
+        } else {
+            (self.lvl_slct.y_offset, self.lvl_slct.y_scroll_to)
+        };
+        if (y_offset - y_scroll_to).abs() <= crate::layout::EPSILON {
+            return;
+        }
+        let speed = self.scroll_speed;
+        let new_offset = if y_offset < y_scroll_to {
+            // C++ :4585-4591 — `YOffset += ft * scrollSpeed; if (>= target)
+            // YOffset = target;`
+            (y_offset + ft * speed).min(y_scroll_to)
+        } else {
+            // C++ :4593-4597 — the negative-`ft`-direction twin.
+            (y_offset - ft * speed).max(y_scroll_to)
+        };
+        let d = if self.favorites_active {
+            &mut self.fav_slct
+        } else {
+            &mut self.lvl_slct
+        };
+        d.y_offset = new_offset;
+    }
+
+    /// C++ `checkWindowTopScroll` / `checkWindowTopScrollWithResult`
+    /// (MenuGame.cpp:4659-4681) — one ported function: the action fires
+    /// iff `-scroll` is STRICTLY greater than the active drawer's
+    /// `YOffset`; the `WithResult` variant's return value is the `bool`
+    /// (the callers' `if(!checkWindowTopScrollWithResult(...))` tails).
+    /// `with_offset` picks the C++'s two lambdas: `YScrollTo = target`
+    /// (`false`, the level-change scroll) or `YScrollTo = YOffset = target`
+    /// (`true`, the pack-change scroll).
+    fn check_window_top_scroll(&mut self, scroll: f32, with_offset: bool) -> bool {
+        let target = -scroll;
+        let fired = if self.favorites_active {
+            target > self.fav_slct.y_offset
+        } else {
+            target > self.lvl_slct.y_offset
+        };
+        if !fired {
+            return false;
+        }
+        if self.favorites_active {
+            self.fav_slct.y_scroll_to = target;
+            if with_offset {
+                self.fav_slct.y_offset = target;
+            }
+        } else {
+            self.lvl_slct.y_scroll_to = target;
+            if with_offset {
+                self.lvl_slct.y_offset = target;
+            }
+        }
+        true
+    }
+
+    /// C++ `checkWindowBottomScroll` / `checkWindowBottomScrollWithResult`
+    /// (MenuGame.cpp:4683-4711) — the bottom-boundary twin: the action
+    /// fires iff `h − scroll` is STRICTLY less than `YOffset`.
+    fn check_window_bottom_scroll(&mut self, scroll: f32, with_offset: bool) -> bool {
+        let target = self.h - scroll;
+        let fired = if self.favorites_active {
+            target < self.fav_slct.y_offset
+        } else {
+            target < self.lvl_slct.y_offset
+        };
+        if !fired {
+            return false;
+        }
+        if self.favorites_active {
+            self.fav_slct.y_scroll_to = target;
+            if with_offset {
+                self.fav_slct.y_offset = target;
+            }
+        } else {
+            self.lvl_slct.y_scroll_to = target;
+            if with_offset {
+                self.lvl_slct.y_offset = target;
+            }
+        }
+        true
+    }
+
+    /// C++ `calcLevelChangeScroll(dir)` (MenuGame.cpp:4404-4461) — the
+    /// level-up/down (`dir = ±2`) scroll target: keep the two neighbouring
+    /// level labels (or the neighbouring pack labels at the pack's
+    /// top/bottom) on screen. Runs on `YScrollTo` only (the C++ lambdas
+    /// never touch `YOffset`) — the easing (`scrollLevelListToTargetY`) does
+    /// the approach on the next frames.
+    pub(crate) fn calc_level_change_scroll(&mut self, dir: i32) {
+        // C++ :4406 — the level-change scroll runs at the base speed.
+        self.scroll_speed = crate::layout::BASE_SCROLL_SPEED;
+        let layout = self.level_selection_layout();
+        let (current_index, pack_idx, size) = if self.favorites_active {
+            (
+                self.fav_slct.current_index,
+                self.fav_slct.pack_idx,
+                self.fav_slct.level_data_ids.len() as i32,
+            )
+        } else {
+            (
+                self.lvl_slct.current_index,
+                self.lvl_slct.pack_idx,
+                self.lvl_slct.level_data_ids.len() as i32,
+            )
+        };
+        // C++ :4411-4417 — the favorites list pretends to be a single
+        // pack at index 0.
+        let actual_pack_idx = if self.is_favorite_levels() {
+            0
+        } else {
+            pack_idx
+        };
+
+        if dir < 0 {
+            let scroll = if current_index < 2 {
+                // C++ :4419-4424 — approaching the top of the pack: show
+                // the first level label + the next pack label, or two
+                // previous pack labels.
+                layout.pack_label_height * (actual_pack_idx + 1 - (2 - current_index)) as f32
+            } else {
+                // C++ :4425-4430 — the two previous level labels.
+                layout.pack_label_height * (actual_pack_idx + 1) as f32
+                    + layout.level_label_height * (current_index + dir) as f32
+                    + layout.slct_frame_size
+            };
+            // C++ :4432-4434.
+            self.check_window_top_scroll(scroll, false);
+            return;
+        }
+
+        // C++ :4438-4449 — approaching the bottom of the pack: the last
+        // level label + the next pack label, or two next pack labels.
+        let scroll = if current_index >= size - 2
+            && actual_pack_idx != self.get_selectable_pack_infos_size() as i32 - 1
+        {
+            layout.pack_label_height
+                * (actual_pack_idx + 1 + (2 - (size - 1 - current_index))) as f32
+                + layout.level_label_height * size as f32
+                + 3.0 * layout.slct_frame_size
+        } else {
+            // C++ :4450-4456 — the two next level labels.
+            layout.pack_label_height * (actual_pack_idx + 1) as f32
+                + layout.level_label_height * (current_index + dir + 1).min(size) as f32
+                + 2.0 * layout.slct_frame_size
+        };
+        // C++ :4458-4460.
+        self.check_window_bottom_scroll(scroll, false);
+    }
+
+    /// C++ `calcPackChangeScrollFold(mLevelListHeight)` (MenuGame.cpp:
+    /// 4463-4479) — the fold animation's per-frame scroll: as the bottom
+    /// of the level list leaves the screen, the offset is set to the list's
+    /// height (the fold point) and the drawer jumps to it (`YScrollTo =
+    /// YOffset = target` + `packChangeOffset = mLevelListHeight`).
+    pub(crate) fn calc_pack_change_scroll_fold(&mut self, list_height: f32) {
+        // C++ :4464-4466 — `-2` (the "jump to the last level of the
+        // previous pack" up-wrap) is handled by the target pack's own
+        // stretch, not the fold.
+        if self.pack_change_direction == -2 {
+            return;
+        }
+        let layout = self.level_selection_layout();
+        let (pack_idx, offset) = if self.favorites_active {
+            (self.fav_slct.pack_idx, self.pack_change_offset)
+        } else {
+            (self.lvl_slct.pack_idx, self.pack_change_offset)
+        };
+        // C++ :4469-4472 — the top of the current pack label + the fold.
+        let scroll = layout.pack_label_height * pack_idx as f32
+            + layout.slct_frame_size
+            + (layout.pack_label_height + layout.slct_frame_size + list_height - offset).max(0.0);
+        if self.check_window_top_scroll(scroll, true) {
+            // C++ :4474-4478 — the pack-change offset snaps to the list
+            // height in the SAME action as the drawer jump.
+            self.pack_change_offset = list_height;
+        }
+    }
+
+    /// C++ `calcPackChangeScrollStretch(mLevelListHeight)` (MenuGame.cpp:
+    /// 4481-4561) — the stretch animation's per-frame scroll: the new pack's
+    /// label (and its levels, as they stretch in) must stay on screen;
+    /// "the bottom must prevail" (the C++ comment) where both bounds
+    /// disagree.
+    pub(crate) fn calc_pack_change_scroll_stretch(&mut self, list_height: f32) {
+        let layout = self.level_selection_layout();
+        let pack_idx = if self.favorites_active {
+            self.fav_slct.pack_idx
+        } else {
+            self.lvl_slct.pack_idx
+        };
+        let offset = self.pack_change_offset;
+        let h = self.h;
+        let pack_count = self.get_selectable_pack_infos_size() as i32;
+
+        if self.pack_change_direction == -2 {
+            // C++ :4489-4491 — the last pack has no "next pack": special
+            // treatment after this branch.
+            if pack_idx != pack_count - 1 {
+                // C++ :4496-4499 — the top of the current pack label +
+                // the bottom of the next pack label.
+                let scroll_top = layout.pack_label_height * pack_idx as f32;
+                let scroll_bottom = scroll_top
+                    + 2.0 * (layout.pack_label_height + layout.slct_frame_size)
+                    + (list_height - offset).max(0.0);
+
+                // C++ :4506-4519 — the `specialAction`: once the pack label
+                // is outside the draw window the standing-still list has no
+                // reference point, so cut the animation short (reset the
+                // offset + jump straight to the final position).
+                let target = h - scroll_bottom;
+                let fired = if self.favorites_active {
+                    target < self.fav_slct.y_offset
+                } else {
+                    target < self.lvl_slct.y_offset
+                };
+                if fired {
+                    let y_offset = if self.favorites_active {
+                        self.fav_slct.y_offset
+                    } else {
+                        self.lvl_slct.y_offset
+                    };
+                    if scroll_top < -y_offset {
+                        // C++ :4511-4517 — the short-cut.
+                        self.pack_change_offset = 0.0;
+                        let t = h
+                            - (scroll_top
+                                + 2.0 * (layout.pack_label_height + layout.slct_frame_size)
+                                + list_height.max(0.0));
+                        if self.favorites_active {
+                            self.fav_slct.y_scroll_to = t;
+                            self.fav_slct.y_offset = t;
+                        } else {
+                            self.lvl_slct.y_scroll_to = t;
+                            self.lvl_slct.y_offset = t;
+                        }
+                    } else if self.favorites_active {
+                        self.fav_slct.y_scroll_to = target;
+                        self.fav_slct.y_offset = target;
+                    } else {
+                        self.lvl_slct.y_scroll_to = target;
+                        self.lvl_slct.y_offset = target;
+                    }
+                } else {
+                    // C++ :4527-4529 — the top must prevail.
+                    self.check_window_top_scroll(scroll_top, true);
+                }
+                return;
+            }
+
+            // C++ :4534-4549 — the last pack: top of the (virtual) next
+            // pack label + bottom of the level list.
+            let scroll_top = layout.pack_label_height * pack_count as f32 + layout.slct_frame_size;
+            let scroll_bottom = scroll_top + (list_height - offset).max(0.0);
+            // C++ :4543-4546 — the bottom must prevail.
+            if !self.check_window_bottom_scroll(scroll_bottom, true) {
+                self.check_window_top_scroll(scroll_top, true);
+            }
+            return;
+        }
+
+        // C++ :4553-4560 — the list is shifted to fit all levels in the
+        // pack (or the pack label + as many levels as fit).
+        let scroll_top = layout.pack_label_height * (pack_idx - 1) as f32;
+        let scroll_bottom = scroll_top
+            + layout.pack_label_height
+            + (layout.pack_label_height + layout.slct_frame_size + list_height - offset).min(h);
+        self.check_window_bottom_scroll(scroll_bottom, true);
+        self.check_window_top_scroll(scroll_top, true);
+    }
+
+    /// C++ `quickPackFoldStretch()` (MenuGame.cpp:4563-4576) — the focus
+    /// rising/falling edge's instant re-layout: keep the previous pack
+    /// label (top) and the next pack label (bottom) on screen, then reset
+    /// the level offsets.
+    pub fn quick_pack_fold_stretch(&mut self) {
+        let layout = self.level_selection_layout();
+        let pack_idx = if self.favorites_active {
+            self.fav_slct.pack_idx
+        } else {
+            self.lvl_slct.pack_idx
+        };
+        // C++ :4565-4568 — the previous pack label's top + the next pack
+        // label's bottom (the collapsed single-row list height —
+        // `focusHeld` makes `getLevelListHeight` count one row).
+        let scroll_top = layout.pack_label_height * (pack_idx - 1) as f32;
+        let scroll_bottom = scroll_top
+            + 2.0 * layout.pack_label_height
+            + layout.slct_frame_size
+            + self.get_level_list_height();
+        // C++ :4570-4575.
+        self.check_window_bottom_scroll(scroll_bottom, true);
+        self.check_window_top_scroll(scroll_top, true);
+        self.adjust_levels_offset();
     }
 
     /// C++ `adjustLevelsOffset()` — reset every level's x-offset, keep the
@@ -956,8 +1335,14 @@ impl Shared {
         self.reset_level_names_scrolls();
     }
 
-    /// C++ `changePackQuick(direction)` (focus-held pack jump).
+    /// C++ `changePackQuick(direction)` (MenuGame.cpp:2156-2181, focus-held
+    /// pack jump: the wheel's `focusHeld` arm + the `Jid`'s pack-change
+    /// binds). After the pack switch, the drawer must show the pack
+    /// labels around the new pack: the previous pack label's top prevails,
+    /// else the next pack label's bottom (the C++ "the top must prevail" /
+    /// "the bottom is outside the boundaries" comments).
     pub fn change_pack_quick(&mut self, direction: i32) {
+        // C++ :2157-2160 — the favorites list has no pack labels.
         if self.is_favorite_levels() {
             return;
         }
@@ -965,6 +1350,28 @@ impl Shared {
         self.play_sound_override("beep.ogg");
         self.change_pack();
         self.adjust_levels_offset();
+
+        let layout = self.level_selection_layout();
+        let pack_idx = if self.favorites_active {
+            self.fav_slct.pack_idx
+        } else {
+            self.lvl_slct.pack_idx
+        };
+        // C++ :2168-2170 — the top of the pack label one index before the
+        // current one.
+        let scroll = layout.pack_label_height * (pack_idx - 1) as f32;
+        // C++ :2172-2176 — the top must prevail (`YScrollTo = YOffset =
+        // target` — the drawer jumps, no easing).
+        if !self.check_window_top_scroll(scroll, true) {
+            // C++ :2178-2181 — the bottom of the pack label one index
+            // AFTER the current one (clamped to the pack count), plus the
+            // first level label + the borders.
+            let pack_count = self.get_selectable_pack_infos_size() as i32;
+            let scroll = layout.pack_label_height * (pack_idx + 2).min(pack_count) as f32
+                + layout.level_label_height
+                + 3.0 * layout.slct_frame_size;
+            self.check_window_bottom_scroll(scroll, true);
+        }
     }
 
     /// C++ `changePackAction(direction)` (boundary up/down triggers the fold).
@@ -987,12 +1394,6 @@ impl Shared {
 
         self.touch_delay = 50.0;
         self.play_sound_override("beep.ogg");
-    }
-
-    /// C++ `calcScrollSpeed()` (coarse — the base speed; the C++ scales it by
-    /// the scroll distance, a 13b layout detail).
-    pub fn calc_scroll_speed(&mut self) {
-        self.scroll_speed = crate::layout::BASE_SCROLL_SPEED;
     }
 
     fn reset_level_names_scrolls(&mut self) {
@@ -1492,15 +1893,42 @@ impl MenuGame {
                 let mut s = self.shared.borrow_mut();
                 if one_pack {
                     if prev_idx < 0 {
+                        // C++ :1964-1981 — the single-pack top wrap: jump
+                        // to the pack's end, recompute the speed, and
+                        // scroll the list up to show it (`scroll > h −
+                        // YOffset` → `YScrollTo = h − scroll`). The C++'
+                        // `levelLabelHeight * (currentIndex + 1)` is the
+                        // full list height after the `setIndex(size − 1)`.
                         s.set_index(level_count - 1);
+                        s.calc_scroll_speed();
+                        let layout = s.level_selection_layout();
+                        let scroll = layout.pack_label_height
+                            + layout.level_label_height * level_count as f32
+                            + 2.0 * layout.slct_frame_size;
+                        let h = s.h;
+                        let d = if s.favorites_active {
+                            &mut s.fav_slct
+                        } else {
+                            &mut s.lvl_slct
+                        };
+                        if scroll > h - d.y_offset {
+                            d.y_scroll_to = h - scroll;
+                        }
                     } else {
+                        // C++ :1983-1987.
                         s.set_index(prev_idx);
+                        s.calc_level_change_scroll(-2);
                     }
                 } else if prev_idx < 0 {
+                    // C++ :1990-1994 — `-2` = "go to the previous pack and
+                    // skip to the last level of the list".
                     s.change_pack_action(-2);
                 } else {
+                    // C++ :1996-1999.
                     s.set_index(prev_idx);
+                    s.calc_level_change_scroll(-2);
                 }
+                s.reset_level_names_scrolls();
                 s.play_sound_override("beep.ogg");
                 s.touch_delay = 50.0;
             }
@@ -1589,15 +2017,31 @@ impl MenuGame {
                 let mut s = self.shared.borrow_mut();
                 if one_pack {
                     if next_idx > level_count - 1 {
+                        // C++ :2056-2070 — the single-pack bottom wrap: skip
+                        // to the first level label (`YScrollTo = 0` after the
+                        // speed recompute).
                         s.set_index(0);
+                        s.calc_scroll_speed();
+                        let d = if s.favorites_active {
+                            &mut s.fav_slct
+                        } else {
+                            &mut s.lvl_slct
+                        };
+                        d.y_scroll_to = 0.0;
                     } else {
+                        // C++ :2072-2076.
                         s.set_index(next_idx);
+                        s.calc_level_change_scroll(2);
                     }
                 } else if next_idx > level_count - 1 {
+                    // C++ :2079-2081 — go to the next pack.
                     s.change_pack_action(1);
                 } else {
+                    // C++ :2083-2086.
                     s.set_index(next_idx);
+                    s.calc_level_change_scroll(2);
                 }
+                s.reset_level_names_scrolls();
                 s.play_sound_override("beep.ogg");
                 s.touch_delay = 50.0;
             }
@@ -1910,10 +2354,11 @@ impl MenuGame {
             // through `set_focus_held` (the C++ `add2StateInput(Focus)`),
             // and the controller's focus button now ORs into it (the C++
             // `Joystick::pressed(Jid::Focus)`, MenuGame.cpp:2650-2653,
-            // the `MenuJoystick` seam's `pressed_focus`, 29j1). The
-            // `quickPackFoldStretch` arms (MenuGame.cpp:2663/:2669 →
-            // :4563) are the unported 13b draw-lane fold animation —
-            // documented no-op.
+            // the `MenuJoystick` seam's `pressed_focus`, 29j1). The rising/
+            // falling edge `quickPackFoldStretch()` arms (MenuGame.cpp:
+            // 2663/:2669 → :4563) are live now (29b5): the focus-held
+            // collapse to one row and the release's stretch both re-layout
+            // the pack labels around the current pack.
             if s.state == States::LevelSelection
                 && !s.is_favorite_levels()
                 && s.pack_change_state == PackChange::Rest
@@ -1921,15 +2366,19 @@ impl MenuGame {
                 if !s.focus_held {
                     s.focus_held = joy.pressed_focus();
                 }
+                // C++ :2657-2664 — focus rising: the list collapses to the
+                // focused row (the C++'s `setIndex(0)` only on a non-zero
+                // index) and the pack labels re-layout around the current
+                // pack.
                 if s.focus_held && !s.was_focus_held {
                     if s.lvl_slct.current_index != 0 {
                         s.set_index(0);
                     }
-                    // C++ `quickPackFoldStretch()` (MenuGame.cpp:2663) —
-                    // the unported 13b fold animation.
+                    s.quick_pack_fold_stretch();
                 } else if !s.focus_held && s.was_focus_held {
-                    // C++ `quickPackFoldStretch()` (MenuGame.cpp:2669) —
-                    // the unported 13b fold animation.
+                    // C++ :2665-2670 — focus released: stretch the level
+                    // list back and re-layout the pack labels.
+                    s.quick_pack_fold_stretch();
                 }
                 s.was_focus_held = s.focus_held;
             } else {
