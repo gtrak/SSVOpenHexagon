@@ -101,6 +101,11 @@ pub use texture::{Image, RenderTexture, Sprite, Texture};
 pub use timer::TimerStatic;
 pub use types::{FloatRect, RectangleShape, VideoMode};
 pub use view::{Camera, View};
-pub use window::{
-    map_window_event, winit_button_to_sfml, winit_key_to_sfml, Event, JoystickAxis, Window,
-};
+pub use window::{Event, JoystickAxis, Window};
+// The winit event-mapping surface (desktop/android only — the web path's
+// `web_key_to_sfml` / `web_mouse_button_to_sfml` are its emscripten twins,
+// W1).
+#[cfg(not(target_os = "emscripten"))]
+pub use window::{map_window_event, winit_button_to_sfml, winit_key_to_sfml};
+#[cfg(target_os = "emscripten")]
+pub use window::{web_key_to_sfml, web_mouse_button_to_sfml};

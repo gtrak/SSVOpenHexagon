@@ -2114,11 +2114,14 @@ dependencies = [
  "fontdue",
  "glow 0.18.0",
  "glutin",
+ "js-sys",
  "oh-config",
  "oh-math",
  "png",
  "raw-window-handle",
  "rodio",
+ "wasm-bindgen",
+ "web-sys",
  "winit",
 ]
 
@@ -2154,6 +2157,17 @@ dependencies = [
  "steamworks",
  "steamworks-sys",
  "tempfile",
+]
+
+[[package]]
+name = "oh-web"
+version = "0.1.0"
+dependencies = [
+ "js-sys",
+ "oh-app",
+ "oh-game",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]

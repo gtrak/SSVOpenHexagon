@@ -1,0 +1,51 @@
+[package]
+name = "oh-web"
+description = "The emscripten (web) entry crate (issue 26c, W0): the wasm32-unknown-emscripten BINARY that boots the web platform skeleton - a <canvas id=\"c\"> + a WebGL2 context via the emscripten_webgl_* C API + a clear + a #[wasm_bindgen] status() probe (oh-render's emscripten backend is W1; the real engine composition is W2)"
+version.workspace = true
+edition.workspace = true
+
+# The web stack (the 26c.1/26c.2 verified pins - D-029; no version bumps, all
+# already in the lockfile from the research branch). Target-gated to
+# emscripten ONLY (the oh-android pattern): on every other target this package
+# builds to a no-op binary so the desktop gate (cargo build --workspace) stays
+# green. `wasm-bindgen` must be a BIN crate + the -sWASM_BINDGEN link flag
+# (the root .cargo/config.toml's [target.wasm32-unknown-emscripten] table) so
+# emcc runs the wasm-bindgen CLI itself over the linked wasm.
+[target.'cfg(target_os = "emscripten")'.dependencies]
+# W5: the real composition — the C++ `mainClient` port
+# (`crates/oh-app/src/client.rs`): config + assets over the preloaded
+# `_RELEASE` MEMFS tree, the windowed client (the emscripten `oh-render`
+# window + engine + MenuGame), the boot dispatch to the menu, and the
+# `request_animation_frame` loop.
+# `default-features = false` (lane 030a): the Lua VM backend comes from
+# this crate's `backend-*` feature (forwarded onto oh-app, which forwards
+# it onto oh-lua) — the [features] section below.
+oh-app = { path = "../oh-app", default-features = false }
+# The engine-log sink hook (lane 026): routes the composition's
+# `[channel]` lines (oh-game's `log()`) to the browser console — Rust
+# stdio does not reach the console in this emscripten glue.
+oh-game = { path = "../oh-game" }
+wasm-bindgen = "0.2.129"
+js-sys = "0.3.106"
+web-sys = { version = "0.3.106", features = [
+  "Window",
+  "Document",
+  "Element",
+  "HtmlCanvasElement",
+  "WebGl2RenderingContext",
+  "console",
+  "Performance",
+] }
+
+[features]
+# The Lua VM backend (lane 030a): forwarded onto the `oh-app` dependency
+# (which forwards it onto `oh-lua`) so the web binary builds under the
+# emscripten-only Luau backend. Emscripten cannot run LuaJIT (issue 30 §2),
+# so the web build is `--no-default-features --features backend-luau` —
+# "features first, target default after" (the 030a rule): the explicit
+# backend feature wins; `default` (`backend-luajit`) covers the no-op
+# native build, where `oh-app` is target-gated out and the reference is a
+# no-op.
+backend-luajit = ["oh-app/backend-luajit"]
+backend-luau = ["oh-app/backend-luau"]
+default = ["backend-luajit"]

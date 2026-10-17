@@ -2593,19 +2593,23 @@ impl<S: SharedStore> HexagonGame<S> {
     // ------------------------------------------------------------------
 
     /// The `ssvu::lo(channel)` sink (the C++ prints to stdout; the port
-    /// does the same, channel-prefixed).
+    /// does the same, channel-prefixed — through the [`crate::log_sink`]
+    /// so the web build can route the lines to the browser console).
     pub(crate) fn log(&self, channel: &str, message: &str) {
-        println!("[{channel}] {message}");
+        crate::log_sink::emit_log(channel, message);
     }
 
     /// The C++ `luaExceptionLippincottHandler` behavior for a failed
     /// callback: print, then `goToMenu(false, true)` unless debug.
     pub(crate) fn host_error(&self, name: &str, message: &str, print_level: bool) {
         if print_level {
-            println!(
-                "[runLuaFunctionIfExists] Runtime error on \"{name}\" with level \"{}\": \n{}\n",
-                self.level_name(),
-                message
+            crate::log_sink::emit_log(
+                "runLuaFunctionIfExists",
+                &format!(
+                    "Runtime error on \"{name}\" with level \"{}\": \n{}\n",
+                    self.level_name(),
+                    message
+                ),
             );
         }
         if !self.config().get_debug() {

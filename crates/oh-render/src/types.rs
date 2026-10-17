@@ -369,28 +369,34 @@ impl VideoMode {
     /// independently of the config values).
     #[must_use]
     pub fn get_desktop_mode() -> Self {
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "emscripten"))]
         {
-            return Self::new(0, 0);
+            // No desktop-monitor probe on android/web (winit's web backend is
+            // `target_os="unknown"`-only): the platform window is
+            // screen-/canvas-sized independently of the config values.
+            Self::new(0, 0)
         }
-        let el = match winit::event_loop::EventLoop::<()>::new() {
-            Ok(el) => el,
-            Err(_) => return Self::new(0, 0),
-        };
-        let mut mode: Option<(u32, u32)> = None;
-        // The deprecated 2-arg `run` (winit 0.30's pre-`run_app` API — the
-        // `gl.rs` `#[allow(deprecated)]` precedent): the probe only needs
-        // the `ActiveEventLoop` the first `NewEvents` carries.
-        #[allow(deprecated)]
-        let _ = el.run(|event, active| {
-            if let winit::event::Event::NewEvents(_) = event {
-                mode = active
-                    .primary_monitor()
-                    .map(|m| (m.size().width, m.size().height));
-                active.exit();
-            }
-        });
-        mode.map(|(w, h)| Self::new(w, h))
-            .unwrap_or_else(|| Self::new(0, 0))
+        #[cfg(not(any(target_os = "android", target_os = "emscripten")))]
+        {
+            let el = match winit::event_loop::EventLoop::<()>::new() {
+                Ok(el) => el,
+                Err(_) => return Self::new(0, 0),
+            };
+            let mut mode: Option<(u32, u32)> = None;
+            // The deprecated 2-arg `run` (winit 0.30's pre-`run_app` API — the
+            // `gl.rs` `#[allow(deprecated)]` precedent): the probe only needs
+            // the `ActiveEventLoop` the first `NewEvents` carries.
+            #[allow(deprecated)]
+            let _ = el.run(|event, active| {
+                if let winit::event::Event::NewEvents(_) = event {
+                    mode = active
+                        .primary_monitor()
+                        .map(|m| (m.size().width, m.size().height));
+                    active.exit();
+                }
+            });
+            mode.map(|(w, h)| Self::new(w, h))
+                .unwrap_or_else(|| Self::new(0, 0))
+        }
     }
 }

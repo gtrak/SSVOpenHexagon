@@ -73,12 +73,19 @@ pub fn main_client(
     // the stats/achievements request, and the first callback pump.
     // Held until the end of `mainClient` (the C++'s scope), shared with
     // the engine + the menu composition.
+    // W2: `oh-steam` is desktop-only (depends on `oh-net`); emscripten
+    // uses the `NoneSteamSink` no-op (the C++'s `steamManager == nullptr`
+    // null-equivalent).
+    #[cfg(not(target_os = "emscripten"))]
     let steam = crate::steam::steam_manager();
+    #[cfg(not(target_os = "emscripten"))]
     if steam.is_initialized() {
         steam.request_encrypted_app_ticket();
         steam.request_stats_and_achievements();
         steam.run_callbacks();
     }
+    #[cfg(target_os = "emscripten")]
+    let steam = std::sync::Arc::new(oh_game::seams::NoneSteamSink);
 
     // Create game folders if needed (C++ main.cpp:275-276).
     create_folder_if_non_existant(base_dir, "Profiles/");
@@ -94,6 +101,13 @@ pub fn main_client(
     // the same read: the C++ `mainClient` calls `loadConfig` +
     // `reapplyResolution` ONCE, before the `if(!headless)` window branch.
     let desktop_mode = VideoMode::get_desktop_mode();
+    // Web boot trace (lane 026 W5): the composition's own `[channel]`
+    // lines in the browser console (the C++ terminal's boot trace —
+    // routed through `oh_game::log_sink` because Rust stdio is a black
+    // hole in the emscripten glue; emscripten-only, the host terminal
+    // stays C++-quiet).
+    #[cfg(target_os = "emscripten")]
+    oh_game::log_sink::emit_log("web", "main_client entry (t=0)");
     let mut config = Config::default();
     if let Err(e) = load_and_reapply(&mut config, base_dir, args, desktop_mode) {
         // C++ would throw out of `syncAllFromObj` (uncaught in mainClient);
@@ -101,6 +115,8 @@ pub fn main_client(
         eprintln!("[::mainClient] config load failed: {e}");
         return 1;
     }
+    #[cfg(target_os = "emscripten")]
+    oh_game::log_sink::emit_log("web", "config loaded");
     let config = Arc::new(RwLock::new(config));
 
     // C++ main.cpp:285-291 scope guard — fires on EVERY exit below,
@@ -119,13 +135,20 @@ pub fn main_client(
     // headless}` — the 29p1 workshop half: the live pack enumeration when
     // the Steam manager initialized, the `workshopCache.json` fallback
     // when it did not).
-    let assets = match oh_assets::Assets::new_with_workshop(
-        base_dir,
-        headless,
-        false,
-        Some(steam.clone() as std::sync::Arc<dyn oh_assets::WorkshopPacks>),
-    ) {
-        Ok(a) => Arc::new(a),
+    // W2: the emscripten steam sink is the `NoneSteamSink` no-op (no
+    // `WorkshopPacks` impl — no Steam on web), so the seam is `None` = the
+    // C++'s `steamManager == nullptr` state (the `if(steamManager !=
+    // nullptr)` gate skips BOTH halves, incl. the cache read).
+    #[cfg(not(target_os = "emscripten"))]
+    let workshop = Some(steam.clone() as std::sync::Arc<dyn oh_assets::WorkshopPacks>);
+    #[cfg(target_os = "emscripten")]
+    let workshop = None;
+    let assets = match oh_assets::Assets::new_with_workshop(base_dir, headless, false, workshop) {
+        Ok(a) => {
+            #[cfg(target_os = "emscripten")]
+            oh_game::log_sink::emit_log("web", "assets loaded");
+            Arc::new(a)
+        }
         Err(e) => {
             // C++ would `std::terminate()` (Assets.cpp:323-352).
             eprintln!("[FATAL ERROR] Asset loading failed: {}", e.reason);
@@ -159,17 +182,29 @@ pub fn main_client(
         // assets with the menu (the C++ shares one `HGAssets`);
         // `cli_level_pack` / `cli_level_name` feed the C++ `mg->init`
         // (`main.cpp:507-511`).
+        // W2: the `IpcDiscordCore` is `#[cfg(not(target_os = "emscripten"))]`
+        // (W3); the web path uses the no-SDK `NoDiscordCore`.
+        #[cfg(not(target_os = "emscripten"))]
+        let discord: Option<Arc<dyn oh_discord::Discord>> =
+            Some(Arc::new(oh_discord::DiscordManager::new(
+                oh_discord::IpcDiscordCore::new(oh_discord::DISCORD_APP_ID),
+            )) as Arc<dyn oh_discord::Discord>);
+        #[cfg(target_os = "emscripten")]
+        let discord: Option<Arc<dyn oh_discord::Discord>> = Some(Arc::new(
+            oh_discord::DiscordManager::new(oh_discord::NoDiscordCore),
+        )
+            as Arc<dyn oh_discord::Discord>);
+        #[cfg(target_os = "emscripten")]
+        oh_game::log_sink::emit_log("web", "entering create_window");
+        let _window =
+            crate::windowed::create_window(&config.read().expect("config poisoned"), base_dir);
         match crate::windowed::WindowedClient::build(
-            crate::windowed::create_window(&config.read().expect("config poisoned"), base_dir),
+            _window,
             config.clone(),
             assets,
             base_dir,
             steam.clone(),
-            // C++ main.cpp:264-269 — `discordManager.emplace()` (the windowed
-            // path is always non-headless): the real IPC manager.
-            Some(Arc::new(oh_discord::DiscordManager::new(
-                oh_discord::IpcDiscordCore::new(oh_discord::DISCORD_APP_ID),
-            )) as Arc<dyn oh_discord::Discord>),
+            discord,
             // issue 025f (D-031) — the soft-input (system IME) controller:
             // the desktop no-op (no IME on the desktop window — the C++
             // desktop build never asked for one; the C++'s Android IME
@@ -178,10 +213,15 @@ pub fn main_client(
             Arc::new(crate::windowed::NoOpSoftInput),
         ) {
             Ok(client) => {
+                #[cfg(target_os = "emscripten")]
+                oh_game::log_sink::emit_log("web", "client built (window + engine + menu)");
                 // C++ main.cpp:334-350 — the SIGINT handler (the safe
                 // port: `signal-hook`'s flag register over the client's
                 // `interrupt` flag; the loop head performs the handler's
                 // actions — `windowed.rs` module docs, the SIGINT bullet).
+                // Desktop only — the web loop is a plain
+                // `request_animation_frame` (no signal handler, W2).
+                #[cfg(not(target_os = "emscripten"))]
                 client.install_sigint();
                 client.boot(
                     cli_level_pack,
@@ -189,6 +229,11 @@ pub fn main_client(
                     compressed_replay_filename.as_deref(),
                 );
                 client.run();
+                #[cfg(target_os = "emscripten")]
+                oh_game::log_sink::emit_log(
+                    "web",
+                    "rAF loop scheduled (the browser owns the frames)",
+                );
                 // C++ main.cpp:594-595.
                 println!("[::mainClient] Finished");
                 0
@@ -211,6 +256,9 @@ pub fn main_client(
         // windowed replacement would both fire). This is the headless path
         // — the windowed path installs its own (`client.install_sigint`) and
         // the server path its own (`sigint::install_server`).
+        // W2: desktop-only (`signal-hook` is gated off emscripten; the web
+        // loop is a plain `request_animation_frame` — no signal handler).
+        #[cfg(not(target_os = "emscripten"))]
         crate::sigint::install_headless();
         // Initialize hexagon game (C++ main.cpp:413-421: null steam/discord/
         // audio/window/client; the step-(b) engine is window-less). The C++

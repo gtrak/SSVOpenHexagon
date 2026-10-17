@@ -132,3 +132,141 @@ is unverified.
 - If the rebase gets messy and you are not converging, **stop, restore the
   recorded HEAD, and report** — a clean "not integrated, here is the blocker" beats
   a half-merged tree.
+
+## Report (lane 026 CONTINUATION — acceptance completed, 2026-10-17)
+
+The previous lane died after integrating W0-W6 and leaving a `oh_web.wasm`
+that reached `oh-web: boot started` in-browser, before dying (host reboot).
+This continuation completed the acceptance with properly-evidenced browser
+boot. Worktree `lane/026`: `36850a03` (harvest) -> `9f4474e4` (remove the
+dead lane's invisible `[026-DBG]` tracing) -> `7d9c8478` (document
+`CXXFLAGS=-fwasm-exceptions` in `.cargo/config.toml`) ->
+`9a1413c0` (the engine-log-sink fix + web boot trace + `status()` ticks).
+
+### What the continuation found and fixed
+
+1. **The Luau link fix (already documented, `7d9c8478`)**: rustc links this
+   target with wasm-native EH while `luau0-src` compiles Luau's C++ with
+   Emscripten C++ EH by default -> undefined `__resumeException` at link.
+   The build MUST run with `CXXFLAGS=-fwasm-exceptions` (documented in
+   `.cargo/config.toml`; cc passes it after the crate's flags, so it wins at
+   Luau's compile step).
+2. **Rust stdio is a black hole in this emscripten glue**: `println!` /
+   `eprintln!` (fd 1/2) never reach the browser console (the default
+   `/dev/stdout -> /dev/tty` null path swallows them; the `Module({print,
+   printErr})` and `Module({stdout, stderr})` override options receive
+   nothing either — verified empirically). The dead lane's `index.html`
+   comment ("the emscripten stdout/stderr redirect carries the composition's
+   Rust println!/eprintln! lines") was WRONG — that is why its `[026-DBG]`
+   tracing never showed and its "boot started then nothing" looked
+   unexplainable.
+3. **The fix (`9a1413c0`)**: an `oh-game` `log_sink` hook — the LuaState
+   `log()` trait impl and `host_error` now route through
+   `oh_game::log_sink::emit_log` (host default: the C++-parity
+   `println!`), and `oh-web`'s `boot()` installs a `console.log` sink before
+   `main` runs, so the composition's `[channel]` lines reach the browser
+   console. Plus: emscripten-only `[web]` boot-stage trace lines (the W5
+   "engine boot trace", host-quiet), and a `ticks=<n>` field on the
+   `status()` probe (the rAF-loop tick count — distinguishes "the engine
+   loop is alive" from "the page loaded but the loop died").
+4. **WebGL in this environment**: Chrome 148 deprecated the automatic
+   software-WebGL fallback; the context is lost on the first frame unless
+   ANGLE-SwiftShader is used explicitly (`--use-angle=swiftshader
+   --enable-unsafe-swiftshader`). With it, the context survives and the
+   menu renders in software GL. Without it, the port degrades gracefully to
+   its `NullDrawTarget` headless window and the rAF loop keeps ticking at
+   60fps (verified with the tick counter).
+5. **The pre-hook boot spin (open, characterized)**: the EXACT pre-hook tree
+   (`7d9c8478`, rebuilt with the current recipe; and the dead lane's 14:37
+   artifact, which is a different, pre-wasm-bindgen-CLI 5.5MB wasm that
+   imports the `wasi_snapshot_preview1` module) hangs deterministically
+   inside `main_client` after `oh-web: boot started` — 100% main-thread
+   spin, CDP `Runtime.evaluate` times out, 150s+ with no status lines. The
+   hang is NOT the GL context loss (it reproduces with a live
+   ANGLE-SwiftShader context) and NOT "any JS interop fixes it" (a single
+   extra `eprintln!` before `main_client` does not break the spin). It
+   disappears in the `9a1413c0` tree — and survives staged removal of every
+   trace line / tick counter / `Instant` from that tree (the minimal
+   surviving delta is the log_sink wiring itself: the new `oh-game` module +
+   the `oh-web -> oh-game` dependency edge + the sink install). Instruction-
+   level root cause not pursued (would need a wasm disassembly bisect of the
+   Luau/engine boot path) — tracked as a residual risk below. Acceptance was
+   completed on the `9a1413c0` build (7/7 boot runs, including the final
+   post-fmt rebuild).
+
+### The acceptance evidence (spec order, agent-browser 0.27.0)
+
+Artifacts served from `/tmp/oh-web-serve` on `:8066` (`oh-web.js`,
+`oh_web.wasm` 2.57MB, `oh_web.data` 22.7MB, corrected `index.html`).
+Browser: the agent-browser Chrome (148.0.7778.97) started with
+`--headless=new --no-sandbox --disable-dev-shm-usage
+--enable-unsafe-swiftshader --use-angle=swiftshader
+--remote-debugging-port=9333`, agent-browser connected via `--cdp 9333`.
+
+```
+$AB --cdp 9333 open http://localhost:8066/
+  -> "✓ SSVOpenHexagon (web)"
+$AB --cdp 9333 errors
+  -> (empty)
+$AB --cdp 9333 console
+  -> [log] oh-web: boot started (after __wasm_call_ctors)
+  -> [log] [web] main_client entry (t=0)
+  -> [log] [web] config loaded
+  -> [log] [web] assets loaded
+  -> [log] [web] entering create_window
+  -> [log] [web] windowed build entry
+  -> [log] [web] engine + menu composed (the four callback links bound)
+  -> [log] [web] client built (window + engine + menu)
+  -> [log] [web] rAF loop scheduled (the browser owns the frames)
+  -> [log] oh-web: main_client returned 0 (the rAF loop keeps driving the menu)
+  -> [log] oh-web: main re-entered - second init skipped (single-init guard)
+  -> [log] oh-web: module loaded
+  -> [log] status booted=true;exit_code=0;ticks=119 ... ticks=1200 (advancing ~60/s)
+$AB --cdp 9333 eval '(function(){ var c = document.getElementById("c");
+    var gl = c.getContext("webgl2"); return JSON.stringify({canvas: c.width +
+    "x" + c.height, webgl2: gl ? "present" : "none", contextLost: gl ?
+    gl.isContextLost() : null, statusDiv:
+    document.getElementById("status").textContent}); })()'
+  -> {"canvas":"1736x901","webgl2":"present","contextLost":false,
+      "glVersion":"WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+      "statusDiv":"status: booted=true;exit_code=0;ticks=1440"}
+$AB --cdp 9333 screenshot /tmp/oh-web-acceptance.png
+  -> PIL: 780x437 (viewport crop of the 1736x901 canvas page);
+     13.65% of sampled pixels non-black; a dense (37-89%) text band in the
+     lower visible canvas region = the software-GL-rendered menu content
+     (with the deprecated auto-fallback SwiftShader the same build shows a
+     black canvas after CONTEXT_LOST_WEBGL — environment limitation, the
+     port degrades to NullDrawTarget and keeps ticking).
+```
+
+### Host gate
+
+`cargo check -p oh-app -p oh-web -p oh-game` clean (rustc 1.97.1, pinned by
+`rust-toolchain.toml`); `cargo fmt --all -- --check` clean after the
+commits. The C++ reference tree was never touched.
+
+### Honest framing (spec: state what the web build has and does not have)
+
+- The web build has **no input** (issue 32 — keyboard/mouse/touch events are
+  wired to the engine's input state, but the browser page exposes no
+  interactive affordance and issue 32 owns the input story). **It is not
+  playable/interactive.**
+- What IS verified: the page loads, the REAL composition boots
+  (`main_client` returns 0 over the preloaded `_RELEASE` tree), the engine
+  runs and the rAF loop drives the menu at 60fps (the `[web]`/`[channel]`
+  console lines + the `ticks` counter prove the engine, not just JS), and
+  the menu renders in software GL when ANGLE-SwiftShader is available.
+
+### Residual risks / unverified
+
+- The pre-hook boot spin (item 5 above): any future rebuild of the
+  pre-`9a1413c0` tree will hang; the `9a1413c0` tree boots 7/7. Root-cause
+  is a follow-up (wasm-level bisect of the Luau/engine boot path).
+- Session-only persistence (MEMFS): profiles/config created in a session do
+  not survive a page reload (by design of the preload; issue 32 territory).
+- `webglcontextlost`/`restored` DOM handlers are not installed (W4): the
+  port tolerates a lost context by no-op'ing GL work (NullDrawTarget), but
+  it cannot recover a context in-browser.
+- The acceptance screenshot is a viewport crop (780x437) of the top-left of
+  the 1736x901 canvas; a full-window render was not captured (ONE-image
+  hygiene rule).

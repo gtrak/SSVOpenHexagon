@@ -13,6 +13,15 @@
 //! so the headless branch's `Player died.\nFinal time: ...` line is never
 //! lost to buffering when stdout is a pipe.
 
+/// W2: the emscripten entry is the `oh-web` crate (W5) — the real web
+/// entry point. This binary is a stub on emscripten (the `oh-app` lib
+/// compiles for emscripten; the `open-hexagon` bin is desktop-only).
+#[cfg(target_os = "emscripten")]
+fn main() {
+    eprintln!("web entry is the oh-web crate (W5)");
+}
+
+#[cfg(not(target_os = "emscripten"))]
 fn main() -> std::process::ExitCode {
     let code = oh_app::dispatch::run(&std::env::args().collect::<Vec<_>>());
     // `code & 0xff`: the C++ return values are -1 / 0 / 1; the low byte is
