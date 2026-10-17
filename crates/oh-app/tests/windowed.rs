@@ -536,6 +536,51 @@ fn scripted_enter_key_starts_the_level_from_the_menu() {
     set_key(&mut client, Key::ENTER, false);
 }
 
+/// 29u1 — the frame loop's menu-state cursor handlers (the C++
+/// `MenuGame::onEvent`'s `KeyPressed`/`MouseMoved`, MenuGame.cpp:274-307):
+/// a key press hides the cursor (:278), a mouse move re-shows it (:295),
+/// and a key release does NOT re-show (the C++ has no release handler).
+/// The cursor's observable state is the window's own `mouse_cursor_visible`
+/// flag (the per-frame sync, the C++ `MenuGame::setMouseCursorVisible` →
+/// `window.setMouseCursorVisible`, MenuGame.cpp:3641-3644).
+#[test]
+fn cursor_hides_on_keypress_and_shows_on_mouse_move_in_the_menu() {
+    let (mut client, _sandbox) = sandboxed_windowed_client(None);
+    assert_eq!(client.engine.current(), GameSlot::Menu);
+    // The C++ ctor's `setMouseCursorVisible(true)` (MenuGame.cpp:245) — the
+    // window + the shared flag start visible.
+    assert!(client.window.is_mouse_cursor_visible());
+
+    // C++ :278 — a key press hides the cursor (the menu state's detection).
+    set_key(&mut client, Key::A, true);
+    tick(&mut client);
+    assert!(
+        !client.window.is_mouse_cursor_visible(),
+        "a key press hides the cursor"
+    );
+
+    // A key release does NOT re-show (the C++ has no release cursor handler).
+    set_key(&mut client, Key::A, false);
+    tick(&mut client);
+    assert!(
+        !client.window.is_mouse_cursor_visible(),
+        "a key release does not re-show the cursor"
+    );
+
+    // C++ :295 — a mouse move re-shows the cursor (the raw pixel changed).
+    oh_render::window::Window::apply_event(
+        &mut client.window,
+        oh_render::window::Event::MouseMoved {
+            position: oh_render::Vec2::new(100.0, 100.0),
+        },
+    );
+    tick(&mut client);
+    assert!(
+        client.window.is_mouse_cursor_visible(),
+        "a mouse move re-shows the cursor"
+    );
+}
+
 /// `Tid::RotateCCW` (HexagonGame.cpp:357, `add2StateInput` → `Type::Always`
 /// on/off): kA down sets `inputImplCCW`, release clears it; and the first
 /// movement key press starts the level (the C++ `mustStart` gate,

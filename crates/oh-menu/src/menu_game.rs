@@ -1189,6 +1189,12 @@ impl Shared {
             .assets
             .level(&level_id)
             .map_or(1.0, |l| l.get_nth_diff_mult(self.diff_mult_idx));
+        // C++ :2373 — `setMouseCursorVisible(false)`: the cursor is hidden
+        // when the level starts (inside the `if(fnHGNewGame)` guard, the
+        // `let Some(cb)` above — the port's `play_selected_level` only
+        // reaches the callback when a `new_game` seam is wired, exactly
+        // as the C++ only hides when `fnHGNewGame` is set).
+        self.window().set_mouse_cursor_visible(false);
         cb(&pack_id, &level_id, true, diff_mult, false);
     }
 
@@ -3101,6 +3107,15 @@ impl MenuGame {
     /// items never enter a waiting state; capture is owned by oh-config's
     /// `KeyboardBindControl` — `menu.rs` module docs).
     pub fn handle_mouse_wheel(&self, delta: f32) {
+        // C++ :304-306 — `if(window.hasFocus()) setMouseCursorVisible(
+        // true)`: the wheel re-shows the cursor (29u1). The C++'s
+        // `hasFocus` gate is the documented S1 no-menu-mouse-state gap
+        // (the handler is only reached in the menu state, so the re-show
+        // is unconditional here).
+        self.shared()
+            .borrow()
+            .window()
+            .set_mouse_cursor_visible(true);
         if self.state() == States::LevelSelection {
             // C++ :319-321 — `if(focusHeld) changePackQuick(
             // mEvent.mouseWheelScroll.delta > 0 ? -1 : 1);`

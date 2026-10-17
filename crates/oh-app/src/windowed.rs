@@ -158,6 +158,7 @@ use oh_render::types::RectangleShape;
 use oh_render::view::View;
 use oh_render::window::Window;
 use oh_render::GlParts;
+use oh_render::Vec2;
 
 use crate::bridge::AppDraw;
 use crate::compose::{compose_with_config, RealProfiles};
@@ -331,6 +332,15 @@ impl RenderWindowSize {
 /// size, NOT the config's resolution — the oh-menu `MenuWindow` docs).
 struct MenuWindowSource {
     size: std::sync::Arc<RenderWindowSize>,
+    /// 29u1 — the menu's cursor-visibility flag (the C++
+    /// `MenuGame::mouseCursorVisible`, MenuGame.cpp:197): the single
+    /// source of truth the menu's `play_selected_level` (hide) /
+    /// `handle_mouse_wheel` (show) seam writes and the frame loop's
+    /// key-press-hide / mouse-move-show (the C++'s other two cursor
+    /// handlers, MenuGame.cpp:278 / :295) + the per-frame window sync
+    /// read. Created in `WindowedClient::build` (the C++ ctor's
+    /// `setMouseCursorVisible(true)`).
+    cursor: std::rc::Rc<std::cell::Cell<bool>>,
 }
 
 impl MenuWindow for MenuWindowSource {
@@ -339,6 +349,9 @@ impl MenuWindow for MenuWindowSource {
     }
     fn height(&self) -> f32 {
         self.size.get().1
+    }
+    fn set_mouse_cursor_visible(&self, visible: bool) {
+        self.cursor.set(visible);
     }
 }
 
@@ -2041,6 +2054,25 @@ pub struct WindowedClient {
     /// menu's `MenuWindow` seam reads; `tick_fields` refreshes it every
     /// frame from the window's current size).
     render_size: std::sync::Arc<RenderWindowSize>,
+    /// 29u1 — the menu's cursor-visibility flag (the C++
+    /// `MenuGame::mouseCursorVisible`, MenuGame.cpp:197): the single
+    /// source of truth the menu's `play_selected_level` (hide, the seam
+    /// `MenuWindowSource` writes) / `handle_mouse_wheel` (show) and the
+    /// frame loop's key-press-hide / mouse-move-show (the C++'s other two
+    /// cursor handlers, MenuGame.cpp:278 / :295) update; `tick_fields`
+    /// syncs it to the window's own flag each frame (the C++ applies it
+    /// via `window.setMouseCursorVisible` in `MenuGame::
+    /// setMouseCursorVisible`, MenuGame.cpp:3641-3644 — the port keeps the
+    /// window's field the observable state). The C++ ctor's
+    /// `setMouseCursorVisible(true)` = the `true` start.
+    cursor_visible: std::rc::Rc<std::cell::Cell<bool>>,
+    /// 29u1 — the cursor's last-frame detection state (the frame loop's
+    /// key-press-hide / mouse-move-show diff, held here so the static
+    /// `tick_fields` can read/write it through references): the previous
+    /// frame's raw mouse pixel (`Option::None` before the first frame)
+    /// + the previous frame's key-pressed bitset (`InputState::get_keys`).
+    cursor_last_mouse: std::cell::Cell<Option<Vec2>>,
+    cursor_last_keys: std::cell::Cell<[bool; oh_render::input::KEY_BITS]>,
     /// C++ `hg` (main.cpp:414-421) — the composition's engine handle.
     pub game: Rc<HexagonGame<GameApiState>>,
     /// The shared process config (the C++'s `hg::Config` singleton —
@@ -2410,6 +2442,13 @@ impl WindowedClient {
         // re-borrow the manager; the `update_input` applies the flag after
         // the `update` returns.
         let ignore_all_pending = std::rc::Rc::new(std::cell::Cell::new(None));
+        // 29u1 — the menu's cursor-visibility flag (the C++
+        // `MenuGame::mouseCursorVisible`): created at `true` (the C++
+        // ctor's `setMouseCursorVisible(true)`, MenuGame.cpp:245); the
+        // `MenuWindowSource` seam writes it (the menu's `play_selected_level`
+        // hide / `handle_mouse_wheel` show) and the frame loop reads it
+        // (the key-press-hide / mouse-move-show + the per-frame window sync).
+        let cursor_visible = std::rc::Rc::new(std::cell::Cell::new(true));
 
         let menu = Rc::new(MenuGame::new(
             Rc::new(RealMenuAssets::from_arc(assets)),
@@ -2426,6 +2465,7 @@ impl WindowedClient {
             menu_joystick,
             Rc::new(MenuWindowSource {
                 size: render_size.clone(),
+                cursor: cursor_visible.clone(),
             }),
             new_game_cb,
             trigger_refresh_cb,
@@ -2541,6 +2581,9 @@ impl WindowedClient {
             timer,
             menu,
             render_size,
+            cursor_visible,
+            cursor_last_mouse: std::cell::Cell::new(None),
+            cursor_last_keys: std::cell::Cell::new([false; oh_render::input::KEY_BITS]),
             game,
             config,
             fps_bits,
@@ -2738,6 +2781,9 @@ impl WindowedClient {
             _app_draw: app_draw,
             ilc,
             render_size,
+            cursor_visible,
+            cursor_last_mouse,
+            cursor_last_keys,
         } = self;
         let _ = &composed; // keep it alive until the end of the scope
         let mut timer = timer;
@@ -2770,6 +2816,9 @@ impl WindowedClient {
                     &config,
                     &ilc,
                     &render_size,
+                    &cursor_visible,
+                    &cursor_last_mouse,
+                    &cursor_last_keys,
                     &fps_bits,
                     &app_draw,
                 )
@@ -2793,6 +2842,9 @@ impl WindowedClient {
             &self.config,
             &self.ilc,
             &self.render_size,
+            &self.cursor_visible,
+            &self.cursor_last_mouse,
+            &self.cursor_last_keys,
             &self.fps_bits,
             &self._app_draw,
         )
@@ -2813,6 +2865,9 @@ impl WindowedClient {
             &self.config,
             &self.ilc,
             &self.render_size,
+            &self.cursor_visible,
+            &self.cursor_last_mouse,
+            &self.cursor_last_keys,
             &self.fps_bits,
             &self._app_draw,
         )
@@ -2858,6 +2913,16 @@ impl WindowedClient {
         config: &Arc<RwLock<Config>>,
         ilc: &Rc<RefCell<Option<crate::lua_console_ui::IlcConsole>>>,
         render_size: &std::sync::Arc<RenderWindowSize>,
+        // 29u1 — the menu's cursor-visibility flag (the C++
+        // `MenuGame::mouseCursorVisible`): the frame's key-press-hide /
+        // mouse-move-show (the C++'s other two cursor handlers,
+        // MenuGame.cpp:278 / :295 — menu-state only) write it, and the
+        // per-frame sync below applies it to the window's own flag (the C++
+        // `MenuGame::setMouseCursorVisible` → `window.setMouseCursorVisible`,
+        // MenuGame.cpp:3641-3644).
+        cursor_visible: &std::rc::Rc<std::cell::Cell<bool>>,
+        cursor_last_mouse: &std::cell::Cell<Option<Vec2>>,
+        cursor_last_keys: &std::cell::Cell<[bool; oh_render::input::KEY_BITS]>,
         // 029e3 — the window's FPS slot (the C++ `window->getFPS()`;
         // the `WindowTouchRenderer`'s docs): the frame's `runFPS` result
         // is published here so the NEXT frame's engine tick (the
@@ -2948,12 +3013,51 @@ impl WindowedClient {
         // the footer's `update ms` is the port's `runUpdate` span).
         let ms_update_start = std::time::Instant::now();
         let input = window.get_input_state();
+        // 29u1 — the C++'s menu-state cursor handlers (MenuGame.cpp:274-
+        // 307): any `KeyPressed` hides the cursor (:278), a `MouseMoved`
+        // that actually moved re-shows it (:295). The port observes these
+        // PER FRAME (the menu-state event feed's once-per-frame
+        // approximation of the C++'s per-event handlers — the documented
+        // 025c/025f note): a key newly pressed this frame (the `input`
+        // snapshot vs the previous frame's bitset) hides; a changed raw
+        // mouse pixel re-shows (the hide-then-show order makes a same-frame
+        // key+move resolve to "show" — the mouse presence is the cursor's
+        // intent). Menu-state only — the C++'s handlers are on the menu
+        // state's event bus (the game state never re-shows, so a started
+        // level's hidden cursor persists, exactly the C++ behavior).
+        if engine.current() == GameSlot::Menu {
+            let cur_keys = input.get_keys();
+            let last_keys = cursor_last_keys.get();
+            if cur_keys.iter().zip(last_keys.iter()).any(|(c, l)| *c && !l) {
+                cursor_visible.set(false); // C++ :278 — KeyPressed → hide
+            }
+            cursor_last_keys.set(*cur_keys);
+            let mp = window.mouse_pixel();
+            // Only a REAL change from the previous frame re-shows (the
+            // C++ `actuallyMoved` = the delta != 0): the first frame has
+            // no previous pixel (`None`) — not a move, so no show.
+            if let Some(last) = cursor_last_mouse.get() {
+                if last != mp {
+                    cursor_visible.set(true); // C++ :295 — MouseMoved → show
+                }
+            }
+            cursor_last_mouse.set(Some(mp));
+        }
         engine.refresh_input(input);
         timer.run_update(|ft| {
             engine.update_input(input, ft);
             engine.update_from_timer(ft);
         });
         engine.on_post_update();
+        // 29u1 — apply the menu's cursor state to the window (the C++
+        // `MenuGame::setMouseCursorVisible` → `window.setMouseCursorVisible`,
+        // MenuGame.cpp:3641-3644): the frame's key/mouse detection (above,
+        // pre-update — the C++'s `runEvents` position) + the menu's
+        // `play_selected_level` hide / `handle_mouse_wheel` show (during the
+        // update burst, via the `MenuWindowSource` seam) all wrote the
+        // shared flag; this applies the frame's final value to the window's
+        // own flag (the observable `Window::mouse_cursor_visible`).
+        window.set_mouse_cursor_visible(cursor_visible.get());
         // C++ `postUpdate_ImguiLuaConsole`'s egui UI tail (issue 014b /
         // D-022 — `crate::lua_console_ui`'s module docs: the per-frame
         // order + the C++'s one-frame `wantCapture*` lag). The C++ runs

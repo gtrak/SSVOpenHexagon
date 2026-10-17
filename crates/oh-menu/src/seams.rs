@@ -681,6 +681,14 @@ pub trait MenuWindow {
     fn width(&self) -> f32;
     /// C++ `getWindowHeight()` (MenuGame.cpp:3355-3357).
     fn height(&self) -> f32;
+    /// C++ `MenuGame::setMouseCursorVisible` (MenuGame.cpp:3641-3644) —
+    /// `window.setMouseCursorVisible(x)`; the menu's cursor toggles
+    /// (29u1): `playSelectedLevel`'s hide (MenuGame.cpp:2373) and the
+    /// mouse-wheel `MouseWheelScrolled` show (:304). The app-layer
+    /// key-press hide / mouse-move show (the C++'s other two cursor
+    /// handlers, :278 / :295) run on the composition's window directly
+    /// (the menu has no per-event key/mouse-move seam).
+    fn set_mouse_cursor_visible(&self, visible: bool);
 }
 
 // ---------------------------------------------------------------------------
@@ -1017,6 +1025,7 @@ impl MenuAssets for FakeAssets {
 /// render size and the config size agree.
 pub struct FakeWindow {
     size: RefCell<(f32, f32)>,
+    cursor: RefCell<bool>,
 }
 
 impl FakeWindow {
@@ -1024,6 +1033,8 @@ impl FakeWindow {
     pub fn new() -> Rc<Self> {
         Rc::new(Self {
             size: RefCell::new((800.0, 450.0)),
+            // The C++ ctor's `setMouseCursorVisible(true)` (MenuGame.cpp:245).
+            cursor: RefCell::new(true),
         })
     }
     /// A test-side window resize (the C++'s `onRecreation` size half).
@@ -1034,6 +1045,11 @@ impl FakeWindow {
     pub fn size(&self) -> (f32, f32) {
         *self.size.borrow()
     }
+    /// The recorded cursor-visibility state (29u1).
+    #[must_use]
+    pub fn is_mouse_cursor_visible(&self) -> bool {
+        *self.cursor.borrow()
+    }
 }
 
 impl MenuWindow for FakeWindow {
@@ -1042,6 +1058,9 @@ impl MenuWindow for FakeWindow {
     }
     fn height(&self) -> f32 {
         self.size.borrow().1
+    }
+    fn set_mouse_cursor_visible(&self, visible: bool) {
+        *self.cursor.borrow_mut() = visible;
     }
 }
 

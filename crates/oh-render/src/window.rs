@@ -883,6 +883,16 @@ impl Window {
         self.map_pixel_to_coords(self.mouse_pixel)
     }
 
+    /// The mouse's RAW window-pixel position (the C++ `MouseMoved` event's
+    /// `mEvent.mouseMovePosition` — the 29u1 cursor re-show's "actually
+    /// moved" source, MenuGame.cpp:284-296). Not view-mapped: the cursor's
+    /// moved-test compares the raw pixel across frames (a camera transform
+    /// would make a static-camera pixel diff unstable).
+    #[must_use]
+    pub fn mouse_pixel(&self) -> Vec2 {
+        self.mouse_pixel
+    }
+
     // ---- input ------------------------------------------------------------
     /// `ssvs::GameWindow::getInputState()`.
     #[must_use]
