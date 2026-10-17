@@ -439,7 +439,10 @@ impl<S: SharedStore> HexagonGame<S> {
                     // If playing a replay from file, there is no local profile
                     // active, so just go to the menu when attempting to restart
                     // the level.
-                    self.go_to_menu(false, false);
+                    // C++ `goToMenu()` — the default-argument call
+                    // `goToMenu(true /*mSendScores*/, false /*mError*/)`
+                    // (HexagonGame.hpp:417).
+                    self.go_to_menu(true, false);
                     return;
                 }
 
@@ -704,7 +707,10 @@ impl<S: SharedStore> HexagonGame<S> {
         }
 
         if self.0.joystick.rising_edge_id(Jid::Exit) {
-            self.go_to_menu(false, false);
+            // C++ `goToMenu()` — the default-argument call
+            // `goToMenu(true /*mSendScores*/, false /*mError*/)`
+            // (HexagonGame.hpp:417).
+            self.go_to_menu(true, false);
         } else if self.0.joystick.rising_edge_id(Jid::ForceRestart)
             || (self.st().status.has_died && self.0.joystick.rising_edge_id(Jid::Restart))
         {

@@ -58,7 +58,8 @@ use oh_data::{MusicData, PackData, StyleData};
 use oh_game::hexagon_game::HexagonGame;
 use oh_game::lua_state::{GameApi, ReentrantMutex};
 use oh_game::seams::{
-    NoJoystick, NoneSteamSink, NullReplayStore, PcgCosmeticRng, Profiles, ScriptError, ScriptHost,
+    Joystick, NoJoystick, NoneSteamSink, NullReplayStore, PcgCosmeticRng, Profiles, ReplayStore,
+    ScriptError, ScriptHost,
 };
 use oh_game::{HexagonGameStatus, LevelStatus};
 use oh_lua::api::callbacks;
@@ -465,13 +466,43 @@ impl Composed {
 }
 
 /// Builds the composition for one engine instance (C++ test: one
-/// `HexagonGame` per `doTest` call, all sharing one `HGAssets`).
+/// `HexagonGame` per `doTest` call, all sharing one `HGAssets`), with the
+/// C++ test's seam defaults: `TestProfiles`, `NullReplayStore`,
+/// `NoJoystick` (see [`compose_with`] for the parameterized form, used by
+/// the issue 029m 29d1 `go_to_menu` score-send tests).
 ///
 /// `window` mirrors the C++ `mGameWindow != nullptr` (the replay tests pass
 /// a null window in the headless loop); `root` is the process-CWD
 /// equivalent the level-script paths resolve against.
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub fn compose(assets: Arc<oh_assets::Assets>, root: PathBuf, window: bool) -> Composed {
+    compose_with(
+        assets,
+        root,
+        window,
+        Arc::new(TestProfiles),
+        Arc::new(NullReplayStore),
+        Arc::new(NoJoystick),
+    )
+}
+
+/// [`compose`] with injectable `Profiles` / `ReplayStore` / `Joystick`
+/// seams — the form tests that observe the engine's profile-dependent
+/// paths (issue 029m 29d1: the `go_to_menu` score send) use. `window` /
+/// `root` mean the same as in [`compose`]. `allow(dead_code)`: each test
+/// binary compiles this module separately and not all of them use this
+/// parameterized variant.
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
+pub fn compose_with(
+    assets: Arc<oh_assets::Assets>,
+    root: PathBuf,
+    window: bool,
+    profiles: Arc<dyn Profiles>,
+    replay_store: Arc<dyn ReplayStore>,
+    joystick: Arc<dyn Joystick>,
+) -> Composed {
     let config = Arc::new(RwLock::new(Config::default()));
     // Heap-pinned before the `SharedLua` capture (see the `lua` field docs
     // on `Composed`): the host's `SharedLua` points at this box's slot.
@@ -484,10 +515,10 @@ pub fn compose(assets: Arc<oh_assets::Assets>, root: PathBuf, window: bool) -> C
         config.clone(),
         assets.clone(),
         None, // C++ `audio == nullptr`
-        Arc::new(TestProfiles),
-        Arc::new(NullReplayStore),
+        profiles,
+        replay_store,
         host.clone() as Arc<dyn ScriptHost>,
-        Arc::new(NoJoystick),
+        joystick,
         Arc::new(PcgCosmeticRng::new()),
         window,
         None, // C++ headless tests: no renderer
