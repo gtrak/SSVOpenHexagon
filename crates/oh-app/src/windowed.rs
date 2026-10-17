@@ -1449,25 +1449,42 @@ impl GameState for MenuSlotAdapter {
             // decrement, the port's `MenuGame::handle_release_edge` —
             // issue 025g: the decrement is what unblocks the menu's
             // key binds after `returnToLevelSelection`'s
-            // `setIgnoreAllInputs(1)` on `fnGoToMenu`). The port's
+            // `setIgnoreAllInputs(1)` on `fnGoToMenu`; 29b3: the dialog
+            // halves — the keyboard key's identity drives the Key
+            // handler's close-key / Escape arms, the mouse / joystick /
+            // finger releases carry none). The port's
             // documented once-per-frame boot advance holds (the
             // 025c/025f note above): at most ONE `advance_boot_screen`
             // per frame — two boot releases in one frame (the C++'s
             // per-event double-fire) is the documented edge case the
             // boot flow never exercises.
             let mut boot_advanced = false;
-            let n_edges = edges.keys.len() + edges.buttons.len() + edges.fingers.len();
-            for _ in 0..n_edges {
+            let mut run_edge = |released: Option<Key>| {
                 if self.menu.shared().borrow().ignore_inputs == 0 {
-                    continue;
+                    return;
                 }
                 match self.menu.state() {
                     States::LoadingScreen | States::EpilepsyWarning if !boot_advanced => {
                         self.menu.advance_boot_screen();
                         boot_advanced = true;
                     }
-                    _ => self.menu.handle_release_edge(),
+                    _ => self.menu.handle_release_edge(released),
                 }
+            };
+            // The C++ `KeyReleased` handler (MenuGame.cpp:519-565) — the
+            // keyboard releases carry the key identity (the dialog's
+            // close-key / Escape arms consult it, 29b3).
+            for key in edges.keys.iter() {
+                run_edge(Some(*key));
+            }
+            // The C++ `MouseButtonReleased` / `JoystickButtonReleased`
+            // handlers (MenuGame.cpp:616-643 / :673-700) — no key
+            // identity (the dialog halves consult `keyToClose` only).
+            for _ in edges.buttons.iter() {
+                run_edge(None);
+            }
+            for _ in edges.fingers.iter() {
+                run_edge(None);
             }
         }
         // C++ `MenuGame::onEvent(MouseWheelScrolled)` (MenuGame.cpp:

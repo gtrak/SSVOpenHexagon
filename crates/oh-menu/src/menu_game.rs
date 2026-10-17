@@ -813,6 +813,120 @@ impl Shared {
         self.set_ignore_all_inputs(n);
     }
 
+    /// C++ `checkCloseDialogBox`'s `closeBox` lambda (MenuGame.cpp:
+    /// 386-391) — select.ogg + `clearDialogBox` + `setIgnoreAllInputs(0)`.
+    fn close_box(&mut self) {
+        self.play_sound_override("select.ogg");
+        self.dialog.clear();
+        self.set_ignore_all_inputs(0);
+    }
+
+    /// The C++ release handlers' raw `--ignoreInputs` (the Key handler's
+    /// close-key half, MenuGame.cpp:544-550; the mouse / joystick
+    /// dialog halves, :639-641 / :696-698; the generic tails, :579-582 /
+    /// :647-650 / :697-700). The C++'s raw decrement leaves the manager
+    /// gate unsynced; the port re-syncs it on every decrement via
+    /// `set_ignore_all_inputs` — observable-identical here (the gate is
+    /// already latched while `ignore_inputs > 0`, and the close / the
+    /// sequence arms re-sync at 0 / 1 within the same event).
+    fn decrement_ignore_inputs(&mut self) {
+        let n = self.ignore_inputs - 1;
+        self.set_ignore_all_inputs(n);
+    }
+
+    /// C++ `checkCloseDialogBox` lambda (MenuGame.cpp:384-489) — the
+    /// dialog input-sequence machine: on the close-key release, the
+    /// `Nothing` state closes the box; the Registration / Login /
+    /// DeleteAccount sequences capture the typed input, transition
+    /// (the masked re-dialogs + `setIgnoreAllInputs(1)`), and fire the
+    /// network seam (`try_register` / `try_login` / `try_delete_account`)
+    /// — or the "PASSWORD MISMATCH" dialog on a confirm mismatch
+    /// (29b3). The C++'s `transitionInputSequence` / `endInputSequence`
+    /// scope-guard order: the state is set, the input is captured, THEN
+    /// `closeBox` runs (the guard fires at scope exit, after the return
+    /// value is evaluated).
+    fn check_close_dialog_box(&mut self) {
+        // C++ :408-410 — the counter gate: the box only reacts once the
+        // caller's `--ignoreInputs` took the counter to 0.
+        if self.ignore_inputs != 0 {
+            return;
+        }
+        match self.dialog_input_state {
+            DialogInputState::Nothing => {
+                // C++ :412-416.
+                self.close_box();
+            }
+            DialogInputState::Registration_EnteringUsername => {
+                // C++ :419-427.
+                let typed = self.dialog.input().to_string();
+                self.dialog_input_state = DialogInputState::Registration_EnteringPassword;
+                self.close_box();
+                self.registration_username = typed;
+                self.show_input_dialog_box_nice("REGISTRATION", "PASSWORD", "");
+                self.dialog.set_input_box_password(true);
+                self.set_ignore_all_inputs(1);
+            }
+            DialogInputState::Registration_EnteringPassword => {
+                // C++ :430-438.
+                let typed = self.dialog.input().to_string();
+                self.dialog_input_state = DialogInputState::Registration_EnteringPasswordConfirm;
+                self.close_box();
+                self.registration_password = typed;
+                self.show_input_dialog_box_nice("REGISTRATION", "CONFIRM PASSWORD", "");
+                self.dialog.set_input_box_password(true);
+                self.set_ignore_all_inputs(1);
+            }
+            DialogInputState::Registration_EnteringPasswordConfirm => {
+                // C++ :440-459.
+                let typed = self.dialog.input().to_string();
+                self.dialog_input_state = DialogInputState::Nothing;
+                self.close_box();
+                self.registration_password_confirm = typed;
+                if self.registration_password == self.registration_password_confirm {
+                    let user = self.registration_username.clone();
+                    let pass = self.registration_password.clone();
+                    self.network.try_register(&user, &pass);
+                } else {
+                    self.play_sound_override("error.ogg");
+                    self.show_dialog_box(
+                        "PASSWORD MISMATCH\n\n\
+                         PRESS ANY KEY OR BUTTON TO CLOSE THIS MESSAGE\n",
+                    );
+                    self.set_ignore_all_inputs(1);
+                }
+            }
+            DialogInputState::Login_EnteringUsername => {
+                // C++ :465-473.
+                let typed = self.dialog.input().to_string();
+                self.dialog_input_state = DialogInputState::Login_EnteringPassword;
+                self.close_box();
+                self.login_username = typed;
+                self.show_input_dialog_box_nice("LOGIN", "PASSWORD", "");
+                self.dialog.set_input_box_password(true);
+                self.set_ignore_all_inputs(1);
+            }
+            DialogInputState::Login_EnteringPassword => {
+                // C++ :476-480.
+                let typed = self.dialog.input().to_string();
+                self.dialog_input_state = DialogInputState::Nothing;
+                self.close_box();
+                self.login_password = typed;
+                let user = self.login_username.clone();
+                let pass = self.login_password.clone();
+                self.network.try_login(&user, &pass);
+            }
+            DialogInputState::DeleteAccount_EnteringPassword => {
+                // C++ :483-487.
+                let typed = self.dialog.input().to_string();
+                self.dialog_input_state = DialogInputState::Nothing;
+                self.close_box();
+                self.delete_account_password = typed;
+                self.network
+                    .try_delete_account(&self.delete_account_password);
+            }
+        }
+    }
+
     // ---- changeStateTo (§11.3) ----
 
     /// C++ `changeStateTo(mState)` — full transition + first-time tips.
@@ -2964,17 +3078,46 @@ impl MenuGame {
         }
     }
 
-    /// C++ `game.onEvent(sf::Event::EventType::TextEntered)` handler
-    /// (MenuGame.cpp:491-498) — `if(mEvent.text.unicode < 128)
-    /// enteredChars.emplace_back(ssvu::toNum<char>(mEvent.text.unicode))`.
-    /// The app layer routes the window's `TextEntered` fold through the
-    /// shared entered-text sink; the menu state's `refresh_input` drain
-    /// calls this per recorded char (the once-per-frame equivalent of the
-    /// C++'s per-event `runEvents` dispatch — the released-edges drain's
-    /// docs, `oh_app::windowed`).
+    /// C++ `game.onEvent(sf::Event::EventType::TextEntered)` handlers
+    /// (MenuGame.cpp:265-272 + :491-517) — the FIRST handler feeds the
+    /// profile-name entry (`if(mEvent.text.unicode < 128)
+    /// enteredChars.emplace_back(…)`); the SECOND is the DIALOG INPUT-
+    /// BOX ECHO (29b3): while a dialog box is open AND is an input box,
+    /// the printable unicode range (32..126) appends to
+    /// `dialogBox.getInput()` — capped at 32 chars — with `beep.ogg`, and
+    /// Backspace (unicode 8) pops with `beep.ogg`. The two handlers are
+    /// INDEPENDENT in the C++ (both fire on every `TextEntered` — a
+    /// Backspace press reaches BOTH: `enteredChars` and the pop), so the
+    /// port runs both halves per char. The app layer routes the
+    /// window's `TextEntered` fold through the shared entered-text sink;
+    /// the menu state's `refresh_input` drain calls this per recorded
+    /// char (the once-per-frame equivalent of the C++'s per-event
+    /// `runEvents` dispatch — the released-edges drain's docs,
+    /// `oh_app::windowed`).
     pub fn handle_text_entered(&self, c: char) {
-        if (c as u32) < 128 {
-            self.shared.borrow_mut().entered_chars.push(c);
+        let unicode = c as u32;
+        let mut s = self.shared.borrow_mut();
+        // The 1st `TextEntered` (MenuGame.cpp:265-272):
+        // `unicode < 128 → enteredChars`.
+        if unicode < 128 {
+            s.entered_chars.push(c);
+        }
+        // The 2nd `TextEntered` (MenuGame.cpp:499-517) — the dialog
+        // input-box echo (NOT gated on `ignoreInputs`: it fires exactly
+        // while a dialog holds the gate).
+        if !s.dialog.empty() && s.dialog.is_input_box() {
+            if (32..127).contains(&unicode) {
+                if s.dialog.input().len() < 32 {
+                    s.play_sound_override("beep.ogg");
+                    s.dialog.input_mut().push(c);
+                }
+            } else if unicode == 8 {
+                // C++ :509-516 — Backspace.
+                if !s.dialog.input().is_empty() {
+                    s.play_sound_override("beep.ogg");
+                    s.dialog.input_mut().pop();
+                }
+            }
         }
     }
 
@@ -3006,31 +3149,38 @@ impl MenuGame {
     }
 
     /// C++ `KeyReleased` / `MouseButtonReleased` /
-    /// `JoystickButtonReleased` shared release tail
-    /// (MenuGame.cpp:576-601 / :644-666 / :694-700) — issue 025g:
-    /// while `ignoreInputs > 0` (inputs are special-cased: boot
-    /// screens, dialog boxes, bind capture), a release that is NOT a
-    /// boot-screen close (scenario 1 — the C++
+    /// `JoystickButtonReleased` release dispatch
+    /// (MenuGame.cpp:518-565 / :616-643 / :673-700) — issue 025g (the
+    /// generic `--ignoreInputs` tail: while `ignoreInputs > 0`, a release
+    /// that is NOT a boot-screen close (scenario 1 — the C++
     /// `checkCloseBootScreens`, MenuGame.cpp:360-380; the port's
     /// [`Self::advance_boot_screen`]) and NOT during a dialog delay and
     /// NOT a dialog-box close (scenario 3) DECREMENTS `ignoreInputs`
     /// (`--ignoreInputs`) — the mechanism that unblocks the menu's bind
     /// system after, e.g., `returnToLevelSelection`'s
-    /// `setIgnoreAllInputs(1)` on `fnGoToMenu` (main.cpp:456-462): the
-    /// C++'s first release after a game → menu drop takes the menu from
-    /// 1 to 0, and subsequent keys work. Without this tail the port held
-    /// `ignore_inputs >= 1` forever after such a drop (the on-device
-    /// 025g finding: the menu's key binds stayed dead after a
-    /// profile-creation → game → `goToMenu` round trip).
+    /// `setIgnoreAllInputs(1)` on `fnGoToMenu` (main.cpp:456-462)) + 29b3
+    /// (the dialog halves, now wired for real): `released_key` carries
+    /// the released KEYBOARD key's identity (`Some`) — the C++
+    /// `KeyReleased` handler's `mEvent.key.code` — or `None` for a mouse
+    /// button / joystick button / finger release (the C++
+    /// `MouseButtonReleased` / `JoystickButtonReleased` handlers, which
+    /// consult no key identity). The three dialog halves: (a) the Key
+    /// handler's `--ignoreInputs` fires only on the close key (or the
+    /// Unknown close key = any key, MenuGame.cpp:544-550); (b) the input
+    /// box's Escape cancel — `setIgnoreAllInputs(0)` +
+    /// `dialogInputState = Nothing` + select.ogg + `clearDialogBox` — the
+    /// only way out of a started sequence besides completing it (:
+    /// 552-561); (c) the `checkCloseDialogBox` sequence machine (the port's
+    /// [`Shared::check_close_dialog_box`]) — the mouse / joystick halves
+    /// ignore the input box entirely (`keyToClose != Unknown → return`,
+    /// :636-643 / :693-700) and decrement + close an Unknown-key box.
     ///
     /// The C++'s scenario-3 bind-capture half (the
     /// `KeyboardBindControl` key-assignment, MenuGame.cpp:586-601 /
     /// :655-666) is the documented oh-config `BindControl` seam (the
     /// port's options bind-capture UI lives there — `oh-menu`
-    /// `menu.rs` module docs); the input-box login/registration
-    /// `transitionInputSequence` half is the port's
-    /// `DialogInputState` flow (not this tail).
-    pub fn handle_release_edge(&self) {
+    /// `menu.rs` module docs).
+    pub fn handle_release_edge(&self, released_key: Option<oh_config::Key>) {
         let mut s = self.shared.borrow_mut();
         // All three handlers' head: `if(ignoreInputs == 0) return;`
         if s.ignore_inputs == 0 {
@@ -3046,26 +3196,46 @@ impl MenuGame {
         if s.dialog_box_delay > 0.0 {
             return;
         }
-        // Scenario 3 (MenuGame.cpp:534-573 / :637-643 / :687-693): a
-        // dialog box with an unknown close key closes on any release —
-        // the C++ `checkCloseDialogBox`'s `closeBox` (select sound +
-        // `clearDialogBox` + `setIgnoreAllInputs(0)`; the C++'s
-        // `--ignoreInputs;` before the `closeBox` is subsumed — the
-        // close zeroes it).
+        // Scenario 3 — the open dialog box (29b3: the Key / mouse /
+        // joystick dialog halves, MenuGame.cpp:542-565 / :636-643 /
+        // :693-700).
         if !s.dialog.empty() {
-            if s.dialog.key_to_close() != DialogKey::Unknown {
-                return;
-            }
-            if s.dialog_input_state == DialogInputState::Nothing {
-                s.play_sound_override("select.ogg");
-                s.dialog.clear();
-                s.set_ignore_all_inputs(0);
-            } else {
-                // The C++'s input-sequence `--ignoreInputs;` (the
-                // sequence transition itself is the `DialogInputState`
-                // flow's, not this tail's).
-                let n = s.ignore_inputs - 1;
-                s.set_ignore_all_inputs(n);
+            match released_key {
+                Some(key) => {
+                    // C++ :544-550 — the `--ignoreInputs` only when the
+                    // close key is Unknown (any key) or the released key
+                    // IS the close key (Enter on the input boxes).
+                    if s.dialog.key_to_close() == DialogKey::Unknown
+                        || (s.dialog.key_to_close() == DialogKey::Enter
+                            && key == oh_config::Key::ENTER)
+                    {
+                        s.decrement_ignore_inputs();
+                    }
+                    // C++ :552-561 — the input box's Escape cancel (the
+                    // only way out of a started sequence besides
+                    // completing it).
+                    if s.dialog.is_input_box() && key == oh_config::Key::ESCAPE {
+                        s.set_ignore_all_inputs(0);
+                        s.dialog_input_state = DialogInputState::Nothing;
+                        s.play_sound_override("select.ogg");
+                        s.dialog.clear();
+                        return;
+                    }
+                    // C++ :563 — the sequence machine (the counter gate:
+                    // the box only reacts once the counter is 0).
+                    s.check_close_dialog_box();
+                }
+                None => {
+                    // C++ :636-643 / :693-700 — the mouse / joystick
+                    // halves: the input box (keyToClose == Enter) ignores
+                    // pointer releases; an Unknown-key box decrements +
+                    // closes.
+                    if s.dialog.key_to_close() != DialogKey::Unknown {
+                        return;
+                    }
+                    s.decrement_ignore_inputs();
+                    s.check_close_dialog_box();
+                }
             }
             return;
         }
@@ -3074,8 +3244,7 @@ impl MenuGame {
         // re-syncs the manager flag at 0 (the no-menu / not-MOpts
         // branch, MenuGame.cpp:579-582 / :647-650 / :697-700; the MOpts
         // bind-assignment branch is the documented `BindControl` seam).
-        let n = s.ignore_inputs - 1;
-        s.set_ignore_all_inputs(n);
+        s.decrement_ignore_inputs();
     }
 
     /// C++ `levelStatus`-level selection accessors (state-machine test helpers).

@@ -1159,18 +1159,31 @@ impl<F: FnMut(&mut Window)> ApplicationHandler<()> for RunHandler<'_, F> {
         // SFML dispatches a `TextEntered` event ALONGSIDE the
         // `KeyPressed` for a character key (the C++ `runEvents` polls
         // them as two events — the `MenuGame`'s `onEvent(TextEntered)`
-        // handler, MenuGame.cpp:491-498, appends to `enteredChars`).
-        // winit carries the character in the same `KeyboardInput`'s
-        // `text` field (the Android device keymap — the issue-025d
-        // on-device evidence: `adb input keyevent 66` arrived with
-        // `text: Some("\n")`), so the second SFML event is restored
-        // here (the `map_window_event` 1:1 single mapping stays). The
-        // `Pressed` gate: SFML's `TextEntered` fires on the press half
-        // only (the release's `text` is `None` on the device).
+        // handler, MenuGame.cpp:265-272, appends to
+        // `enteredChars`). winit carries the character in the same
+        // `KeyboardInput`'s `text` field (the Android device keymap —
+        // the issue-025d on-device evidence: `adb input keyevent 66`
+        // arrived with `text: Some("\n")`), so the second SFML event is
+        // restored here (the `map_window_event` 1:1 single mapping
+        // stays). The `Pressed` gate: SFML's `TextEntered` fires on the
+        // press half only (the release's `text` is `None` on the
+        // device). The Backspace half (29b3): SFML also emits
+        // `TextEntered` with unicode 8 for Backspace (the C++'s second
+        // `TextEntered` handler's `pop_back` arm — the dialog input box
+        // erase, MenuGame.cpp:509-516 — fires on it; the Android
+        // keymap's `AKEYCODE_DEL` → `\u{8}` text covers the same
+        // event), but winit carries no `text` for the Backspace key, so
+        // the second SFML event is restored from the physical key
+        // (the `else` — a keymap that DID deliver the char through
+        // `text` must not double-pop).
         if let WindowEvent::KeyboardInput { event: ke, .. } = &event {
             if ke.state == winit::event::ElementState::Pressed {
                 if let Some(c) = ke.text.as_deref().and_then(|s| s.chars().next()) {
                     Window::apply_event(self.window, Event::TextEntered { character: c });
+                } else if ke.physical_key == PhysicalKey::Code(KeyCode::Backspace)
+                    || ke.logical_key == WKey::Named(NamedKey::Backspace)
+                {
+                    Window::apply_event(self.window, Event::TextEntered { character: '\u{8}' });
                 }
             }
         }
