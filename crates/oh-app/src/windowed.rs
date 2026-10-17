@@ -1814,8 +1814,9 @@ fn register_menu_binds(mgr: &mut Manager, menu: &Rc<MenuGame>, config: &Arc<RwLo
     }
     // Hardcoded Escape `Type::Always` (MenuGame.cpp:963-971): the
     // `exitTimer` accumulation; the `exitTimer > 20 → window.stop()`
-    // consumer (MenuGame.cpp:2852) is the unported `MenuGame::draw` lane
-    // (issue 13b) — the timer accumulates only.
+    // consumer (MenuGame.cpp:2852-2854) now runs at the port's `update()`
+    // tail (the `quit()` request path the windowed loop consumes — 29b7),
+    // so a continuous 20s hold quits the game.
     {
         let m_on = menu.clone();
         let m_off = menu.clone();

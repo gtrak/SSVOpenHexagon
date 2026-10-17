@@ -1629,8 +1629,10 @@ impl MenuGame {
 
     /// C++ `Tid::Escape` `Type::Always` bind body (MenuGame.cpp:965-971):
     /// `if(state != States::MOpts) exitTimer += mFT`. The
-    /// `exitTimer > 20 → window.stop()` consumer (MenuGame.cpp:2852) is the
-    /// unported `MenuGame::draw` lane (issue 13b) — the timer accumulates.
+    /// `exitTimer > 20 → window.stop()` consumer (MenuGame.cpp:2852-2854)
+    /// runs at the `update()` tail (the port's `quit()` — the
+    /// `quit_requested` request path the windowed loop consumes; 29b7):
+    /// the timer accumulates here, the threshold fires there.
     pub fn add_exit_timer(&self, ft: f32) {
         if self.state() == States::MOpts {
             return;
@@ -2504,8 +2506,21 @@ impl MenuGame {
         // C++ `backgroundCamera.turn(levelStatus.rotationSpeed * 10.f)` — the
         // menu background spins with the level rotation (a 13b render detail;
         // we advance a coarse accumulator so it is observable).
+        // C++ `MenuGame::update`'s hold-Exit-to-quit (MenuGame.cpp:2852-2854):
+        // `if(exitTimer > 20) window.stop();` — holding the Exit/Escape trigger
+        // for 20 seconds quits the game (`add_exit_timer`'s accumulation is the
+        // on-half; `reset_exit_timer` on release zeroes it, so the threshold
+        // only fires on a continuous 20s hold). The port routes the C++'s
+        // `window.stop()` through the existing quit-request path (`quit()` →
+        // `quit_requested`, which the windowed loop consumes at its break
+        // condition, windowed.rs `!window.is_open() || ... menu.quit_requested()`)
+        // — the port's `window.stop()` equivalent. Strictly greater (the C++'s
+        // `> 20`), so exactly 20.0 does not yet quit.
         let mut s = self.shared.borrow_mut();
         s.rotation_speed += 0.0; // rotationSpeed is set by the menu Lua seam
+        if s.exit_timer > 20.0 {
+            s.quit();
+        }
     }
 
     /// App-layer hook: the C++ `add2StateInput(Focus)` keeps `focusHeld` in
