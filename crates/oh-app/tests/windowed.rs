@@ -22,6 +22,7 @@
 mod common;
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
@@ -222,30 +223,185 @@ fn windowed_client() -> WindowedClient {
     )
     .expect("windowed build")
 }
-/// Spec §5 (b): the C++ `-p -l` boot (main.cpp:507-511) —
-/// `mg->init(false, "cube", "apeirogon")` leaves the menu in
-/// `LevelSelection` with the level selected (MenuGame.cpp:1688-1775);
-/// the window points at the menu. The PLAY item then fires the C++
-/// `fnHGNewGame` (main.cpp:442-449): `hg.newGame(...)` +
-/// `window->setGameState(hg.getGame())`.
+
+/// 29b4 test setup: a data-root SANDBOX for the menu-state tests — the
+/// C++'s normal user flow (the boot screens → the profile flow → SMain →
+/// the "LEVEL SELECT" item, the pre-29b4 tests' `-p -l` boot's equivalent
+/// menu state) writes to the data root's `Profiles/`, so it must never
+/// run against the tracked `_RELEASE` (the `headless_replay.rs` sandbox
+/// invariant: symlinks the read-only subtrees, copies `config.json`).
+struct TestSandbox {
+    dir: PathBuf,
+}
+
+impl TestSandbox {
+    fn new() -> Self {
+        let dir = std::env::temp_dir().join(format!(
+            "oh-app-windowed-sandbox-{}-{}",
+            std::process::id(),
+            std::thread::current()
+                .name()
+                .unwrap_or("t")
+                .replace('-', "_")
+        ));
+        std::fs::create_dir_all(&dir).expect("sandbox dir");
+        let release = common::release_dir();
+        for name in ["Packs", "Assets", "ConfigOverrides"] {
+            std::os::unix::fs::symlink(release.join(name), dir.join(name)).expect("sandbox link");
+        }
+        std::fs::copy(release.join("config.json"), dir.join("config.json"))
+            .expect("sandbox config copy");
+        // A writable `Profiles/` dir: the boot flow's profile create/write
+        // lands here (the C++ `loadAssets`'s `Folder Profiles/ does not
+        // exist` error + `profile_create`'s `reload_local_profiles` both
+        // require the directory to exist — the real `_RELEASE` has none,
+        // which is exactly the case this sandbox exists to avoid).
+        std::fs::create_dir_all(dir.join("Profiles")).expect("sandbox Profiles dir");
+        Self { dir }
+    }
+}
+
+impl Drop for TestSandbox {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// A `WindowedClient` over the SANDBOX data root, with the C++ test's
+/// `testProfile` created in it (the boot flow's `playLocally()` lands in
+/// `SLPSelectBoot` — the profile-select state — instead of
+/// `ETLPNewBoot`). The config matches `windowed_client`'s returning-player
+/// shape (override `first_time_playing`-adjacent flags per test).
+fn sandboxed_windowed_client(config: Option<Arc<RwLock<Config>>>) -> (WindowedClient, TestSandbox) {
+    let sandbox = TestSandbox::new();
+    let assets =
+        Arc::new(oh_assets::Assets::new(&sandbox.dir, false, false).expect("_RELEASE loads"));
+    assets
+        .profile_create("testProfile")
+        .expect("profile create");
+    let config = config.unwrap_or_else(|| {
+        Arc::new(RwLock::new({
+            let mut c = Config::default();
+            c.set_first_time_playing(false);
+            c
+        }))
+    });
+    let client = WindowedClient::build(
+        Window::headless(1920, 1080),
+        config,
+        assets,
+        &sandbox.dir,
+        Arc::new(oh_steam::SteamManager::new(Box::new(oh_steam::NoSteam))),
+        None, // no Discord (headless test; build() creates the real IPC manager when None)
+        Arc::new(oh_app::windowed::NoOpSoftInput),
+    )
+    .expect("windowed build");
+    (client, sandbox)
+}
+
+/// 29b4: drives the C++'s NORMAL user flow from a plain boot to
+/// `LevelSelection` (the pre-29b4 tests' `-p -l` boot used to provide this
+/// state as a shortcut; 29b4 made the boot START the level — the
+/// C++'s `loadCommandLineLevel` tail `playSelectedLevel`, MenuGame.cpp:
+/// 1778 — so the menu-state tests now take the manual path: the boot
+/// screens' `checkCloseBootScreens` (MenuGame.cpp:360-380 — the port's
+/// `advance_boot_screen`) → `playLocally()`'s profile select (the
+/// sandbox's `testProfile` → `SLPSelectBoot`, MenuGame.cpp:1787-1799) →
+/// the profile item's `exec` (→ SMain) → the "LEVEL SELECT" item (→
+/// LevelSelection)). The ctor's `initBootLevel`'s `setIndex(0)` half lands
+/// on the FIRST selectable pack's first level (the tutorial pack's
+/// `babysteps` — the menu's selectable order is NOT the pack-priority
+/// order); the old `-p cube -l apeirogon` boot pinned the canonical test
+/// level, so this helper finishes by steering the selection back to
+/// `cube`/`apeirogon` (`changePackTo` + `setIndex`, the same drawer
+/// mutation the menu's own pack/level binds perform) so every menu-state
+/// test runs on the level the game-slot tests do.
+fn boot_to_level_selection(client: &mut WindowedClient) {
+    client.boot(None, None, None);
+    client.menu.advance_boot_screen();
+    assert_eq!(client.menu.state(), States::EpilepsyWarning);
+    client.menu.advance_boot_screen();
+    assert_eq!(client.menu.state(), States::SLPSelectBoot);
+    client.menu.ok_action(); // the profile item's `exec` → SMain
+    assert_eq!(client.menu.state(), States::SMain);
+    client.menu.ok_action(); // "LEVEL SELECT" → LevelSelection
+    assert_eq!(client.menu.state(), States::LevelSelection);
+
+    // Steer the selection to the canonical `cube`/`apeirogon` level.
+    {
+        let assets = client.menu.assets();
+        let packs = assets.selectable_pack_ids();
+        let cube_id = assets.find_pack_id_by_name("cube").expect("cube pack");
+        let cube_idx = packs
+            .iter()
+            .position(|p| p == &cube_id)
+            .expect("cube pack in the selectable order");
+        let apeirogon_idx = assets
+            .level_ids_for_pack(&cube_id)
+            .iter()
+            .position(|l| l.ends_with("_apeirogon"))
+            .expect("apeirogon level in the cube pack");
+        let mut s = client.menu.shared().borrow_mut();
+        s.change_pack_to(cube_idx as i32);
+        s.set_index(apeirogon_idx as i32);
+    }
+    assert_eq!(
+        client.menu.selected_level_id(),
+        "ohvrvanilla_vittorio_romeo_cube_1_apeirogon"
+    );
+}
+/// 29b4: the C++ `-p -l` boot (main.cpp:507-511) — `mg->init(false, "cube",
+/// "apeirogon")`'s `loadCommandLineLevel` tail is `playSelectedLevel();`
+/// (MenuGame.cpp:1778) → `fnHGNewGame` (main.cpp:442-449):
+/// `hg.newGame(...)` + `window->setGameState(hg.getGame())`. The boot
+/// STARTS the level — "to immediately run level" (main.cpp:96,:104) —
+/// and the window points at the GAME (not the menu).
 #[test]
-fn boot_with_p_and_l_lands_in_level_selection_and_play_reaches_the_game_slot() {
+fn boot_with_p_and_l_starts_the_level_immediately() {
     let client = windowed_client();
     client.boot(Some("cube"), Some("apeirogon"), None);
 
-    assert_eq!(client.engine.current(), GameSlot::Menu);
+    assert_eq!(
+        client.engine.current(),
+        GameSlot::Game,
+        "the `loadCommandLineLevel` tail's `playSelectedLevel` fired `fnHGNewGame`"
+    );
+    // The menu state is the tail's pre-play state (the C++ `playSelectedLevel`
+    // changes no menu state — the window's game-state switch is the seam's
+    // job, main.cpp:446-448): `LevelSelection` with the level selected
+    // (MenuGame.cpp:1775 + the `setIndex` half, :1773-1774).
     assert_eq!(client.menu.state(), States::LevelSelection);
     assert_eq!(
         client.menu.selected_level_id(),
         "ohvrvanilla_vittorio_romeo_cube_1_apeirogon"
     );
-
-    client.menu.ok_action(); // C++ `playSelectedLevel` → `fnHGNewGame`
-    assert_eq!(client.engine.current(), GameSlot::Game);
     // `LevelData.id` is the short level id (the full asset id is
     // `pack_id + "_" + LevelData.id` — the map key); the menu-side
     // assertion above already pins the full id.
     assert_eq!(client.game.get_level_data().id, "apeirogon");
+}
+
+/// 29b4: the C++ `loadCommandLineLevel` FAILURE paths (the early returns
+/// before the `playSelectedLevel` tail — invalid pack, MenuGame.cpp:
+/// 1701-1707; invalid level, :1741-1747) leave the C++ `gameState` null
+/// (the first frame's `assert(isValid())` would fire); the documented
+/// deviation points the window at the menu instead. No crash either way.
+#[test]
+fn boot_with_an_invalid_pack_or_level_lands_in_the_menu() {
+    // Invalid pack: the C++'s first early return (MenuGame.cpp:1701-1707).
+    let client = windowed_client();
+    client.boot(Some("no_such_pack"), Some("apeirogon"), None);
+    assert_eq!(
+        client.engine.current(),
+        GameSlot::Menu,
+        "the failure path: the port points the window at the menu"
+    );
+
+    // Invalid level (the pack exists): the C++'s nested-loop early return
+    // (MenuGame.cpp:1741-1747).
+    let client = windowed_client();
+    client.boot(Some("cube"), Some("no_such_level"), None);
+    assert_eq!(client.engine.current(), GameSlot::Menu);
 }
 
 /// A live-run replay fixture (the same shape as `headless_replay.rs`'
@@ -360,8 +516,8 @@ fn set_key(client: &mut WindowedClient, key: Key, down: bool) {
 /// (kSpace/kEnter/bMiddle) is `hasDied`-gated — a no-op while alive).
 #[test]
 fn scripted_enter_key_starts_the_level_from_the_menu() {
-    let mut client = windowed_client();
-    client.boot(Some("cube"), Some("apeirogon"), None);
+    let (mut client, _sandbox) = sandboxed_windowed_client(None);
+    boot_to_level_selection(&mut client);
     assert_eq!(client.engine.current(), GameSlot::Menu);
     assert_eq!(client.menu.state(), States::LevelSelection);
 
@@ -389,7 +545,9 @@ fn scripted_enter_key_starts_the_level_from_the_menu() {
 fn scripted_rotation_key_sets_the_impl_flag_and_starts_the_level() {
     let mut client = windowed_client();
     client.boot(Some("cube"), Some("apeirogon"), None);
-    client.menu.ok_action();
+    // 29b4: the boot's `loadCommandLineLevel` tail (`playSelectedLevel`,
+    // MenuGame.cpp:1778) already fired `fnHGNewGame` — the level is
+    // running, no manual `ok_action` needed.
     assert_eq!(client.engine.current(), GameSlot::Game);
     assert!(!client.game.get_status().started);
 
@@ -419,8 +577,7 @@ fn scripted_rotation_key_sets_the_impl_flag_and_starts_the_level() {
 #[test]
 fn scripted_screenshot_key_sets_must_take_screenshot() {
     let mut client = windowed_client();
-    client.boot(Some("cube"), Some("apeirogon"), None);
-    client.menu.ok_action();
+    client.boot(Some("cube"), Some("apeirogon"), None); // 29b4: the boot starts the level (its `playSelectedLevel` tail)
     assert!(!client.game.must_take_screenshot());
 
     set_key(&mut client, Key::F12, true);
@@ -445,10 +602,9 @@ fn scripted_screenshot_key_sets_must_take_screenshot() {
 #[test]
 fn scripted_force_restart_key_returns_to_the_menu() {
     let mut client = windowed_client();
-    client.boot(Some("cube"), Some("apeirogon"), None);
-    client.menu.ok_action();
-    // Start the level first (the state change is consumed only once
-    // `status.started`).
+    client.boot(Some("cube"), Some("apeirogon"), None); // 29b4: the boot starts the level (its `playSelectedLevel` tail)
+                                                        // Start the level first (the state change is consumed only once
+                                                        // `status.started`).
     set_key(&mut client, Key::A, true);
     tick(&mut client);
     set_key(&mut client, Key::A, false);
@@ -494,8 +650,7 @@ fn scripted_pause_key_toggles_debug_pause() {
         Arc::new(oh_app::windowed::NoOpSoftInput),
     )
     .expect("windowed build");
-    client.boot(Some("cube"), Some("apeirogon"), None);
-    client.menu.ok_action();
+    client.boot(Some("cube"), Some("apeirogon"), None); // 29b4: the boot starts the level (its `playSelectedLevel` tail)
     assert!(!client.game.debug_pause());
 
     set_key(&mut client, Key::F2, true);
@@ -517,8 +672,8 @@ fn scripted_pause_key_toggles_debug_pause() {
 /// kS moves the LevelSelection's selection to the next level.
 #[test]
 fn scripted_down_key_navigates_the_level_selection() {
-    let mut client = windowed_client();
-    client.boot(Some("cube"), Some("apeirogon"), None);
+    let (mut client, _sandbox) = sandboxed_windowed_client(None);
+    boot_to_level_selection(&mut client);
     let initial = client.menu.selected_level_id().clone();
 
     set_key(&mut client, Key::S, true);
@@ -541,9 +696,6 @@ fn scripted_down_key_navigates_the_level_selection() {
 /// result dialog, and `setIgnoreAllInputs(2)`.
 #[test]
 fn scripted_f3_reloads_the_level_assets_in_debug() {
-    let assets = Arc::new(
-        oh_assets::Assets::new(common::release_dir(), false, false).expect("_RELEASE loads"),
-    );
     let config = Arc::new(RwLock::new({
         let mut c = Config::default();
         c.set_first_time_playing(false);
@@ -551,17 +703,8 @@ fn scripted_f3_reloads_the_level_assets_in_debug() {
         c.set_debug(true);
         c
     }));
-    let mut client = WindowedClient::build(
-        Window::headless(1920, 1080),
-        config,
-        assets,
-        &common::release_dir(),
-        Arc::new(oh_steam::SteamManager::new(Box::new(oh_steam::NoSteam))),
-        None, // no Discord (headless test; build() creates the real IPC manager when None)
-        Arc::new(oh_app::windowed::NoOpSoftInput),
-    )
-    .expect("windowed build");
-    client.boot(Some("cube"), Some("apeirogon"), None);
+    let (mut client, _sandbox) = sandboxed_windowed_client(Some(config));
+    boot_to_level_selection(&mut client);
     assert_eq!(client.menu.state(), States::LevelSelection);
 
     set_key(&mut client, Key::F3, true);
@@ -593,9 +736,6 @@ fn scripted_f3_reloads_the_level_assets_in_debug() {
 /// reloaded", uppercased by the handler).
 #[test]
 fn scripted_f4_reloads_the_pack_assets_in_debug() {
-    let assets = Arc::new(
-        oh_assets::Assets::new(common::release_dir(), false, false).expect("_RELEASE loads"),
-    );
     let config = Arc::new(RwLock::new({
         let mut c = Config::default();
         c.set_first_time_playing(false);
@@ -603,17 +743,8 @@ fn scripted_f4_reloads_the_pack_assets_in_debug() {
         c.set_debug(true);
         c
     }));
-    let mut client = WindowedClient::build(
-        Window::headless(1920, 1080),
-        config,
-        assets,
-        &common::release_dir(),
-        Arc::new(oh_steam::SteamManager::new(Box::new(oh_steam::NoSteam))),
-        None, // no Discord (headless test; build() creates the real IPC manager when None)
-        Arc::new(oh_app::windowed::NoOpSoftInput),
-    )
-    .expect("windowed build");
-    client.boot(Some("cube"), Some("apeirogon"), None);
+    let (mut client, _sandbox) = sandboxed_windowed_client(Some(config));
+    boot_to_level_selection(&mut client);
 
     set_key(&mut client, Key::F4, true);
     tick(&mut client);
@@ -635,8 +766,8 @@ fn scripted_f4_reloads_the_pack_assets_in_debug() {
 /// the reload — no dialog, no input-ignore change.
 #[test]
 fn scripted_f3_without_debug_mode_is_a_no_op() {
-    let mut client = windowed_client(); // `Config::default()` — `debug = false`
-    client.boot(Some("cube"), Some("apeirogon"), None);
+    let (mut client, _sandbox) = sandboxed_windowed_client(None); // `Config::default()` — `debug = false`
+    boot_to_level_selection(&mut client);
     assert_eq!(client.menu.state(), States::LevelSelection);
     let ignore_before = client.menu.shared().borrow().ignore_inputs;
 

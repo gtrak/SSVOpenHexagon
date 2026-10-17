@@ -2211,20 +2211,31 @@ impl MenuGame {
 
     /// C++ `init(mError, pack, level)` (MenuGame.cpp:813-819): runs
     /// `init(error)` then `loadCommandLineLevel(pack, level)` — the
-    /// `-p -l` boot (`main.cpp:510`).
+    /// `-p -l` boot (`main.cpp:510`). Returns the C++ `loadCommandLineLevel`
+    /// result (`true` = the level was found and `playSelectedLevel` fired
+    /// — the boot STARTS the level; `false` = one of the C++'s early
+    /// returns, no game state set).
     ///
     /// (Rust has no overloading: the C++'s `init(bool, string, string)`
     /// overload lands under this name.)
-    pub fn init_command_line_level(&self, error: bool, pack: &str, level: &str) {
+    pub fn init_command_line_level(&self, error: bool, pack: &str, level: &str) -> bool {
         self.init(error);
-        self.load_command_line_level(pack, level);
+        self.load_command_line_level(pack, level)
     }
 
-    /// C++ `loadCommandLineLevel(pack, level)` (MenuGame.cpp:1688-1775),
+    /// C++ `loadCommandLineLevel(pack, level)` (MenuGame.cpp:1688-1780),
     /// ported over the `MenuAssets` seam. The C++ `lvlSlct.levelDataIds`
     /// is a POINTER into `assets.getLevelIdsByPack`; the port's drawer owns
     /// the copy (the seam returns an owned `Vec`), as in every other
     /// drawer port. The C++ channel name (sic `Menugame`) is kept.
+    ///
+    /// The C++'s LAST statement is `playSelectedLevel();` (:1778) — the
+    /// `-p -l` boot STARTS the level immediately ("to immediately run
+    /// level", the C++'s own `-p`/`-l` doc, main.cpp:96-97,:104-105);
+    /// the port fires the same `new_game` seam (`play_selected_level`,
+    /// the C++ `fnHGNewGame` — `hg.newGame(...)` + the game state switch,
+    /// main.cpp:442-449). The failure paths (the early returns) never
+    /// reach it, exactly as in the C++.
     pub fn load_command_line_level(&self, pack: &str, level: &str) -> bool {
         // C++ MenuGame.cpp:1695-1710: scan `getPackDatas()` for the pack
         // whose NAME matches the argument.
@@ -2305,6 +2316,11 @@ impl MenuGame {
             s.reset_level_names_scrolls(); // C++ `resetNamesScrolls()`
             s.change_state_to(States::LevelSelection);
         }
+        // C++ MenuGame.cpp:1778 — the tail `playSelectedLevel();`: the
+        // boot starts the level now (the C++'s `fnHGNewGame` — the
+        // `new_game` seam's `hg.newGame(...)` + the game-state switch,
+        // main.cpp:442-449).
+        self.shared.borrow_mut().play_selected_level();
         true
     }
 

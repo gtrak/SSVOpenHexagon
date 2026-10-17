@@ -101,9 +101,14 @@
 //!   the port's switch lands at the start of the next frame's first tick
 //!   instead of mid-draw — a ≤1-frame difference on an error path no
 //!   shipped level takes.
-//! * **Boot-dispatch null states** — the C++ `-p -l` path
-//!   (`main.cpp:507-511`: `mg->init` only) and the replay decompress-failure
-//!   path (`main.cpp:488-492`: log + `return`) NEVER call
+//! * **Boot-dispatch null states** — the C++ `-p -l` SUCCESS path
+//!   (`main.cpp:507-511`: `mg->init` → `loadCommandLineLevel` whose tail
+//!   `playSelectedLevel`, MenuGame.cpp:1778, fires `fnHGNewGame` →
+//!   `window->setGameState(hg.getGame())`, main.cpp:442-449) sets the game
+//!   state; only the `-p -l` FAILURE path (the `loadCommandLineLevel`
+//!   early returns, MenuGame.cpp:1701-1765 — invalid pack / no levels /
+//!   invalid level / no profiles) and the replay decompress-failure path
+//!   (`main.cpp:488-492`: log + `return`) NEVER call
 //!   `window->setGameState`, leaving the engine's `gameState` null — the
 //!   first frame's `assert(isValid())` (GameEngine.hpp:41) then fires. The
 //!   port points the window at the MENU state on both paths (documented
@@ -2561,8 +2566,9 @@ impl WindowedClient {
         }
     }
 
-    /// C++ `main.cpp:471-537` — the boot dispatch (module docs: the two
-    /// null-state deviations).
+    /// C++ `main.cpp:471-537` — the boot dispatch (module docs: the
+    /// null-state deviations — the `-p -l` FAILURE path + the replay
+    /// decompress-failure path).
     pub fn boot(
         &self,
         cli_level_pack: Option<&str>,
@@ -2614,17 +2620,29 @@ impl WindowedClient {
                     // *cliLevelName)` — its `init(false)` half carries the
                     // `MenuGame::init` Steam lines (MenuGame.cpp:793-794;
                     // the composition's lifecycle-point equivalent,
-                    // issue 020).
+                    // issue 020). The tail `loadCommandLineLevel` →
+                    // `playSelectedLevel()` (MenuGame.cpp:1778) fires the
+                    // `fnHGNewGame` seam (main.cpp:442-449: `hg.newGame(
+                    // ...)` + `window->setGameState(hg.getGame())`), so a
+                    // SUCCESSFUL boot lands in the Game slot — the `-p -l`
+                    // "immediately run level" behavior, main.cpp:96-97,
+                    // :104-105.
                     self.steam.set_rich_presence_in_menu();
                     self.steam.update_hardcoded_achievements();
-                    self.menu.init_command_line_level(false, pack, level);
+                    let booted = self.menu.init_command_line_level(false, pack, level);
                     self.menu_rich_presence(); // C++ mg->init's Discord lines (:796)
-                                               // DOCUMENTED DEVIATION (module docs): the C++ sets no
-                                               // state here either (null `gameState` → first-frame
-                                               // assert); the port points the window at the menu (the
-                                               // `loadCommandLineLevel` tail left it in
-                                               // `LevelSelection`, MenuGame.cpp:1773).
-                    self.engine.set_game_state(GameSlot::Menu);
+                    if !booted {
+                        // DOCUMENTED DEVIATION (module docs): the C++
+                        // FAILURE path (the `loadCommandLineLevel` early
+                        // returns — invalid pack / no levels / invalid
+                        // level / no profiles, MenuGame.cpp:1701-1765 —
+                        // BEFORE the `playSelectedLevel` tail) leaves
+                        // `gameState` null (the first frame's
+                        // `assert(isValid())` would fire); the port
+                        // points the window at the menu (the tail left
+                        // it in `LevelSelection`, MenuGame.cpp:1775).
+                        self.engine.set_game_state(GameSlot::Menu);
+                    }
                 } else {
                     // C++ main.cpp:514-515 — "Start game as normal".
                     goto_menu();

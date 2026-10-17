@@ -3,6 +3,7 @@
 //! `return_to_level_selection`) — the target of the C++ `main.cpp` boot
 //! dispatch (`main.cpp:436-462` callbacks + `main.cpp:488-525` dispatch).
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use oh_menu::layout::LinearFontHeight;
@@ -69,11 +70,93 @@ fn load_command_line_level_selects_and_lands_in_level_selection() {
 
     assert!(menu.load_command_line_level("cube", "cube2"));
 
-    // C++ `loadCommandLineLevel` tail (MenuGame.cpp:1756-1773): the boot ends
-    // in `LevelSelection` with the requested level selected.
+    // C++ `loadCommandLineLevel` tail (MenuGame.cpp:1756-1775): the boot ends
+    // in `LevelSelection` with the requested level selected. The tail's
+    // `playSelectedLevel()` (MenuGame.cpp:1778) is a no-op here — this
+    // menu's `new_game` seam is `None` (the C++'s
+    // `if(fnHGNewGame)` guard, MenuGame.cpp:2370).
     assert_eq!(menu.state(), States::LevelSelection);
     assert_eq!(menu.selected_level_id(), "cube_cube2");
     assert_eq!(menu.selected_level_index(), 1);
+}
+
+/// 29b4: the C++ `loadCommandLineLevel`'s LAST statement is
+/// `playSelectedLevel();` (MenuGame.cpp:1778) — the `-p -l` boot STARTS
+/// the level (the `fnHGNewGame` seam, main.cpp:442-449). The tail fires
+/// the ACTIVE drawer's level (the one the tail just selected) with
+/// `firstPlay = true` / `executeLastReplay = false` and the level's
+/// `diffMultIdx` (0) difficulty mult.
+#[test]
+fn load_command_line_level_tail_starts_the_level_via_the_new_game_seam() {
+    let assets: Rc<dyn MenuAssets> = {
+        let fa = FakeAssets::new();
+        fa.add_pack("cube", &["cube1", "cube2", "cube3"]);
+        fa.add_profile("P1");
+        fa
+    };
+    let config: Rc<dyn MenuConfig> = FakeConfig::new();
+    let audio = RecordingAudio::new();
+    #[derive(Clone, PartialEq, Debug)]
+    struct NewGameCall {
+        pack: String,
+        level: String,
+        first_play: bool,
+        diff_mult: f32,
+        execute_last_replay: bool,
+    }
+    let fired: Rc<RefCell<Vec<NewGameCall>>> = Rc::new(RefCell::new(Vec::new()));
+    let fired_cb = fired.clone();
+    let cb: Option<NewGameCallback> = Some(Box::new(move |pack, level, fp, dm, elr| {
+        fired_cb.borrow_mut().push(NewGameCall {
+            pack: pack.to_string(),
+            level: level.to_string(),
+            first_play: fp,
+            diff_mult: dm,
+            execute_last_replay: elr,
+        });
+    }));
+    let menu = MenuGame::new(
+        assets,
+        config,
+        Rc::new(NoopNetwork),
+        audio,
+        Rc::new(NoopTouch),
+        Rc::new(NoMenuJoystick),
+        FakeWindow::new(),
+        cb,
+        None,
+        None,
+        None,
+        None, // `unlock_achievement` — the 29b2/29b8 Steam seam (None in the tests)
+        Rc::new(LinearFontHeight),
+    );
+    boot_to_profile_select(&menu);
+
+    assert!(menu.load_command_line_level("cube", "cube2"));
+
+    // The C++ tail `playSelectedLevel()` fired `fnHGNewGame` with the
+    // boot-selected level (the ACTIVE drawer — the regular `lvlSlct` here):
+    // pack id `cube`, the drawer's full level id `cube_cube2`,
+    // `firstPlay = true`, the level's `diffMultIdx` difficulty mult — the
+    // tail's `setIndex` already set `diffMultIdx` to the 1.0× index
+    // (the C++ `setIndex`'s "1.0×" reset, MenuGame.cpp:3054-3055 — the
+    // FakeAssets mults `[0.5, 1.0, 1.5, 2.0]`'s 1.0), `executeLastReplay
+    // = false`.
+    assert_eq!(
+        *fired.borrow(),
+        vec![NewGameCall {
+            pack: "cube".to_string(),
+            level: "cube_cube2".to_string(),
+            first_play: true,
+            diff_mult: 1.0,
+            execute_last_replay: false,
+        }],
+    );
+    // The menu state is the tail's pre-play state (the C++ `playSelectedLevel`
+    // changes no menu state — the window's game-state switch is the
+    // `fnHGNewGame` seam's job, main.cpp:446-448).
+    assert_eq!(menu.state(), States::LevelSelection);
+    assert_eq!(menu.selected_level_id(), "cube_cube2");
 }
 
 #[test]
