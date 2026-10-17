@@ -1159,22 +1159,22 @@ impl<S: SharedStore> HexagonGame<S> {
         if e.must_spawn_pb_particles {
             e.next_pb_particle_spawn -= m_ft;
             if e.next_pb_particle_spawn <= 0.0_f32 {
-                // C++ `makePBParticle` (draw order: position, rotation,
-                // scale, alpha, velocity x, velocity y, angularVelocity).
+                // C++ `makePBParticle` (HGUpdate.cpp:944-955) — ONE
+                // pcg32_fast stream drawn in this exact order: position x,
+                // rotation, scale, alpha (int), velocity x, velocity y,
+                // angularVelocity. (y is the fixed `-64.f`; the color
+                // comes from `getColorMain`, an RNG-free read.)
+                let position_x = self.0.cosmetic_rng.get_rnd_r(-64.0_f32, width + 64.0_f32);
+                let rotation_deg = self.0.cosmetic_rng.get_rnd_r(0.0_f32, 360.0_f32);
+                let scale = self.0.cosmetic_rng.get_rnd_r(0.75_f32, 1.35_f32);
                 let color = {
                     let mut c = self.get_color_main();
                     c.a = self.0.cosmetic_rng.get_rnd_i(90, 145) as u8;
                     c
                 };
-                let position = Vec2::new(
-                    self.0.cosmetic_rng.get_rnd_r(-64.0_f32, width + 64.0_f32),
-                    -64.0_f32,
-                );
-                let rotation_deg = self.0.cosmetic_rng.get_rnd_r(0.0_f32, 360.0_f32);
-                let scale = self.0.cosmetic_rng.get_rnd_r(0.75_f32, 1.35_f32);
                 let p = Particle {
                     sprite: SpriteState {
-                        position,
+                        position: Vec2::new(position_x, -64.0_f32),
                         rotation_deg,
                         scale: Vec2::new(scale, scale),
                         color,

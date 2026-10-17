@@ -58,8 +58,8 @@ use oh_data::{MusicData, PackData, StyleData};
 use oh_game::hexagon_game::HexagonGame;
 use oh_game::lua_state::{GameApi, ReentrantMutex};
 use oh_game::seams::{
-    Joystick, NoJoystick, NoneSteamSink, NullReplayStore, PcgCosmeticRng, Profiles, ReplayStore,
-    ScriptError, ScriptHost,
+    CosmeticRng, Joystick, NoJoystick, NoneSteamSink, NullReplayStore, PcgCosmeticRng, Profiles,
+    ReplayStore, ScriptError, ScriptHost,
 };
 use oh_game::{HexagonGameStatus, LevelStatus};
 use oh_lua::api::callbacks;
@@ -484,12 +484,14 @@ pub fn compose(assets: Arc<oh_assets::Assets>, root: PathBuf, window: bool) -> C
         Arc::new(TestProfiles),
         Arc::new(NullReplayStore),
         Arc::new(NoJoystick),
+        Arc::new(PcgCosmeticRng::new()),
     )
 }
 
-/// [`compose`] with injectable `Profiles` / `ReplayStore` / `Joystick`
-/// seams — the form tests that observe the engine's profile-dependent
-/// paths (issue 029m 29d1: the `go_to_menu` score send) use. `window` /
+/// [`compose`] with injectable `Profiles` / `ReplayStore` / `Joystick` /
+/// `CosmeticRng` seams — the form tests that observe the engine's
+/// profile-dependent paths (issue 029m 29d1: the `go_to_menu` score send)
+/// and its cosmetic-RNG draw order (29d2: `makePBParticle`) use. `window` /
 /// `root` mean the same as in [`compose`]. `allow(dead_code)`: each test
 /// binary compiles this module separately and not all of them use this
 /// parameterized variant.
@@ -502,6 +504,7 @@ pub fn compose_with(
     profiles: Arc<dyn Profiles>,
     replay_store: Arc<dyn ReplayStore>,
     joystick: Arc<dyn Joystick>,
+    cosmetic_rng: Arc<dyn CosmeticRng>,
 ) -> Composed {
     let config = Arc::new(RwLock::new(Config::default()));
     // Heap-pinned before the `SharedLua` capture (see the `lua` field docs
@@ -519,7 +522,7 @@ pub fn compose_with(
         replay_store,
         host.clone() as Arc<dyn ScriptHost>,
         joystick,
-        Arc::new(PcgCosmeticRng::new()),
+        cosmetic_rng,
         window,
         None, // C++ headless tests: no renderer
         None, // C++ headless tests: no Discord manager
