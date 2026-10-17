@@ -21,6 +21,19 @@ use mlua::{MultiValue, Value};
 use crate::context::LuaContext;
 use crate::error::LuaError;
 
+/// `mlua::Integer` is **`i64` on the `backend-luajit` build but `i32` on
+/// `backend-luau`**, so an `i32` callback argument needs a real widening on one
+/// backend and is already exact on the other. One expression has to serve both,
+/// so `into()` stays and the configuration-dependent `useless_conversion` lint is
+/// silenced here, once, with this justification — found by 030c as a latent gate
+/// hole (the default-features clippy never saw the Luau configuration) and now
+/// gated by `tools/lua-parity.sh` stage 7.
+#[inline]
+#[allow(clippy::useless_conversion)]
+fn callback_int(v: i32) -> mlua::Integer {
+    v.into()
+}
+
 /// C++ `runLuaFunctionIfExists<T>`: skip (→ `None`) when the global does not
 /// exist or is `nil`; otherwise call it with `args` and read one return
 /// value (a `nil` return is `None`, matching the C++ nil coercion to the
@@ -81,7 +94,7 @@ pub fn call_on_input(
 ) -> Result<bool, LuaError> {
     let args = MultiValue::from_vec(vec![
         Value::Number(ft.into()),
-        Value::Integer(movement.into()),
+        Value::Integer(callback_int(movement)),
         Value::Boolean(focused),
         Value::Boolean(swap),
     ]);
@@ -127,7 +140,7 @@ pub fn call_on_cursor_swap(ctx: &LuaContext) -> Result<(), LuaError> {
 /// (`RenderStage`), `ft` = `60 / FPS`.
 pub fn call_on_render_stage(ctx: &LuaContext, render_stage: i32, ft: f32) -> Result<i32, LuaError> {
     let args = MultiValue::from_vec(vec![
-        Value::Integer(render_stage.into()),
+        Value::Integer(callback_int(render_stage)),
         Value::Number(ft.into()),
     ]);
     Ok(call_lua_function::<i32>(ctx, "onRenderStage", args)?.unwrap_or(0))

@@ -139,6 +139,23 @@ if ! timeout "$TIMEOUT" cargo test -q -p oh-parity --no-default-features \
     step_fail "cpp-fingerprint vectors under Luau (first divergent frame is in the log)"
 fi
 
+# ---------------------------------------------------------------------------
+# 7. The Luau configuration must also be CLIPPY-CLEAN. Gate stage 3 runs clippy
+#    on the DEFAULT features (LuaJIT) only, so a lint that fires only under
+#    `backend-luau` stays invisible until the day the default is flipped - which
+#    is exactly what 030c found: `useless_conversion` in
+#    crates/oh-lua/src/api/callbacks.rs (mlua::Integer is i64 on LuaJIT and i32
+#    on Luau, so one expression's `.into()` is a real widening on one backend and
+#    an identity on the other). Since the operator's direction is to unify on
+#    Luau, a red Luau clippy is a de-facto blocker for that switch, so it is
+#    gated here rather than discovered then.
+# ---------------------------------------------------------------------------
+note "clippy under the Luau backend (the non-default configuration)"
+if ! timeout "$TIMEOUT" cargo clippy -q -p oh-parity --no-default-features \
+    --features backend-luau --all-targets -- -D warnings; then
+    step_fail "clippy (backend-luau)"
+fi
+
 if [ "$fail" -eq 0 ]; then
     note "OK: $REPEATS runs per backend; A/B + repeats + probes all compared (artifacts under $CARGO_TARGET_DIR/lua-parity/)"
 else
