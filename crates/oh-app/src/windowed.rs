@@ -1916,33 +1916,33 @@ fn register_menu_binds(mgr: &mut Manager, menu: &Rc<MenuGame>, config: &Arc<RwLo
             Mode::Overlap,
         );
     }
-    // Hardcoded F1 (MenuGame.cpp:1019-1021): `addRemoveFavoriteLevel()` —
-    // the favorites-drawer half is the unported 13b detail.
-    mgr.add_input(
-        Trigger::key(Key::F1),
-        move |_ft| {
-            // TODO(010b-menu-favorite): C++ `addRemoveFavoriteLevel()`
-            // (MenuGame.cpp:1020) — the favorites toggle is the unported
-            // issue 13b detail.
-        },
-        |_| {},
-        Type::Once,
-        -1,
-        Mode::Overlap,
-    );
-    // Hardcoded F2 (MenuGame.cpp:1023-1025): `switchToFromFavoriteLevels()`.
-    mgr.add_input(
-        Trigger::key(Key::F2),
-        move |_ft| {
-            // TODO(010b-menu-favorites-toggle): C++
-            // `switchToFromFavoriteLevels()` (MenuGame.cpp:1024) — the
-            // favorites view switch is the unported issue 13b detail.
-        },
-        |_| {},
-        Type::Once,
-        -1,
-        Mode::Overlap,
-    );
+    // Hardcoded F1 (MenuGame.cpp:1003-1005): `addRemoveFavoriteLevel()`
+    // (29b1 — the favorites toggle, wired through the 029c1 profile
+    // store).
+    {
+        let m = menu.clone();
+        mgr.add_input(
+            Trigger::key(Key::F1),
+            move |_ft| m.add_remove_favorite_level(),
+            |_| {},
+            Type::Once,
+            -1,
+            Mode::Overlap,
+        );
+    }
+    // Hardcoded F2 (MenuGame.cpp:1007-1010): `switchToFromFavoriteLevels()`
+    // (29b1 — the favorites view switch).
+    {
+        let m = menu.clone();
+        mgr.add_input(
+            Trigger::key(Key::F2),
+            move |_ft| m.switch_to_from_favorite_levels(),
+            |_| {},
+            Type::Once,
+            -1,
+            Mode::Overlap,
+        );
+    }
     // Hardcoded F3/F4 (MenuGame.cpp:1027-1033): `reloadAssets(false/true)`
     // → the `MenuAssets::reload_assets` seam.
     {

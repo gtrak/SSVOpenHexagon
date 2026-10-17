@@ -197,6 +197,20 @@ pub trait MenuAssets {
     fn current_profile_name(&self) -> Option<String>;
     /// `getCurrentLocalProfile().isLevelFavorite(levelID)`.
     fn is_level_favorite(&self, level_id: &str) -> bool;
+    /// C++ `getCurrentLocalProfile().getFavoriteLevelIds()` — the
+    /// `changeFavoriteLevelsToProfile` rebuild source (MenuGame.cpp:
+    /// 4788-4791). No active profile: the C++ asserts; the port returns
+    /// the empty list (the `NullProfiles`-legacy arm, as
+    /// `is_level_favorite`).
+    fn favorite_level_ids(&self) -> Vec<String>;
+    /// C++ `getCurrentLocalProfile().addFavoriteLevel(mLevelID)` (F1's add
+    /// arm, MenuGame.cpp:4894). No active profile: the C++ asserts; the
+    /// port no-ops (the `NullProfiles`-legacy arm).
+    fn add_favorite_level(&self, level_id: &str);
+    /// C++ `getCurrentLocalProfile().removeFavoriteLevel(mLevelID)` (F1's
+    /// remove arm, MenuGame.cpp:4845). No active profile: the C++ asserts;
+    /// the port no-ops (the `NullProfiles`-legacy arm).
+    fn remove_favorite_level(&self, level_id: &str);
     // ---- profile editor (C++ `p*`, the shared `oh-assets` store) ----
     fn profile_set_current(&self, name: &str);
     fn profile_create(&self, name: &str);
@@ -667,7 +681,12 @@ pub struct FakeAssetsInner {
     pub load: LoadResults,
     pub profiles: Vec<String>,
     pub current_profile: Option<String>,
-    pub favorites: std::collections::BTreeSet<String>,
+    /// C++ "each profile has its own favorite levels" (MenuGame.cpp:
+    /// 4783-4784): profile name → that profile's favorite level ids
+    /// (the C++ `ProfileData::favoriteLevelsDataIDs` set, one per
+    /// profile — the flat pre-29b1 set mirrored ONE favorites list
+    /// across all profiles).
+    pub favorites: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     pub reload_log: Vec<(bool, String)>,
     /// C++ `pSaveCurrent()` call log — `Some(name)` = the save ran, `None`
     /// = the no-current-profile early return (the `play_locally` test
@@ -689,7 +708,7 @@ impl FakeAssets {
                 load: LoadResults::default(),
                 profiles: Vec::new(),
                 current_profile: None,
-                favorites: std::collections::BTreeSet::new(),
+                favorites: std::collections::BTreeMap::new(),
                 reload_log: Vec::new(),
                 profile_save_log: Vec::new(),
             }),
@@ -835,7 +854,39 @@ impl MenuAssets for FakeAssets {
         self.inner.borrow().current_profile.clone()
     }
     fn is_level_favorite(&self, level_id: &str) -> bool {
-        self.inner.borrow().favorites.contains(level_id)
+        let inner = self.inner.borrow();
+        inner
+            .current_profile
+            .as_deref()
+            .and_then(|n| inner.favorites.get(n))
+            .is_some_and(|s| s.contains(level_id))
+    }
+    fn favorite_level_ids(&self) -> Vec<String> {
+        let inner = self.inner.borrow();
+        inner
+            .current_profile
+            .as_deref()
+            .and_then(|n| inner.favorites.get(n))
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+    fn add_favorite_level(&self, level_id: &str) {
+        let mut inner = self.inner.borrow_mut();
+        if let Some(name) = inner.current_profile.clone() {
+            inner
+                .favorites
+                .entry(name)
+                .or_default()
+                .insert(level_id.to_string());
+        }
+    }
+    fn remove_favorite_level(&self, level_id: &str) {
+        let mut inner = self.inner.borrow_mut();
+        if let Some(name) = inner.current_profile.clone() {
+            if let Some(s) = inner.favorites.get_mut(&name) {
+                s.remove(level_id);
+            }
+        }
     }
     fn profile_set_current(&self, name: &str) {
         self.inner.borrow_mut().current_profile = Some(name.to_string());

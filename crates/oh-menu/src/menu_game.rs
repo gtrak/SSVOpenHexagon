@@ -440,6 +440,10 @@ impl Shared {
     /// C++ `getSelectablePackInfosSize()`.
     #[must_use]
     pub fn get_selectable_pack_infos_size(&self) -> usize {
+        // C++ :4981-4983 — the favorites list counts as a single pack.
+        if self.favorites_active {
+            return 1;
+        }
         self.assets.selectable_pack_ids().len()
     }
 
@@ -451,6 +455,144 @@ impl Shared {
     #[must_use]
     pub fn is_favorite_levels(&self) -> bool {
         self.favorites_active
+    }
+
+    /// C++ `addRemoveFavoriteLevel()` (MenuGame.cpp:4835-4931) — the F1 /
+    /// `(un)favorite` toggle: the level under the active drawer's index is
+    /// added to / removed from the current profile's favorites (the 029c1
+    /// store) and the favorites list / offsets / drawer switch follow the
+    /// C++ arm-by-arm.
+    pub fn add_remove_favorite_level(&mut self) {
+        // C++ :4836-4838 — the level under the active drawer's index (the
+        // port's drawer ids are the C++'s `packId + "_" + id` full ids, so
+        // the :4840 reconstruction is the entry itself).
+        let level_id = {
+            let d = if self.favorites_active {
+                &self.fav_slct
+            } else {
+                &self.lvl_slct
+            };
+            d.level_data_ids.get(d.current_index as usize).cloned()
+        };
+        let Some(level_id) = level_id else {
+            return;
+        };
+
+        // Level is a favorite so remove it.
+        if self.is_level_favorite {
+            self.assets.remove_favorite_level(&level_id);
+            // C++ :4845-4847.
+            self.fav_slct.level_data_ids.retain(|id| id != &level_id);
+            // C++ :4848.
+            self.fav_slct.lvl_offsets.pop();
+
+            // C++ :4850-4860 — the favorites index within bounds.
+            if !self.fav_slct.level_data_ids.is_empty() {
+                let n = self.fav_slct.level_data_ids.len() as i32;
+                self.fav_slct.current_index = self.fav_slct.current_index.clamp(0, n - 1);
+            } else {
+                self.fav_slct.current_index = 0;
+            }
+
+            // C++ :4862-4865.
+            if self.is_favorite_levels() {
+                self.adjust_levels_offset();
+            }
+
+            // C++ :4867-4888 — an empty list forces the exit from the
+            // favorites view; else the no-empty-space scroll test.
+            if self.fav_slct.level_data_ids.is_empty() {
+                // this way the menu is not drawn anymore.
+                self.fav_slct.x_offset = 0.0;
+                self.favorites_active = false;
+            } else {
+                let layout = self.level_selection_layout();
+                let scroll = self.h
+                    - (layout.pack_label_height
+                        + 2.0 * layout.slct_frame_size
+                        + layout.level_label_height * self.fav_slct.level_data_ids.len() as f32);
+                if scroll > self.fav_slct.y_offset {
+                    self.fav_slct.y_offset = scroll;
+                    self.fav_slct.y_scroll_to = scroll;
+                }
+            }
+
+            // C++ :4890-4892 — update the looks (on the possibly-switched
+            // active drawer; `set_index` re-derives `is_level_favorite`
+            // — the C++'s `setIndex` re-reads the profile there).
+            self.set_index(if self.favorites_active {
+                self.fav_slct.current_index
+            } else {
+                self.lvl_slct.current_index
+            });
+        } else {
+            // C++ :4893-4896.
+            self.assets.add_favorite_level(&level_id);
+            self.fav_slct.lvl_offsets.push(0.0);
+            self.is_level_favorite = true;
+
+            // C++ :4897-4924 — add the level to the favorites list keeping
+            // it sorted in (lowercased-name) alphabetical order.
+            let tweaked_fav_name = self
+                .assets
+                .level(&level_id)
+                .map(|l| l.name.to_lowercase())
+                .unwrap_or_default();
+            let pos = self.fav_slct.level_data_ids.iter().position(|id| {
+                self.assets
+                    .level(id)
+                    .map(|l| l.name.to_lowercase())
+                    .unwrap_or_default()
+                    > tweaked_fav_name
+            });
+            match pos {
+                Some(p) => self.fav_slct.level_data_ids.insert(p, level_id),
+                None => self.fav_slct.level_data_ids.push(level_id),
+            }
+
+            // C++ :4926-4927 — "Just in case."
+            let n = self.fav_slct.level_data_ids.len() as i32;
+            self.fav_slct.current_index = self.fav_slct.current_index.clamp(0, n - 1);
+        }
+
+        self.play_sound_override("select.ogg");
+    }
+
+    /// C++ `switchToFromFavoriteLevels()` (MenuGame.cpp:4933-4955) — the
+    /// F2 favorites-view switch (no-op without a favorites list or outside
+    /// the level selection).
+    pub fn switch_to_from_favorite_levels(&mut self) {
+        // C++ :4934-4937.
+        if self.state != States::LevelSelection || self.fav_slct.level_data_ids.is_empty() {
+            return;
+        }
+        // C++ :4940-4943 — quickly finish any ongoing pack changes.
+        if self.pack_change_state == PackChange::Folding {
+            self.change_pack();
+        }
+        self.pack_change_state = PackChange::Rest;
+        // C++ :4945-4946 — stop the outgoing drawer's scroll (the C++
+        // reads the pre-switch `lvlDrawer`).
+        let d = if self.favorites_active {
+            &mut self.fav_slct
+        } else {
+            &mut self.lvl_slct
+        };
+        d.y_scroll_to = d.y_offset;
+        self.pack_change_offset = 0.0;
+
+        // C++ :4950 — the switch.
+        self.favorites_active = !self.favorites_active;
+        // C++ :4951 — update the looks (on the NEW drawer).
+        self.set_index(if self.favorites_active {
+            self.fav_slct.current_index
+        } else {
+            self.lvl_slct.current_index
+        });
+        // C++ :4952-4954.
+        self.adjust_levels_offset();
+        self.reset_level_names_scrolls();
+        self.play_sound_override("select.ogg");
     }
 
     // ---- setIndex (§11.10) ----
@@ -749,16 +891,41 @@ impl Shared {
         };
     }
 
-    /// C++ `changeFavoriteLevelsToProfile()` — rebuild the favorites drawer
-    /// from the current profile's favorite level ids.
+    /// C++ `changeFavoriteLevelsToProfile()` (MenuGame.cpp:4781-4833) —
+    /// rebuild the favorites drawer from the current profile's favorite
+    /// level ids (each profile has its own favorites).
     pub fn change_favorite_levels_to_profile(&mut self) {
-        let fav = self.assets.current_profile_name().unwrap_or_default();
-        // The favorites id list is the current profile's favorite levels.
-        // `MenuAssets` exposes favorites through the current profile; the
-        // drawer's level list is recomputed on demand.
-        let _ = fav;
-        // Coarse: favorites list is derived from `assets` when entering the
-        // favorites view (see `switchToFromFavoriteLevels`, a 13b detail).
+        // C++ :4786-4792 — copy the profile's favorites into the list.
+        let ids = self.assets.favorite_level_ids();
+        // C++ :4794-4798 — sort by the lowercased level name.
+        let mut named: Vec<(String, String)> = ids
+            .into_iter()
+            .map(|id| {
+                (
+                    self.assets
+                        .level(&id)
+                        .map(|l| l.name.to_lowercase())
+                        .unwrap_or_default(),
+                    id,
+                )
+            })
+            .collect();
+        named.sort_by(|a, b| a.0.cmp(&b.0));
+        let fav_ids: Vec<String> = named.into_iter().map(|(_, id)| id).collect();
+
+        let sz = fav_ids.len() as i32;
+        // C++ :4804-4808 — no favorites: force the regular drawer.
+        if sz == 0 {
+            self.favorites_active = false;
+            return;
+        }
+        // C++ :4812 — the favorites index within boundaries.
+        self.fav_slct.current_index = self.fav_slct.current_index.clamp(0, sz - 1);
+        self.fav_slct.level_data_ids = fav_ids;
+        // C++ :4815 — resize the level offsets (the C++ `resize` keeps
+        // the existing values and value-initializes the new tail to
+        // `0.f` — `Vec::resize(len, 0.0)` matches).
+        self.fav_slct.lvl_offsets.resize(sz as usize, 0.0);
     }
 
     // ---- profile editing (okAction / eraseAction) ----
@@ -798,18 +965,31 @@ impl Shared {
         let Some(cb) = &self.new_game else {
             return;
         };
-        let drawer = &self.lvl_slct;
+        // C++ :2369-2383 — the ACTIVE drawer (`lvlDrawer`), not always
+        // `lvlSlct`: with the favorites view on, the played level / pack
+        // come from `favSlct` (the C++'s `levelData` lookup of
+        // `lvlDrawer->levelDataIds->at(lvlDrawer->currentIndex)` — the
+        // diff-mult half, `levelData->getNthDiffMult(diffMultIdx)`).
+        let (pack_idx, level_id) = {
+            let d = if self.favorites_active {
+                &self.fav_slct
+            } else {
+                &self.lvl_slct
+            };
+            (
+                d.pack_idx,
+                d.level_data_ids
+                    .get(d.current_index as usize)
+                    .cloned()
+                    .unwrap_or_default(),
+            )
+        };
         let pack_id = self
-            .get_nth_selectable_pack_id(drawer.pack_idx)
-            .unwrap_or_default();
-        let level_id = drawer
-            .level_data_ids
-            .get(drawer.current_index as usize)
-            .cloned()
+            .get_nth_selectable_pack_id(pack_idx)
             .unwrap_or_default();
         let diff_mult = self
-            .current_level
-            .as_ref()
+            .assets
+            .level(&level_id)
             .map_or(1.0, |l| l.get_nth_diff_mult(self.diff_mult_idx));
         cb(&pack_id, &level_id, true, diff_mult, false);
     }
@@ -1694,6 +1874,20 @@ impl MenuGame {
         self.shared.borrow_mut().change_pack_action(direction);
     }
 
+    /// C++ hardcoded `{{k::F1}}` bind (MenuGame.cpp:1003-1005) + the
+    /// `Jid::AddToFavorites` rising edge (MenuGame.cpp:2746-2749):
+    /// `addRemoveFavoriteLevel()`.
+    pub fn add_remove_favorite_level(&self) {
+        self.shared.borrow_mut().add_remove_favorite_level();
+    }
+
+    /// C++ hardcoded `{{k::F2}}` bind (MenuGame.cpp:1007-1010) + the
+    /// `Jid::FavoritesMenu` rising edge (MenuGame.cpp:2751-2754):
+    /// `switchToFromFavoriteLevels()`.
+    pub fn switch_to_from_favorite_levels(&self) {
+        self.shared.borrow_mut().switch_to_from_favorite_levels();
+    }
+
     /// C++ `isEnteringText()` (the input-gate half of the editable
     /// `Tid::Exit` bind, MenuGame.cpp:989-997).
     #[must_use]
@@ -2484,14 +2678,14 @@ impl MenuGame {
 
         // C++ `MenuGame::update`'s joystick `risingEdge` dispatch
         // (MenuGame.cpp:2737-2784) — the controller's menu control
-        // (29j1): pack change, the stick/dpad menu navigation, select /
-        // exit. Outside the `borrow_mut` block above: the action methods
-        // re-borrow `shared` (the touch-grid note below). The three
-        // favorites/screenshot arms keep the C++'s structure with the
-        // SAME documented no-ops the keyboard path's F1 / F2 /
-        // `Tid::Screenshot` binds carry (the unported issue 13b
-        // favorites view + the menu screenshot's draw-lane consumer,
-        // menu_draw's `mustTakeScreenshot`-always-false note).
+        // (29j1): pack change, the favorites toggle (29b1), the
+        // stick/dpad menu navigation, select / exit. Outside the
+        // `borrow_mut` block above: the action methods re-borrow
+        // `shared` (the touch-grid note below). The `Jid::Screenshot`
+        // arm keeps the C++'s structure with the same documented no-op
+        // the keyboard path's `Tid::Screenshot` bind carries (the menu
+        // screenshot's draw-lane consumer, menu_draw's
+        // `mustTakeScreenshot`-always-false note).
         {
             if joy.rising_edge(oh_config::Jid::NextPack) {
                 self.change_pack_action(1);
@@ -2499,13 +2693,16 @@ impl MenuGame {
                 self.change_pack_action(-1);
             }
 
-            // TODO(010b-menu-favorite): C++ `addRemoveFavoriteLevel()`
-            // (MenuGame.cpp:2747) — the favorites toggle is the unported
-            // issue 13b detail (the F1 keyboard bind's marker).
-            // TODO(010b-menu-favorites-toggle): C++
-            // `switchToFromFavoriteLevels()` (MenuGame.cpp:2752) — the
-            // favorites view switch is the unported issue 13b detail
-            // (the F2 keyboard bind's marker).
+            // C++ :2746-2749 / :2751-2754 — the two favorites arms are
+            // SEPARATE `if`s (both may fire in one frame, the C++'s
+            // structure).
+            if joy.rising_edge(oh_config::Jid::AddToFavorites) {
+                self.add_remove_favorite_level();
+            }
+            if joy.rising_edge(oh_config::Jid::FavoritesMenu) {
+                self.switch_to_from_favorite_levels();
+            }
+
             // TODO(010b-menu-screenshot): C++ `mustTakeScreenshot = true`
             // (MenuGame.cpp:2783) — the menu's screenshot consumer is the
             // unported `MenuGame::draw` lane (the `Tid::Screenshot`

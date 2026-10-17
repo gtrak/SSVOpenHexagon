@@ -677,6 +677,45 @@ impl Assets {
             .is_some_and(|p| p.is_level_favorite(level_id))
     }
 
+    /// C++ `getCurrentLocalProfile().getFavoriteLevelIds()` (the menu's
+    /// `changeFavoriteLevelsToProfile` rebuild source, MenuGame.cpp:
+    /// 4788-4791). No active profile: the C++ asserts; the port returns the
+    /// empty list (the `NullProfiles`-legacy arm, as `is_level_favorite`).
+    #[must_use]
+    pub fn get_favorite_level_ids(&self) -> Vec<String> {
+        let store = self.profiles.lock().expect("profile store poisoned");
+        store
+            .current
+            .as_deref()
+            .and_then(|n| store.profiles.get(n))
+            .map(|p| p.get_favorite_level_ids().iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// C++ `getCurrentLocalProfile().addFavoriteLevel(mLevelID)` (F1's add
+    /// arm, MenuGame.cpp:4894). No active profile: the C++ asserts; the port
+    /// no-ops (the `NullProfiles`-legacy arm).
+    pub fn add_favorite_level(&self, level_id: &str) {
+        let mut store = self.profiles.lock().expect("profile store poisoned");
+        if let Some(name) = store.current.clone() {
+            if let Some(p) = store.profiles.get_mut(&name) {
+                p.add_favorite_level(level_id);
+            }
+        }
+    }
+
+    /// C++ `getCurrentLocalProfile().removeFavoriteLevel(mLevelID)` (F1's
+    /// remove arm, MenuGame.cpp:4845). No active profile: the C++ asserts;
+    /// the port no-ops (the `NullProfiles`-legacy arm).
+    pub fn remove_favorite_level(&self, level_id: &str) {
+        let mut store = self.profiles.lock().expect("profile store poisoned");
+        if let Some(name) = store.current.clone() {
+            if let Some(p) = store.profiles.get_mut(&name) {
+                p.remove_favorite_level(level_id);
+            }
+        }
+    }
+
     // ------------------------------------------------------------------
     // PROFILE WRITE (C++ `saveCurrentLocalProfile` / `saveAllProfiles` /
     // `pCreate` / `pRemove` / `pSetCurrent`, Assets.cpp:1001-1058,

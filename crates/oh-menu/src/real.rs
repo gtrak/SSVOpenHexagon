@@ -160,6 +160,15 @@ impl MenuAssets for RealMenuAssets {
     fn is_level_favorite(&self, level_id: &str) -> bool {
         self.assets.is_level_favorite(level_id)
     }
+    fn favorite_level_ids(&self) -> Vec<String> {
+        self.assets.get_favorite_level_ids()
+    }
+    fn add_favorite_level(&self, level_id: &str) {
+        self.assets.add_favorite_level(level_id)
+    }
+    fn remove_favorite_level(&self, level_id: &str) {
+        self.assets.remove_favorite_level(level_id)
+    }
     fn profile_set_current(&self, name: &str) {
         self.assets.profile_set_current(name)
     }
