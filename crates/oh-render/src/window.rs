@@ -297,10 +297,20 @@ pub fn map_window_event(event: &WindowEvent) -> Option<Event> {
                 finger: touch.id as u32,
                 position: Vec2::new(touch.location.x as f32, touch.location.y as f32),
             },
-            winit::event::TouchPhase::Ended => Event::TouchEnded {
-                finger: touch.id as u32,
-            },
-            _ => return None,
+            // `Canceled` folds to the `Ended` arm (spec 31 §5's
+            // `pointercancel` — a canceled touch is a release): the C++
+            // SFML Android activity delivers `MotionEvent.ACTION_CANCEL`
+            // as a `TouchEnded` (the SFML window layer's touch-seam
+            // note, the `TouchEnded` arm's docs). The pre-fix `_ =>
+            // return None` discard left a PHANTOM down finger in the
+            // window's input state / the shared touch sink / the engine's
+            // rotation path — a stuck rotation (and, for issue 31's
+            // overlay, a stuck button) until the next real touch.
+            winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
+                Event::TouchEnded {
+                    finger: touch.id as u32,
+                }
+            }
         }),
         _ => None,
     }
@@ -422,6 +432,15 @@ pub struct Window {
     // finger is up. The field `None` = no sink (headless / pre-install).
     touch_position_sink:
         Option<std::sync::Arc<std::sync::RwLock<[Option<Vec2>; crate::input::FINGER_COUNT]>>>,
+    // issue 31 §1: the SHARED live input-state sink the engine's `Renderer`
+    // seam reads (`Renderer::is_key_pressed` / `is_mouse_button_pressed` —
+    // the C++ `u_isKeyPressed` / `u_isMouseButtonPressed`'s
+    // `window->getInputState()[...]` reads, HGScripting.cpp:92/:138). The
+    // windowed client installs it; every input-mutating `apply_event` arm
+    // republishes the window's current `InputState` into it (the liveness
+    // the C++ gets from reading the window's input state at call time).
+    // `None` = not installed (headless / pre-install frames).
+    input_state_sink: Option<std::sync::Arc<std::sync::RwLock<InputState>>>,
     // issue 025c: the SHARED release-edge sink the menu state's
     // `refresh_input` drains (the `ReleasedEdges` docs — the C++
     // `checkCloseBootScreens`'s event-driven seam; `None` = not
@@ -561,6 +580,7 @@ impl Window {
             ensure_android_gl_failed: false,
             finger_down_positions: std::collections::HashMap::new(),
             touch_position_sink: None,
+            input_state_sink: None,
             released_edges_sink: None,
             entered_text_sink: None,
             wheel_events_sink: None,
@@ -591,6 +611,23 @@ impl Window {
     fn with_released_sink(&self, f: impl FnOnce(&mut ReleasedEdges)) {
         if let Some(sink) = &self.released_edges_sink {
             f(&mut sink.write().expect("released sink poisoned"));
+        }
+    }
+
+    /// issue 31 §1: install the shared live input-state sink (the engine's
+    /// `Renderer::is_key_pressed` / `is_mouse_button_pressed` seam source —
+    /// the windowed client calls this once before the loop; every
+    /// input-mutating event fold republishes the window's `InputState`;
+    /// headless windows never get one).
+    pub fn set_input_state_sink(&mut self, sink: std::sync::Arc<std::sync::RwLock<InputState>>) {
+        self.input_state_sink = Some(sink);
+    }
+
+    /// The input-state sink's write half (the input-event republish —
+    /// `None` = no-op).
+    fn publish_input_state(&self) {
+        if let Some(sink) = &self.input_state_sink {
+            *sink.write().expect("input state sink poisoned") = self.input;
         }
     }
 
@@ -1031,18 +1068,27 @@ impl Window {
             Event::GainedFocus => window.focus = true,
             Event::LostFocus => {
                 window.input.reset();
+                window.publish_input_state();
                 window.focus = false;
             }
-            Event::KeyPressed { code, .. } => window.input.set_key_pressed(code, true),
+            Event::KeyPressed { code, .. } => {
+                window.input.set_key_pressed(code, true);
+                window.publish_input_state();
+            }
             Event::KeyReleased { code } => {
                 window.input.set_key_pressed(code, false);
+                window.publish_input_state();
                 window.with_released_sink(|edges| {
                     edges.keys.insert(code);
                 });
             }
-            Event::MouseButtonPressed { button } => window.input.set_button_pressed(button, true),
+            Event::MouseButtonPressed { button } => {
+                window.input.set_button_pressed(button, true);
+                window.publish_input_state();
+            }
             Event::MouseButtonReleased { button } => {
                 window.input.set_button_pressed(button, false);
+                window.publish_input_state();
                 window.with_released_sink(|edges| {
                     edges.buttons.insert(button);
                 });
@@ -1492,6 +1538,14 @@ mod tests {
         match map_window_event(&touch(winit::event::TouchPhase::Ended)).unwrap() {
             Event::TouchEnded { finger } => assert_eq!(finger, 3),
             other => panic!("expected TouchEnded, got {other:?}"),
+        }
+        // spec 31 §5's `pointercancel`: a CANCELED touch folds to the
+        // `Ended` arm (the C++ SFML Android activity's
+        // `ACTION_CANCEL` → `TouchEnded`; the pre-fix discard left a
+        // phantom down finger — the module's fold note).
+        match map_window_event(&touch(winit::event::TouchPhase::Cancelled)).unwrap() {
+            Event::TouchEnded { finger } => assert_eq!(finger, 3),
+            other => panic!("expected TouchEnded (the cancel fold), got {other:?}"),
         }
     }
 }

@@ -883,13 +883,19 @@ impl<S: SharedStore> HexagonGame<S> {
             return;
         }
 
-        let width_half = self.config().get_width() as f32 / 2.0_f32;
-        let positions = self
-            .0
-            .renderer
-            .as_ref()
-            .map(|r| r.finger_down_positions())
-            .unwrap_or_default();
+        // C++ `window->getRenderWindow().getSize().x / 2.f` (HGUpdate.
+        // cpp:598) — the ACTUAL render window's half-width, NOT the
+        // config's (the 025g lesson: a phone's 1530×678 window against
+        // its 1024×768 config — the pre-fix port's config width split
+        // the halves off-center on any windowed run; the C++-citation
+        // fix: the `Renderer` seam stands in for the C++'s `window`).
+        // No renderer (headless) — the zero half-width is never reached:
+        // the positions are empty there too (the C++'s
+        // `getFingerDownPositions` is window-backed).
+        let (width_half, positions) = match self.0.renderer.as_ref() {
+            Some(r) => (r.render_size().x / 2.0, r.finger_down_positions()),
+            None => (0.0, Vec::new()),
+        };
         for p in positions {
             {
                 let mut e = self.est();

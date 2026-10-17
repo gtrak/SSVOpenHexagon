@@ -226,15 +226,51 @@ struct WindowTouchRenderer {
         std::sync::RwLock<[Option<oh_math::ssvs::Vec2>; oh_render::input::FINGER_COUNT]>,
     >,
     fps_bits: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    /// issue 31 §1 — the window's LIVE `InputState` slot (the C++
+    /// `window->getInputState()` the `u_isKeyPressed` /
+    /// `u_isMouseButtonPressed` reads, HGScripting.cpp:92/:138): the
+    /// windowed client installs it on the window's event fold
+    /// (`Window::set_input_state_sink` — republished on every input
+    /// event), and the engine's `GameApi::is_key_pressed` /
+    /// `is_mouse_button_pressed` consult it through the `Renderer` seam
+    /// (the C++'s `window` stand-in). The raw-code subscripts are
+    /// bounds-checked in `InputState::is_key_pressed_code` /
+    /// `is_button_pressed_code` (the C++'s bitset `out_of_range` throw
+    /// becomes a defined `false`).
+    input_state: std::sync::Arc<std::sync::RwLock<oh_render::input::InputState>>,
+    /// issue 31 §2b — the gameplay touch overlay (the consumed-pointer
+    /// exclusion — the §2b double-count hazard: a finger held on an
+    /// overlay button must NOT also count as a screen-half rotation
+    /// finger; the C++'s rotation path reads ALL of
+    /// `getFingerDownPositions`, so the overlay's captured pointers are
+    /// filtered out of what this seam reports).
+    overlay: std::sync::Arc<std::sync::RwLock<crate::touch_overlay::TouchOverlay>>,
+    /// issue 31 — the actual-window-size slot (the C++
+    /// `window->getRenderWindow().getSize()` the touch controls'
+    /// half-split reads, HGUpdate.cpp:598 — the 025g lesson: the
+    /// ACTUAL window size, not the config's; `tick_fields` refreshes it
+    /// every frame, the `render_size` method's docs).
+    size: std::sync::Arc<RenderWindowSize>,
 }
 
 impl oh_game::renderer::Renderer for WindowTouchRenderer {
     fn finger_down_positions(&self) -> Vec<oh_math::ssvs::Vec2> {
+        // issue 31 §2b hazard (a) — the overlay's captured pointers are
+        // EXCLUDED (see the field's docs): the C++'s rotation path sees
+        // the remaining fingers only.
+        let consumed: std::collections::HashSet<u32> = self
+            .overlay
+            .read()
+            .expect("touch overlay poisoned")
+            .captured_ids()
+            .into_iter()
+            .collect();
         self.positions
             .read()
             .expect("touch sink poisoned")
             .iter()
-            .filter_map(|slot| *slot)
+            .enumerate()
+            .filter_map(|(i, slot)| slot.filter(|_| !consumed.contains(&(i as u32))))
             .collect()
     }
 
@@ -243,6 +279,33 @@ impl oh_game::renderer::Renderer for WindowTouchRenderer {
     // order (GameWindow.hpp:117-150: runDraw runs before runFPS).
     fn fps(&self) -> f32 {
         f32::from_bits(self.fps_bits.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
+    // C++ `window->getInputState()[ssvs::KKey(mKey)]` (HGScripting.cpp:92)
+    // — the window's live key state, the bounds-checked raw-code read.
+    fn is_key_pressed(&self, key_code: i32) -> bool {
+        self.input_state
+            .read()
+            .expect("input state sink poisoned")
+            .is_key_pressed_code(key_code)
+    }
+
+    // C++ `window->getInputState()[ssvs::MBtn(mKey)]` (HGScripting.cpp:
+    // 138) — the window's live button state, the bounds-checked
+    // raw-code read.
+    fn is_mouse_button_pressed(&self, button_code: i32) -> bool {
+        self.input_state
+            .read()
+            .expect("input state sink poisoned")
+            .is_button_pressed_code(button_code)
+    }
+
+    // C++ `window->getRenderWindow().getSize()` (HGUpdate.cpp:598 — the
+    // touch controls' half-split) — the actual window size's live
+    // slot (the 025g lesson: NOT the config's resolution).
+    fn render_size(&self) -> oh_math::ssvs::Vec2 {
+        let (w, h) = self.size.get();
+        oh_math::ssvs::Vec2::new(w, h)
     }
 }
 
@@ -1266,6 +1329,15 @@ struct GameSlotAdapter {
     /// (GameState.hpp:64-75) — the engine keyboard binds
     /// (HexagonGame.cpp:349-460, registered in `WindowedClient::build`).
     input_manager: Rc<RefCell<Manager>>,
+    /// issue 31 §2b — the gameplay touch overlay (the §2b mechanics'
+    /// docs: the `touch_overlay` module): this `update_input`'s apply
+    /// is the C++'s touch-controls position (HGUpdate.cpp:682 — after
+    /// the keyboard binds' per-tick re-apply, before the game's
+    /// `update_input`'s resolve + record) and its writes are the
+    /// additive set-if-held (the C++'s `setInputImplIfFalse` pattern,
+    /// generalized to the focus / swap buttons the C++'s rotation-only
+    /// touch controls lack).
+    touch_overlay: std::sync::Arc<std::sync::RwLock<crate::touch_overlay::TouchOverlay>>,
 }
 
 impl GameState for GameSlotAdapter {
@@ -1321,6 +1393,42 @@ impl GameState for GameSlotAdapter {
         // C++ `GameState::updateInput` (GameState.hpp:49-52 →
         // `inputManager.update`, Manager.hpp:32-45).
         self.input_manager.borrow_mut().update(input, ft);
+        // issue 31 §2b — the touch overlay's held inputs land LAST
+        // among the input writes (the C++'s touch controls' position —
+        // after the keyboard binds' per-tick re-apply; the `Type::
+        // Always` off-closures are the authoritative clear, so the
+        // additive set-if-held (the C++'s `setInputImplIfFalse`,
+        // HGUpdate.cpp:589-597) makes the effective value per tick the
+        // OR of keyboard and overlay — "exactly the C++-bound
+        // semantics", spec §2.3: no new input kind, the replay's
+        // record sees the same derived bits). The console gate mirrors
+        // the C++'s `updateInput`'s `imguiLuaConsoleHasInput()` early
+        // return (the game's own touch controls are gated the same
+        // way). The `Exit` edge's fire is the C++'s notInConsole-
+        // wrapped Escape binding (once per physical press, the menu's
+        // `go_to_menu(true, false)` contract — 029d1).
+        {
+            let mut o = self.touch_overlay.write().expect("touch overlay poisoned");
+            if o.active() && o.enabled() && !self.game.lua_console_has_input() {
+                if o.held(crate::touch_overlay::Button::RotateCCW) {
+                    self.game.set_input_impl_ccw(true);
+                }
+                if o.held(crate::touch_overlay::Button::RotateCW) {
+                    self.game.set_input_impl_cw(true);
+                }
+                if o.held(crate::touch_overlay::Button::Focus) {
+                    self.game.set_input_focused(true);
+                }
+                if o.held(crate::touch_overlay::Button::Swap) {
+                    self.game.set_input_swap(true);
+                }
+            }
+            let edges = o.take_press_edges();
+            if edges[crate::touch_overlay::Button::Exit.idx()] && !self.game.lua_console_has_input()
+            {
+                self.game.trigger_go_to_menu();
+            }
+        }
     }
 }
 
@@ -2090,6 +2198,33 @@ pub struct WindowedClient {
     /// value = the slot's `0.0f32.to_bits()` start (the first frame's
     /// FPS text renders "0" — the C++'s first-frame value).
     fps_bits: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    /// issue 31 — the gameplay touch overlay's state machine (the
+    /// module docs' §2b/§5 mechanics): the frame's feed + draw halves
+    /// drive / paint it, the game slot's per-tick apply reads its held
+    /// state (the bound-input writes), the engine's rotation path reads
+    /// its consumed pointers (the double-count hazard). `pub`: the
+    /// scripted-touch tests set the enable flag + inspect the state
+    /// (spec §4.1's in-process verification — the desktop's enable flag
+    /// is what the tests flip to exercise the overlay, spec §5).
+    pub touch_overlay: std::sync::Arc<std::sync::RwLock<crate::touch_overlay::TouchOverlay>>,
+    /// issue 31 — the overlay's on-screen buttons (the key-icon
+    /// textures + the exit label — the `tick_fields`'s draw half).
+    touch_overlay_buttons:
+        std::rc::Rc<std::cell::RefCell<crate::touch_overlay::TouchOverlayButtons>>,
+    /// issue 31 — the shared touch sink the overlay's pointer feed
+    /// diffs frame-to-frame (spec §5's "Android feeds it from the
+    /// existing shared touch sink" — the SAME sink the menu's 9-zone
+    /// grid + the engine's rotation path read; the diff's state lives
+    /// in `last_touch_positions`).
+    touch_positions: std::sync::Arc<
+        std::sync::RwLock<[Option<oh_math::ssvs::Vec2>; oh_render::input::FINGER_COUNT]>,
+    >,
+    /// issue 31 — the previous frame's touch sink (the pointer feed's
+    /// diff state: `None → Some` = a `Down`, `Some → None` = an `Up`;
+    /// a move is a no-op — pointer capture keeps the bound pointer on
+    /// its button, the `touch_overlay` module docs).
+    last_touch_positions:
+        std::cell::Cell<[Option<oh_math::ssvs::Vec2>; oh_render::input::FINGER_COUNT]>,
     /// Issue 014b — the egui console overlay's lazy slot (`None` until
     /// the first shown frame — `crate::lua_console_ui`'s module docs:
     /// Gates). Shared by the per-event hook (the C++'s
@@ -2230,10 +2365,52 @@ impl WindowedClient {
         // initial value, TimerBase.hpp:23 — `0.0f32.to_bits()`; the
         // client field's docs carry the loop-order semantics).
         let fps_bits = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0.0f32.to_bits()));
+        // issue 31 §1 — the window's live `InputState` slot (the C++
+        // `window->getInputState()` read surface for
+        // `u_isKeyPressed` / `u_isMouseButtonPressed`): installed on the
+        // window's event fold (the input-mutating arms republish the
+        // window's current state) and read by the engine through the
+        // renderer seam below (the seed = the window's state at install,
+        // the C++'s ctor-time window state).
+        let input_state = std::sync::Arc::new(std::sync::RwLock::new(*window.get_input_state()));
+        window.set_input_state_sink(input_state.clone());
+        // issue 31 §2b — the gameplay touch overlay's state machine
+        // (the module docs): the platform-neutral pointer-feed machine
+        // shared by the frame's feed + draw halves (the `tick_fields`
+        // halves below), the game slot's per-tick apply (the
+        // bound-input writes — the C++'s touch-controls position), and
+        // the engine's rotation path (the consumed-pointer exclusion —
+        // the §2b double-count hazard). Spec §5's enable flag: the
+        // winit pointer feed exists on the android target (the web
+        // target — issue 32 — sets it too); the desktop keeps it off
+        // (§4.4: the desktop build has no overlay and no behavior
+        // change — `WindowEvent::Touch` never arrives there either).
+        let touch_overlay = std::sync::Arc::new(std::sync::RwLock::new({
+            #[cfg(target_os = "android")]
+            {
+                let mut overlay = crate::touch_overlay::TouchOverlay::new();
+                overlay.set_enabled(true);
+                overlay
+            }
+            #[cfg(not(target_os = "android"))]
+            crate::touch_overlay::TouchOverlay::new()
+        }));
+        // issue 025g — the ACTUAL-window-size slot (the `RenderWindowSize`
+        // docs): created here (moved up from its former position below —
+        // the `WindowTouchRenderer`'s `render_size` seam half, the
+        // touch controls' half-split) and refreshed by `tick_fields`
+        // every frame.
+        let render_size = std::sync::Arc::new(RenderWindowSize::new(
+            window.get_width(),
+            window.get_height(),
+        ));
         let renderer: Option<std::sync::Arc<dyn oh_game::renderer::Renderer + 'static>> =
             Some(std::sync::Arc::new(WindowTouchRenderer {
-                positions: touch_sink,
+                positions: touch_sink.clone(),
                 fps_bits: fps_bits.clone(),
+                input_state,
+                overlay: touch_overlay.clone(),
+                size: render_size.clone(),
             }));
         // C++ main.cpp:264-269 — `discordManager.emplace()` (only when NOT
         // headless; the windowed path is always non-headless).
@@ -2436,11 +2613,6 @@ impl WindowedClient {
         // `window.getRenderWindow().getSize()` live value — the menu's
         // `MenuWindow` seam source; `tick_fields` refreshes it every frame
         // from the window's current size — the `RenderWindowSize` docs).
-        let render_size = std::sync::Arc::new(RenderWindowSize::new(
-            window.get_width(),
-            window.get_height(),
-        ));
-
         // 29i1 — the F3/F4 `ignoreAllInputs` deferral latch (the
         // `MenuSlotAdapter::ignore_all_pending` field's docs): the handler
         // fires inside the menu manager's `update`, so its callback can't
@@ -2564,6 +2736,7 @@ impl WindowedClient {
             return_to_menu: return_to_menu.clone(),
             engine_slot: engine_slot.clone(),
             input_manager: game_manager.clone(),
+            touch_overlay: touch_overlay.clone(),
         });
         let engine = Rc::new(GameEngine::new(menu_adapter, game_adapter));
         // The C++'s `window` pointer exists before the callbacks are wired
@@ -2594,6 +2767,12 @@ impl WindowedClient {
             game,
             config,
             fps_bits,
+            touch_overlay,
+            touch_overlay_buttons: Rc::new(RefCell::new(
+                crate::touch_overlay::TouchOverlayButtons::new(&assets_dir, font.clone()),
+            )),
+            touch_positions: touch_sink.clone(),
+            last_touch_positions: std::cell::Cell::new([None; oh_render::input::FINGER_COUNT]),
             steam,
             discord: Some(discord),
             engine_slot,
@@ -2783,6 +2962,10 @@ impl WindowedClient {
             game,
             config,
             fps_bits,
+            touch_overlay,
+            touch_overlay_buttons,
+            touch_positions,
+            last_touch_positions,
             engine_slot: _engine_slot,
             interrupt,
             _app_draw: app_draw,
@@ -2828,6 +3011,10 @@ impl WindowedClient {
                     &cursor_last_keys,
                     &fps_bits,
                     &app_draw,
+                    &touch_overlay,
+                    &touch_overlay_buttons,
+                    &touch_positions,
+                    &last_touch_positions,
                 )
             },
         );
@@ -2854,6 +3041,10 @@ impl WindowedClient {
             &self.cursor_last_keys,
             &self.fps_bits,
             &self._app_draw,
+            &self.touch_overlay,
+            &self.touch_overlay_buttons,
+            &self.touch_positions,
+            &self.last_touch_positions,
         )
     }
 
@@ -2877,6 +3068,10 @@ impl WindowedClient {
             &self.cursor_last_keys,
             &self.fps_bits,
             &self._app_draw,
+            &self.touch_overlay,
+            &self.touch_overlay_buttons,
+            &self.touch_positions,
+            &self.last_touch_positions,
         )
     }
 
@@ -2942,6 +3137,21 @@ impl WindowedClient {
         // `window->getFPS()`, HGGraphics.cpp:76) is refreshed from the
         // timer at the same `runFPS` position below.
         app_draw: &std::rc::Rc<std::cell::RefCell<crate::bridge::AppDraw>>,
+        // issue 31 — the gameplay touch overlay (the module docs): the
+        // feed half diffs `touch_positions` against `last_touch_positions`
+        // into the pointer feed before the update burst; the draw half
+        // paints the active buttons (the §2.5 layout) after the game's
+        // draw.
+        touch_overlay: &std::sync::Arc<std::sync::RwLock<crate::touch_overlay::TouchOverlay>>,
+        touch_overlay_buttons: &std::rc::Rc<
+            std::cell::RefCell<crate::touch_overlay::TouchOverlayButtons>,
+        >,
+        touch_positions: &std::sync::Arc<
+            std::sync::RwLock<[Option<oh_math::ssvs::Vec2>; oh_render::input::FINGER_COUNT]>,
+        >,
+        last_touch_positions: &std::cell::Cell<
+            [Option<oh_math::ssvs::Vec2>; oh_render::input::FINGER_COUNT],
+        >,
     ) {
         // C++ `while(gameEngine->isRunning())` loop head (GameWindow.hpp:
         // 121) — the SIGINT flag (the safe port of the C++ handler, main
@@ -3050,6 +3260,49 @@ impl WindowedClient {
             }
             cursor_last_mouse.set(Some(mp));
         }
+        // issue 31 — the gameplay touch overlay's per-frame feed + gate
+        // (spec §2b/§5): the pointer feed is the frame-to-frame diff of
+        // the shared touch sink's levels (spec §5's "Android feeds it
+        // from the existing shared touch sink" — a `None → Some` is a
+        // `Down` at the new position, a `Some → None` is an `Up`; a
+        // move is a no-op — pointer capture keeps the bound pointer on
+        // its button, the `touch_overlay` module docs). The gate is the
+        // spec's gameplay-only half (the buttons only while playing —
+        // the game slot's `started` and NOT `has_died` (not the menu /
+        // boot / results screens) and not a replay playback — spec
+        // §2.4/§2.5); deactivation clears every capture (the state
+        // transition's semantics, the module docs).
+        {
+            let (view_w, view_h) = render_size.get();
+            let positions = touch_positions.read().expect("touch sink poisoned");
+            let last = last_touch_positions.get();
+            let mut o = touch_overlay.write().expect("touch overlay poisoned");
+            let status = game.get_status();
+            o.set_active(
+                engine.current() == GameSlot::Game
+                    && status.started
+                    && !status.has_died
+                    && !game.in_replay(),
+            );
+            o.set_view(view_w, view_h);
+            for (i, (prev, cur)) in last.iter().zip(positions.iter()).enumerate() {
+                let id = i as u32;
+                match (prev, cur) {
+                    (None, Some(p)) => o.pointer_event(&crate::touch_overlay::PointerEvent {
+                        id,
+                        position: *p,
+                        phase: crate::touch_overlay::Phase::Down,
+                    }),
+                    (Some(_), None) => o.pointer_event(&crate::touch_overlay::PointerEvent {
+                        id,
+                        position: oh_math::ssvs::Vec2::new(0.0, 0.0),
+                        phase: crate::touch_overlay::Phase::Up,
+                    }),
+                    _ => {}
+                }
+            }
+            last_touch_positions.set(*positions);
+        }
         engine.refresh_input(input);
         timer.run_update(|ft| {
             engine.update_input(input, ft);
@@ -3089,6 +3342,32 @@ impl WindowedClient {
         if let Some(gl) = window.gl() {
             let mut target = GlDrawTarget::new(gl);
             engine.draw(&mut target);
+            // issue 31 — the overlay's buttons (the §2.5 layout: only
+            // while playing — the gate's draw half; after the game's
+            // draw, before the console's paint — a dev overlay may
+            // cover the controls, the controls must not cover the
+            // game). The buttons live in the VIEW's pixel space (the
+            // 025g lesson) — the `draw`'s 1:1 view; the ON state is the
+            // button's held state (the C++'s `drawKeyIcons`'s opacity
+            // pair, the module docs).
+            {
+                let o = touch_overlay.read().expect("touch overlay poisoned");
+                // The draw's gate = the operational gate (spec §5's
+                // "a pointer feed exists" + an enable flag + the
+                // gameplay-only half): a disabled overlay (the desktop —
+                // §4.4: no overlay, no behavior change) draws nothing
+                // even when the gameplay gate alone would pass.
+                if o.active() && o.enabled() {
+                    let (view_w, view_h) = render_size.get();
+                    touch_overlay_buttons.borrow_mut().draw(
+                        &mut target,
+                        &o,
+                        view_w,
+                        view_h,
+                        game.get_color_text(),
+                    );
+                }
+            }
             // C++ `drawImguiLuaConsole` (HGGraphics.cpp:318-336) — the
             // console's GL paint, the C++ `draw()`'s LAST step
             // (HGGraphics.cpp:315), after the game's own draw.

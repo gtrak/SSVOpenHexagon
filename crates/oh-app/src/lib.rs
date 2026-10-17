@@ -40,6 +40,13 @@
 //! poller (the gilrs backend for the C++ `sf::Joystick` controller-0
 //! read) shared between the engine's `Joystick` seam and the menu's
 //! `MenuJoystick` seam; Android/wasm keep the no-op seams.
+//!
+//! Issue 31: [`touch_overlay`] — the gameplay touch overlay (the
+//! operator's blocker: the tutorial's step-2 focus gate is unpassable
+//! on a touch-only device) — the platform-neutral pointer-feed state
+//! machine + the key-icon buttons, the D-034-class sanctioned
+//! deviation (the C++'s touch controls are rotation-only, HGUpdate.
+//! cpp:589).
 
 #[cfg(target_os = "android")]
 pub mod android;
@@ -59,4 +66,5 @@ pub mod print_lua_docs;
 pub mod replay_store;
 pub mod sigint;
 pub mod steam;
+pub mod touch_overlay;
 pub mod windowed;

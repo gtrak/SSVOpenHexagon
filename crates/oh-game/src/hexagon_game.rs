@@ -2747,13 +2747,35 @@ impl<S: SharedStore> crate::GameApi for HexagonGame<S> {
     }
 
     // -- input (C++ `window != nullptr && window->getInputState()[...]`) --
-    fn is_key_pressed(&self, _key_code: i32) -> bool {
-        // C++ `window->getInputState()[...]` — no window in this port.
-        false
+    /// C++ `u_isKeyPressed` (HGScripting.cpp:89-98): the window's LIVE
+    /// key state, read through the `Renderer` seam (the C++'s `window`
+    /// stand-in — the windowed composition's renderer publishes the
+    /// window's `InputState` per input event; the raw `int` code is the
+    /// C++'s `ssvs::KKey(mKey)` subscript, bounds-checked in
+    /// `InputState::is_key_pressed_code`). `false` when there is no
+    /// renderer — the C++'s `window == nullptr` headless half (the port's
+    /// defined headless behavior: the read is the C++'s `false` from
+    /// `window != nullptr && ...`, deterministic — the C++'s window is
+    /// always present in the port's windowed composition, so the only
+    /// `false`-by-absence case is a renderer-less composition, i.e.
+    /// headless).
+    fn is_key_pressed(&self, key_code: i32) -> bool {
+        self.0
+            .renderer
+            .as_ref()
+            .map(|r| r.is_key_pressed(key_code))
+            .unwrap_or(false)
     }
 
-    fn is_mouse_button_pressed(&self, _button_code: i32) -> bool {
-        false
+    /// C++ `u_isMouseButtonPressed` (HGScripting.cpp:135-141) — the same
+    /// seam's button half (the `false`-when-headless note is the
+    /// `is_key_pressed` one's).
+    fn is_mouse_button_pressed(&self, button_code: i32) -> bool {
+        self.0
+            .renderer
+            .as_ref()
+            .map(|r| r.is_mouse_button_pressed(button_code))
+            .unwrap_or(false)
     }
 
     // -- logging ----------------------------------------------------------

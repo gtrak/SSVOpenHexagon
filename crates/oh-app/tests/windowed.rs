@@ -1057,3 +1057,352 @@ fn the_app_draw_fps_tracks_the_timer_fps() {
         "AppDraw.fps IS the C++'s window->getFPS() (the frametime's divisor)"
     );
 }
+
+// ---------------------------------------------------------------------
+// Issue 31 — the gameplay touch overlay (spec §2b/§5): the platform-
+// neutral pointer feed over the existing shared touch sink drives the
+// bound inputs (focus / swap / rotation) + the §2.6 exit affordance,
+// gameplay-only, with the §2b double-count exclusion. The desktop's
+// enable flag (spec §5) is what the tests flip to exercise the overlay
+// in-process (spec §4.1) — the real device run is MANUAL (spec §4.3).
+// ---------------------------------------------------------------------
+
+/// A touch finger down at `view` pixels (the winit `TouchPhase::Started`
+/// fold — the same event the Android HAL delivers; the window's fold
+/// updates the shared touch sink the overlay's feed diffs).
+fn touch_down(client: &mut WindowedClient, finger: u32, x: f32, y: f32) {
+    Window::apply_event(
+        &mut client.window,
+        oh_render::window::Event::TouchBegan {
+            finger,
+            position: oh_render::Vec2::new(x, y),
+        },
+    );
+}
+
+fn touch_up(client: &mut WindowedClient, finger: u32) {
+    Window::apply_event(
+        &mut client.window,
+        oh_render::window::Event::TouchEnded { finger },
+    );
+}
+
+/// The test window's (1920×1080 — `windowed_client`) view-space button
+/// centers (the `touch_overlay::button_centers` layout: focus =
+/// `w*0.5 - 40`, the bottom row's `h - PAD - BUTTON_HALF` = 1036; the
+/// CCW corner's `PAD + BUTTON_HALF` = 44).
+const FOCUS_XY: (f32, f32) = (920.0, 1036.0);
+const CCW_XY: (f32, f32) = (44.0, 1036.0);
+const EXIT_XY: (f32, f32) = (44.0, 44.0);
+
+/// Boots to the level selection, starts the level (the scripted Enter —
+/// the C++ `fnHGNewGame`), and starts it (`must_start`), with the
+/// overlay's enable flag flipped (spec §5's desktop test exercise).
+fn start_level_with_overlay(client: &mut WindowedClient) {
+    boot_to_level_selection(client);
+    set_key(client, Key::ENTER, true);
+    tick(client);
+    set_key(client, Key::ENTER, false);
+    assert_eq!(client.engine.current(), GameSlot::Game);
+    client
+        .touch_overlay
+        .write()
+        .expect("touch overlay poisoned")
+        .set_enabled(true);
+    client.game.set_must_start(true);
+    // One tick: the `must_start` → `start()` (the overlay's gate reads
+    // `status.started` at the NEXT frame's feed — the gate's
+    // per-frame refresh, the module docs).
+    tick(client);
+    assert!(client.game.get_status().started);
+}
+
+#[test]
+fn the_touch_overlay_focus_button_drives_the_bound_focus_input() {
+    let (mut client, _sandbox) = sandboxed_windowed_client(None);
+    start_level_with_overlay(&mut client);
+
+    // The FOCUS button (the tutorial's step-2 blocker — the C++'s
+    // `inputFocused` the `mFocus` tutorial variable reads).
+    touch_down(&mut client, 0, FOCUS_XY.0, FOCUS_XY.1);
+    tick(&mut client);
+    assert!(
+        client.game.get_input_focused(),
+        "the held focus button drives the bound focus input (the C++-bound semantics — spec §2.3)"
+    );
+    assert!(
+        !client.game.get_input_impl_ccw(),
+        "§2b hazard (a): the focus finger is CONSUMED — it must not also count as a left-half rotation finger (x=920 < the 960 half-width)"
+    );
+    // Spec §2.3/§2b — the replay safety: the recorded input is the
+    // DERIVED bit (the focus bit 3), not a new event kind — a
+    // touch-generated replay decodes identically on desktop.
+    let data = client.game.last_replay_data();
+    assert!(
+        data.at(data.size() - 1).focus(),
+        "the focus bit records into the replay data (the derived-bit replay safety)"
+    );
+
+    // Release: the keyboard's `Type::Always` off-closure (the
+    // authoritative clear — no keyboard on the test device) takes the
+    // bit back on the next tick.
+    touch_up(&mut client, 0);
+    tick(&mut client);
+    assert!(
+        !client.game.get_input_focused(),
+        "release clears the bound input"
+    );
+    let data = client.game.last_replay_data();
+    assert!(!data.at(data.size() - 1).focus());
+}
+
+/// The step-2 shape (spec §2b): finger A holds focus while finger B
+/// rotates — BOTH register simultaneously (the multi-touch refcount),
+/// and each release clears only its own button.
+#[test]
+fn the_touch_overlay_focus_and_rotate_register_simultaneously() {
+    let (mut client, _sandbox) = sandboxed_windowed_client(None);
+    start_level_with_overlay(&mut client);
+
+    touch_down(&mut client, 0, FOCUS_XY.0, FOCUS_XY.1);
+    touch_down(&mut client, 1, CCW_XY.0, CCW_XY.1);
+    tick(&mut client);
+    assert!(client.game.get_input_focused());
+    assert_eq!(
+        client.game.get_input_movement(),
+        -1,
+        "the rotate finger (x=44 < the 960 half) drives the bound CCW input — focus AND rotate at once"
+    );
+
+    // The rotate tap lifts (the refcount: the focus finger keeps its
+    // button; the rotate button clears) — the C++'s
+    // `updateInput_ResolveInputImplToInputMovement` then sees the
+    // focus-only state (no movement) exactly as a keyboard focus-only
+    // hold would.
+    touch_up(&mut client, 1);
+    tick(&mut client);
+    assert!(
+        client.game.get_input_focused(),
+        "the focus finger still holds"
+    );
+    assert_eq!(
+        client.game.get_input_movement(),
+        0,
+        "the lifted rotate finger clears its button (no movement)"
+    );
+
+    touch_up(&mut client, 0);
+    tick(&mut client);
+    assert!(!client.game.get_input_focused());
+}
+
+/// The C++'s screen-half rotation path survives the overlay (the §4.4
+/// regression: a finger OFF every button is a rotation finger exactly
+/// as today — the overlay only consumes the fingers IT captured).
+#[test]
+fn a_touch_off_the_buttons_still_rotates_via_the_screen_half_path() {
+    let (mut client, _sandbox) = sandboxed_windowed_client(None);
+    start_level_with_overlay(&mut client);
+
+    // (200, 200): no button there (the exit's rect is 12..76 × 12..76;
+    // the bottom row is at y=1004..1068) — the C++'s left-half finger.
+    touch_down(&mut client, 0, 200.0, 200.0);
+    tick(&mut client);
+    assert!(
+        client.game.get_input_impl_ccw(),
+        "a free left-half finger still rotates CCW (the C++'s rotation path, unmodified)"
+    );
+    assert!(!client.game.get_input_focused());
+    // The overlay consumed NOTHING (the finger hit no button — the
+    // rotation path saw it whole).
+    assert!(client
+        .touch_overlay
+        .read()
+        .expect("touch overlay poisoned")
+        .captured_ids()
+        .is_empty());
+    touch_up(&mut client, 0);
+    tick(&mut client);
+    assert!(!client.game.get_input_impl_ccw());
+}
+
+/// §2.4 — the overlay must not fire during menus (the gate's
+/// menu half: not the game slot → inactive → the events are ignored,
+/// no capture, the menu's 9-zone grid's sink is untouched — the
+/// exclusion only applies to the engine's rotation path, which the
+/// menu never reads).
+#[test]
+fn the_touch_overlay_is_inactive_during_the_menu() {
+    let (mut client, _sandbox) = sandboxed_windowed_client(None);
+    boot_to_level_selection(&mut client);
+    assert_eq!(client.engine.current(), GameSlot::Menu);
+    client
+        .touch_overlay
+        .write()
+        .expect("touch overlay poisoned")
+        .set_enabled(true);
+
+    touch_down(&mut client, 0, FOCUS_XY.0, FOCUS_XY.1);
+    tick(&mut client);
+    assert!(
+        !client
+            .touch_overlay
+            .read()
+            .expect("touch overlay poisoned")
+            .active(),
+        "the overlay does not fire during menus (spec §2.4)"
+    );
+    assert!(
+        client
+            .touch_overlay
+            .read()
+            .expect("touch overlay poisoned")
+            .captured_ids()
+            .is_empty(),
+        "no capture while inactive"
+    );
+
+    // The menu's 9-zone grid still sees the finger (the SHARED sink's
+    // levels are untouched — §2.4 "must not steal touches from the menu
+    // grid": the exclusion is on the engine's rotation path only).
+    touch_up(&mut client, 0);
+    tick(&mut client);
+}
+
+/// §2.6 — the exit affordance: a press on the `MENU` label fires the
+/// C++'s notInConsole-wrapped Escape binding ONCE (the menu's
+/// `go_to_menu(true, false)` contract — 029d1; no new exit path).
+#[test]
+fn the_touch_overlay_exit_button_goes_to_the_menu_once_per_press() {
+    let (mut client, _sandbox) = sandboxed_windowed_client(None);
+    start_level_with_overlay(&mut client);
+
+    touch_down(&mut client, 0, EXIT_XY.0, EXIT_XY.1);
+    tick(&mut client);
+    // The press edge's fire: `trigger_go_to_menu` = `go_to_menu(true,
+    // false)` → the C++'s `fnGoToMenu` callback signals the adapter
+    // (main.cpp:456-462) — the C++'s switch lands in the same
+    // inter-tick gap, so the state change is the NEXT tick's start
+    // (the `GameSlotAdapter::update_from_timer`'s consumption).
+    tick(&mut client);
+    assert_eq!(
+        client.engine.current(),
+        GameSlot::Menu,
+        "the exit press lands on the menu (the 029d1 contract: the menu's go_to_menu(true, false), no new exit path)"
+    );
+    // Still held (the finger is down): the held state must not re-fire
+    // the go-to-menu on the next ticks (the edge, not the level) — and
+    // the state transition's deactivation cleared the capture (the
+    // module docs' no-stuck-input semantics).
+    assert!(
+        client
+            .touch_overlay
+            .read()
+            .expect("touch overlay poisoned")
+            .captured_ids()
+            .is_empty(),
+        "deactivation cleared the capture"
+    );
+    touch_up(&mut client, 0);
+    tick(&mut client);
+    assert_eq!(client.engine.current(), GameSlot::Menu);
+}
+
+// `u_isKeyPressed` / `u_isMouseButtonPressed` (HGScripting.cpp:89-98 /
+// :135-141) must read the window's LIVE input state through the
+// `Renderer` seam (the C++ `window->getInputState()[...]`). The pre-fix
+// port stubbed both to `false` on every platform (the issue's §1
+// defect) — this test fails today against the stub: no key the window
+// holds was ever visible to the game.
+// ---------------------------------------------------------------------
+
+#[test]
+fn the_live_window_key_state_reaches_the_game_lua_surface() {
+    use oh_game::GameApi;
+    use oh_render::window::Event;
+
+    let mut client = windowed_client();
+
+    assert!(
+        !client.game.is_key_pressed(Key::L_SHIFT.0),
+        "no key is down before the fold"
+    );
+
+    // The event fold (the winit `runEvents`'s per-event half): the
+    // `KeyPressed` arm updates the window's `InputState` AND republishes
+    // it into the shared slot the engine's renderer seam reads.
+    Window::apply_event(
+        &mut client.window,
+        Event::KeyPressed {
+            code: Key::L_SHIFT,
+            repeated: false,
+        },
+    );
+    assert!(
+        client.game.is_key_pressed(Key::L_SHIFT.0),
+        "the window's live LShift state reaches the game's Lua surface (the pre-fix stub returned false)"
+    );
+
+    Window::apply_event(
+        &mut client.window,
+        Event::KeyReleased { code: Key::L_SHIFT },
+    );
+    assert!(
+        !client.game.is_key_pressed(Key::L_SHIFT.0),
+        "the release clears it (the C++'s live read, not a sticky flag)"
+    );
+}
+
+#[test]
+fn the_live_window_button_state_reaches_the_game_lua_surface() {
+    use oh_game::GameApi;
+    use oh_render::window::Event;
+
+    let mut client = windowed_client();
+
+    Window::apply_event(
+        &mut client.window,
+        Event::MouseButtonPressed {
+            button: oh_render::Button::X_BUTTON1,
+        },
+    );
+    assert!(
+        client
+            .game
+            .is_mouse_button_pressed(oh_render::Button::X_BUTTON1.0),
+        "the window's live XButton1 state reaches the game's Lua surface"
+    );
+    Window::apply_event(
+        &mut client.window,
+        Event::MouseButtonReleased {
+            button: oh_render::Button::X_BUTTON1,
+        },
+    );
+    assert!(
+        !client
+            .game
+            .is_mouse_button_pressed(oh_render::Button::X_BUTTON1.0),
+        "the release clears it"
+    );
+}
+
+#[test]
+fn out_of_range_lua_key_codes_are_false_not_panic() {
+    use oh_game::GameApi;
+
+    let client = windowed_client();
+
+    // The C++'s `std::bitset::operator[]` would throw `out_of_range` on
+    // these; the port's defined behavior is `false` (a level script
+    // cannot make the host panic — the `is_key_pressed_code` note).
+    assert!(!client.game.is_key_pressed(-2));
+    assert!(!client.game.is_key_pressed(101));
+    assert!(!client.game.is_key_pressed(i32::MAX));
+    assert!(!client.game.is_mouse_button_pressed(-2));
+    assert!(!client.game.is_mouse_button_pressed(5));
+    // In-range codes still read the live state (false — nothing down).
+    assert!(!client.game.is_key_pressed(Key::UNKNOWN.0));
+    assert!(!client
+        .game
+        .is_mouse_button_pressed(oh_render::Button::LEFT.0));
+}

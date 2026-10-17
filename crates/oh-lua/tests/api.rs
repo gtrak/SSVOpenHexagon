@@ -75,9 +75,15 @@ type LogPair = (String, String);
 
 /// A `GameApi` that records the `ssvu::lo` (channel, message) pairs —
 /// `logs: None` (the derive `Default`) is the silent original.
+/// `held_key` / `held_button` (issue 31 §1): the backend's LIVE key /
+/// button state the `u_isKeyPressed` / `u_isMouseButtonPressed` reads
+/// must return (the C++'s `window->getInputState()[...]` — a `None`
+/// backend is the C++'s `window == nullptr` headless `false`).
 #[derive(Default)]
 struct MockGame {
     logs: Option<std::sync::Arc<std::sync::Mutex<Vec<LogPair>>>>,
+    held_key: Option<i32>,
+    held_button: Option<i32>,
 }
 
 impl GameApi for MockGame {
@@ -93,11 +99,11 @@ impl GameApi for MockGame {
     fn get_debug(&self) -> bool {
         true
     }
-    fn is_key_pressed(&self, _key_code: i32) -> bool {
-        false
+    fn is_key_pressed(&self, key_code: i32) -> bool {
+        self.held_key == Some(key_code)
     }
-    fn is_mouse_button_pressed(&self, _button_code: i32) -> bool {
-        false
+    fn is_mouse_button_pressed(&self, button_code: i32) -> bool {
+        self.held_button == Some(button_code)
     }
     fn log(&self, channel: &str, message: &str) {
         if let Some(logs) = &self.logs {
@@ -610,4 +616,60 @@ fn registered_fn_arity_mismatch_and_window() {
     lua.execute_code("g3(1, 2, 3)").unwrap();
     lua.execute_code("g3(0, 1, 2, 3)").unwrap();
     assert_eq!(*seen.lock().unwrap(), vec![(1, 2, 3), (1, 2, 3)]);
+}
+
+// ---------------------------------------------------------------------------
+// Issue 31 §1 — the key / button state surface (HGScripting.cpp:89-98 /
+// :135-141): `u_isKeyPressed` / `u_isMouseButtonPressed` read the
+// backend's LIVE state (`window->getInputState()[...]`), not a stubbed
+// `false`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_lua_key_and_button_reads_consult_the_backend_state() {
+    let lua = LuaContext::new();
+    let st = game_state_with(
+        false,
+        Arc::new(MockGame {
+            logs: None,
+            held_key: Some(38),   // the C++'s LShift (the default focus bind)
+            held_button: Some(3), // the C++'s XButton1 (the default swap bind)
+        }),
+    );
+    init_lua_api(&lua, &st).expect("shared init");
+    init_level_api(&lua, &st).expect("level init");
+
+    let down: bool = lua.execute_code_typed("return u_isKeyPressed(38)").unwrap();
+    assert!(
+        down,
+        "the backend's held LShift reads true through the Lua surface"
+    );
+    let up: bool = lua.execute_code_typed("return u_isKeyPressed(39)").unwrap();
+    assert!(!up, "an unheld code reads false");
+
+    let btn_down: bool = lua
+        .execute_code_typed("return u_isMouseButtonPressed(3)")
+        .unwrap();
+    assert!(btn_down, "the backend's held XButton1 reads true");
+    let btn_up: bool = lua
+        .execute_code_typed("return u_isMouseButtonPressed(2)")
+        .unwrap();
+    assert!(!btn_up, "an unheld button code reads false");
+}
+
+#[test]
+fn the_lua_key_reads_are_false_on_a_windowless_backend() {
+    // The C++'s `window == nullptr` half: a backend with no held state is
+    // the headless `false` (deterministic — the §1 defined behavior).
+    let lua = LuaContext::new();
+    let st = game_state(false);
+    init_lua_api(&lua, &st).expect("shared init");
+    init_level_api(&lua, &st).expect("level init");
+
+    let k: bool = lua.execute_code_typed("return u_isKeyPressed(38)").unwrap();
+    assert!(!k);
+    let b: bool = lua
+        .execute_code_typed("return u_isMouseButtonPressed(3)")
+        .unwrap();
+    assert!(!b);
 }

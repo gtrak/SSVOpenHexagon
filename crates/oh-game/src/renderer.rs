@@ -42,6 +42,32 @@ pub trait Renderer: Send + Sync + 'static {
     fn fps(&self) -> f32 {
         0.0
     }
+
+    /// C++ `window->getInputState()[ssvs::KKey(mKey)]` (HGScripting.cpp:
+    /// 92 — `u_isKeyPressed`): the window's live key state. The default
+    /// (`false`) IS the C++'s `window == nullptr` half — a composition
+    /// with no window-backed renderer is headless.
+    fn is_key_pressed(&self, _key_code: i32) -> bool {
+        false
+    }
+
+    /// C++ `window->getInputState()[ssvs::MBtn(mKey)]` (HGScripting.cpp:
+    /// 138 — `u_isMouseButtonPressed`): the window's live button state
+    /// (the default's `false` is the C++'s `window == nullptr` half).
+    fn is_mouse_button_pressed(&self, _button_code: i32) -> bool {
+        false
+    }
+
+    /// C++ `window->getRenderWindow().getSize()` (the touch controls'
+    /// half-split, HGUpdate.cpp:598 — `getSize().x / 2.f`: the ACTUAL
+    /// render window's size, NOT the config's — the 025g lesson: a
+    /// phone's 1530×678 window against its 1024×768 config). The
+    /// default's `(0, 0)` is the no-renderer (headless) half — the
+    /// touch controls' `finger_down_positions` is empty there too, so
+    /// the zero never drives a split.
+    fn render_size(&self) -> Vec2 {
+        Vec2::new(0.0, 0.0)
+    }
 }
 
 /// A no-op renderer that records every flash batch it is shown, so tests can

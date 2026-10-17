@@ -79,10 +79,37 @@ impl InputState {
         self.keys[Self::key_bit_index(key.0)]
     }
 
+    /// The Lua-facing `u_isKeyPressed`'s read (HGScripting.cpp:92 —
+    /// `window->getInputState()[ssvs::KKey(mKey)]`) over a raw `int`
+    /// key code: the C++'s `Unknown(-1)` lands on bit 0 (always clear —
+    /// the unbound marker); a code outside `Unknown(-1)`..`Pause(100)`
+    /// is `false` (the C++'s `std::bitset::operator[]` throws
+    /// `out_of_range` there; the port's defined behavior is `false` — a
+    /// level script cannot make the host panic).
+    #[must_use]
+    pub fn is_key_pressed_code(&self, code: i32) -> bool {
+        if !(-1..Key::KEY_COUNT).contains(&code) {
+            return false;
+        }
+        self.keys[Self::key_bit_index(code)]
+    }
+
     /// C++ `operator[](MBtn) const` → `getBtnBit(btns, mBtn)`.
     #[must_use]
     pub fn is_button_pressed(&self, btn: Button) -> bool {
         self.btns[Self::btn_bit_index(btn.0)]
+    }
+
+    /// The Lua-facing `u_isMouseButtonPressed`'s read (HGScripting.cpp:
+    /// 138 — `window->getInputState()[ssvs::MBtn(mKey)]`) over a raw
+    /// `int` button code: `false` outside `Unknown(-1)`..`XButton2(4)`
+    /// (the out-of-range arm is the `is_key_pressed_code` note's).
+    #[must_use]
+    pub fn is_button_pressed_code(&self, code: i32) -> bool {
+        if !(-1..Button::BUTTON_COUNT).contains(&code) {
+            return false;
+        }
+        self.btns[Self::btn_bit_index(code)]
     }
 
     /// C++ `getFinger(FingerID) const` → `getFingerBit(fingers, mX)`.
@@ -232,5 +259,29 @@ mod tests {
         // Mirrors how C++ would index Unknown(-1) if it ever reached operator[].
         s.set_key_pressed(Key::UNKNOWN, true);
         assert!(s.get_keys()[0]);
+    }
+
+    #[test]
+    fn raw_code_reads_are_the_lua_surface() {
+        // The `u_isKeyPressed` / `u_isMouseButtonPressed` reads (HGScripting.
+        // cpp:92/:138) over raw `int` codes: `int(code) + 1` indexing.
+        let mut s = InputState::new();
+        s.set_key_pressed(Key::L_SHIFT, true); // code 38 → bit 39
+        s.set_button_pressed(Button::X_BUTTON1, true); // code 3 → bit 4
+        assert!(s.is_key_pressed_code(38));
+        assert!(!s.is_key_pressed_code(39));
+        assert!(s.is_button_pressed_code(3));
+        assert!(!s.is_button_pressed_code(2));
+        // Unknown(-1) is the C++'s bit 0 (clear by default).
+        assert!(!s.is_key_pressed_code(-1));
+        assert!(!s.is_button_pressed_code(-1));
+        // Out of range: the C++'s bitset subscript would throw; the port's
+        // defined behavior is `false` (no panic from a level script).
+        assert!(!s.is_key_pressed_code(101));
+        assert!(!s.is_key_pressed_code(10_000));
+        assert!(!s.is_key_pressed_code(-2));
+        assert!(!s.is_key_pressed_code(i32::MAX));
+        assert!(!s.is_button_pressed_code(5));
+        assert!(!s.is_button_pressed_code(-2));
     }
 }
