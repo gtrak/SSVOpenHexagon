@@ -476,7 +476,7 @@ pub fn compose_with(
         Arc::new(RwLock::new(Config::default())),
         steam,
         discord,
-        None, // the headless composition's renderer (the C++'s `nullptr`)
+        None,                      // the headless composition's renderer (the C++'s `nullptr`)
         None, // the headless composition's audio (the C++'s `audio == nullptr`)
         Arc::new(NullReplayStore), // issue 029a1 — headless: disk-silent (the compose_with_config docs)
     )

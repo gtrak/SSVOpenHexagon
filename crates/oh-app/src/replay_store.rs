@@ -49,7 +49,6 @@ use oh_game::seams::ReplayStore;
 use oh_replay::CompressedReplayFile;
 
 /// The production `ReplayStore` (module docs).
-#[must_use]
 pub struct RealReplayStore {
     /// The game-data root (= the C++'s CWD at save time, module docs).
     root: PathBuf,
@@ -143,7 +142,10 @@ mod tests {
             "the on-disk bytes must be the compressed bytes verbatim"
         );
         let decoded = decompress_replay_file(&read_back).expect("decompression");
-        assert_eq!(decoded, rf, "the round-tripped replay must equal the source");
+        assert_eq!(
+            decoded, rf,
+            "the round-tripped replay must equal the source"
+        );
     }
 
     /// (b) The directory creation is idempotent: a second save to the same

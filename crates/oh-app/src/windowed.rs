@@ -2124,7 +2124,9 @@ impl WindowedClient {
             // `Replays/<levelId>/<diff>x/<name>.z` in the internal data
             // dir on Android, beside `Profiles/` / `config.json` (the
             // folders the C++ creates at main.cpp:275-276).
-            Arc::new(crate::replay_store::RealReplayStore::new(base_dir.to_path_buf())),
+            Arc::new(crate::replay_store::RealReplayStore::new(
+                base_dir.to_path_buf(),
+            )),
         );
 
         // The C++ `initText` fonts (HexagonGame.cpp:289-290:
