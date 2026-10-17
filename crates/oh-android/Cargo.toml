@@ -45,6 +45,10 @@ target_sdk_version = 34
 
 [package.metadata.android.application]
 label = "Open Hexagon"
+# TEMPORARY (issue 029a1-completion): `run-as` — the on-device `Replays/` proof
+# — needs the app debuggable; reverted in its own commit after the device
+# session (the shipped APK stays non-debuggable).
+debuggable = true
 # The fullscreen game theme (no action bar / status chrome — the C++
 # Android build's `NoActionBar.Fullscreen` equivalent).
 theme = "@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
