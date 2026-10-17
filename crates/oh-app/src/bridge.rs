@@ -395,6 +395,17 @@ pub fn draw<S: SharedStore>(game: &HexagonGame<S>, app: &mut AppDraw, target: &m
     app.state.pb_text.set_string(game.pb_text());
     app.state.pb_text_growth = game.pb_text_growth();
 
+    // The per-frame character-size / origin half of the C++ `updateText`
+    // (HGGraphics.cpp:545-571, the replay-text size :593): the C++ sets
+    // them in the SAME call that sets the strings copied above; the
+    // port's engine owns the strings + the `pb_text_growth` increment per
+    // tick (the C++'s `updateText` call site, HGUpdate.cpp:384), so the
+    // bridge applies the size half per frame from the same values (a
+    // pure function of them — the rendered frame is identical). Without
+    // this, every `Text` kept its constructor size forever (029e2 M2).
+    let config = game.config_ref();
+    oh_render::text_draw::update_text_sizes(&mut app.state, &config, must_show_replay_ui);
+
     // ------------------------------------------------------------------
     // The scene batches — the C++ `HGGraphics.cpp:127-146` fill
     // orchestration (walls → custom walls → the player when

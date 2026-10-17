@@ -90,7 +90,8 @@ pub use oh_math::ssvs::vector2::Vec2;
 pub use shader::{Shader, ShaderRegistry, ShaderType, Uniform};
 pub use text_draw::{
     diff_format, draw_text, draw_text_message, draw_text_personal_best, draw_text_time_and_status,
-    format_time, get_scaled_character_size, time_format, update_text, TextUpdateInput,
+    format_time, get_scaled_character_size, time_format, update_text, update_text_sizes,
+    TextUpdateInput,
 };
 pub use texture::{Image, RenderTexture, Sprite, Texture};
 pub use timer::TimerStatic;

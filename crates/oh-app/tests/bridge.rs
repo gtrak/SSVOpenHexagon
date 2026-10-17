@@ -309,6 +309,85 @@ fn on_render_stage_fires_per_stage_with_frametime() {
 }
 
 // ---------------------------------------------------------------------
+// 029e2 (the graphics audit's M2): the per-frame character-size / origin
+// half of the C++ `updateText` (HGGraphics.cpp:545-571, :593) must reach
+// the render state every frame — the pre-fix port never called
+// `text_draw::update_text`, so every `Text` kept its constructor size
+// forever (status 19 = 25/1.27, message 29 = 38/1.27 left-anchored at
+// (0, 0), PB a static 51 = 65/1.27, replay 15 = 20/1.27) and the
+// engine's `pb_text_growth` was copied but unconsumed.
+// ---------------------------------------------------------------------
+
+/// The bridge applies the C++ per-frame sizes/origins (the `updateText`
+/// size half) from the same engine values the C++ reads in one call.
+#[test]
+fn the_bridge_applies_the_per_frame_text_sizes_and_origins() {
+    let assets = load_release();
+    let c = compose(assets, release_dir(), true);
+    c.game.new_game(PACK, LEVEL, true, 1.0, false);
+    c.game.set_must_start(true);
+    // A live message (the C++ `e_messageAdd` → `messageText.setString`):
+    // the origin assertion needs a non-empty message string.
+    c.game.add_message("hello", 10.0, true);
+    for _ in 0..20 {
+        c.game.update(TIME_STEP, 1.0);
+        c.game.post_update();
+    }
+    assert!(c.game.get_status().started, "the game auto-started");
+
+    let (font, font_bold) = test_fonts();
+    let mut app = oh_app::bridge::AppDraw::new(
+        &Config::default(),
+        &release_dir().join("Assets"),
+        font,
+        font_bold,
+    );
+    let mut rec = Recording::default();
+    oh_app::bridge::draw(&c.game, &mut app, &mut rec);
+
+    let st = app.state();
+    // The C++ values at the default zoom 1.27 / text scaling 1.0
+    // (HGGraphics.cpp:545-550, `(size / zoomFactor * textScaling)`
+    // truncated): time 70 → 55, status 20 → 15 (the ctor kept 19 =
+    // 25/1.27), message 32 → 25 (the ctor kept 29 = 38/1.27),
+    // pb 64 → 50 + sin(growth) × 10 (the ctor kept a static 51 =
+    // 65/1.27), replay 16 → 12 (the ctor kept 15 = 20/1.27).
+    assert_eq!(st.time_text.get_character_size(), 55);
+    assert_eq!(
+        st.text.get_character_size(),
+        15,
+        "status 20/1.27 per frame, not the ctor's 19"
+    );
+    assert_eq!(
+        st.text.get_origin(),
+        oh_render::Vec2::new(0.0, 0.0),
+        "the status-text origin (HGGraphics.cpp:557)"
+    );
+    assert_eq!(
+        st.message_text.get_character_size(),
+        25,
+        "message 32/1.27 per frame, not the ctor's 29"
+    );
+    assert!(
+        st.message_text.get_origin().x > 0.0,
+        "the message text is centred (the C++'s getGlobalWidth/2 origin, :567 — the ctor left it at (0, 0))"
+    );
+    // PB: 50 + sin(20 × 0.25 × 0.08 = 0.4 rad) × 10 = 50 + 3.89 =
+    // 53.89 → 53 — consuming the engine's sawtooth (the pre-fix port
+    // copied `pb_text_growth` into the state but never read it).
+    assert_eq!(
+        st.pb_text.get_character_size(),
+        53,
+        "64/1.27 → 50 + sin(0.4) × 10, not the ctor's static 51"
+    );
+    // showFPS off (Config::default) + no replay UI → the fps / replay
+    // texts keep their ctor sizes (the C++'s `getShowFPS()` /
+    // `mustShowReplayUI()` gates, :560-564 / :574-598).
+    assert_eq!(st.fps_text.get_character_size(), 19);
+    assert_eq!(st.replay_text.get_character_size(), 15);
+}
+
+// ---------------------------------------------------------------------
 // 029e1 (the graphics audit's M1): the HUD icon + particle textures must
 // be the real `Assets/*.png` decodes — the pre-fix port drew all five
 // key/replay icons and every PB/trail/swap particle from
