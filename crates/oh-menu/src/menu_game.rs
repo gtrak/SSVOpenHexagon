@@ -21,6 +21,9 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use oh_rng::Pcg32Fast;
 
 use oh_math::hg::color::Color;
 use oh_menu_system::menu::Menu;
@@ -37,6 +40,58 @@ use crate::seams::{
     TriggerRefreshCallback, UnlockAchievementCallback,
 };
 use crate::states::{DialogInputState, PackChange, States};
+
+/// C++ `MenuGame` constructor's random tips (MenuGame.cpp:752-766) — the
+/// verbatim four two-line pairs. The tip is chosen at construction with
+/// `randomTip = tips[ssvu::getRndI(0, tips.size())]` (29b8a).
+const RANDOM_TIPS: [[&str; 2]; 4] = [
+    [
+        "HOLDING FOCUS WHILE CHANGING PACK",
+        "SKIPS THE SWITCH ANIMATION",
+    ],
+    ["REMEMBER TO TAKE BREAKS", "OPEN HEXAGON IS AN INTENSE GAME"],
+    ["EXPERIMENT USING SWAP", "IT MAY SAVE YOUR LIFE"],
+    [
+        "IF A LEVEL IS TOO CHALLENGING",
+        "PRACTICE IT AT A LOWER DIFFICULTY",
+    ],
+];
+
+/// Process entropy seed — the same convention as oh-game's `initialize_rng`
+/// (HexagonGame.cpp:55 port, hexagon_game.rs `entropy_seed`): SystemTime
+/// nanos ^ pid rotated 32 bits. The C++ instead seeds its thread-local
+/// `ssvu::pcg32_fast` with `std::random_device` (Rnd.hpp:21-22) — both
+/// non-deterministic by design.
+fn entropy_seed() -> u64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    now ^ (u64::from(std::process::id())).rotate_left(32)
+}
+
+/// C++ `randomTip = tips[ssvu::getRndI(0, tips.size())]` (MenuGame.cpp:
+/// 752-766). The C++ `getRndI(min, max)` is
+/// `uniform_int_distribution(min, max − 1)` (Rnd.hpp:44-50, inclusive) on
+/// the thread-local `pcg32_fast`; the port runs the same draw through
+/// `oh_rng` (the oracle-pinned `pcg32_fast` + `std::uniform_int`
+/// sampling) in a thread-local engine.
+fn random_tip_pair() -> [String; 2] {
+    thread_local! {
+        static TIP_RNG: std::cell::RefCell<Pcg32Fast> =
+            std::cell::RefCell::new(Pcg32Fast::from_seed(entropy_seed()));
+    }
+    TIP_RNG.with(|c| {
+        let mut rng = c.borrow_mut();
+        let i = oh_rng::uniform_int(&mut rng, 0, RANDOM_TIPS.len() as u32 - 1) as usize;
+        [RANDOM_TIPS[i][0].to_string(), RANDOM_TIPS[i][1].to_string()]
+    })
+}
+
+/// C++ `MenuGame.hpp:135-137` — the credits-bar's cycling texture ids
+/// (the `creditsBar2` sprite's three frames, MenuGame.cpp:2848-2850 —
+/// 29b8b).
+pub const CREDITS_BAR_IDS: [&str; 3] = ["creditsBar2.png", "creditsBar2b.png", "creditsBar2c.png"];
 
 /// C++ `MenuGame::LevelDrawer` — the selection state for one of the two
 /// level lists (regular / favorites).
@@ -82,6 +137,12 @@ pub struct Shared {
     /// `downAction` and resets to 0).
     pub wheel_progress: f32,
     pub touch_delay: f32,
+    /// C++ `shiftHeld`'s port equivalent (29b8c) — the app layer feeds the
+    /// per-frame `LShift` / `RShift` state (the C++ `leftRightActionImpl`
+    /// reads `sf::Keyboard::isKeyPressed(LShift/RShift)` live, MenuGame.cpp:
+    /// 1860-1862; the menu has no window access, so the app layer's input
+    /// snapshot feeds it — `MenuSlotAdapter::refresh_input`).
+    pub shift_held: bool,
     // ---- level selection ----
     pub lvl_slct: LevelDrawer,
     pub fav_slct: LevelDrawer,
@@ -97,6 +158,10 @@ pub struct Shared {
     pub scrollbar_offset: i32,
     pub hexagon_rotation: f32,
     pub random_tip: [String; 2],
+    /// C++ `currentCreditsId{0}` (MenuGame.hpp:527) — the credits-bar's
+    /// accumulated frametime (the `+= mFT` per frame, MenuGame.cpp:2848;
+    /// the texture id is `credits_bar2_id()`, 29b8b).
+    pub current_credits_id: f32,
     // ---- entering text ----
     pub entered_chars: Vec<char>,
     pub entered_str: String,
@@ -210,6 +275,7 @@ impl Shared {
             // C++ ctor `wheelProgress{0.f}` (MenuGame.cpp:187).
             wheel_progress: 0.0,
             touch_delay: 0.0,
+            shift_held: false,
             lvl_slct: LevelDrawer::default(),
             fav_slct: LevelDrawer {
                 is_favorites: true,
@@ -225,7 +291,8 @@ impl Shared {
             scroll_speed: crate::layout::BASE_SCROLL_SPEED,
             scrollbar_offset: 0,
             hexagon_rotation: 0.0,
-            random_tip: [String::new(), String::new()],
+            random_tip: random_tip_pair(),
+            current_credits_id: 0.0,
             entered_chars: Vec::new(),
             entered_str: String::new(),
             exit_timer: 0.0,
@@ -820,6 +887,13 @@ impl Shared {
         self.dialog_box_delay = 16.0;
         self.show_dialog_box(&str_buf);
         self.set_ignore_all_inputs(1);
+
+        // C++ :2590-2593 — the `ELoginSuccess` arm: the `a23_login` Steam
+        // achievement fires right after the "LOGIN SUCCESS" dialog box
+        // (the C++ lambda order: show the dialog, then the unlock — 29b8d).
+        if matches!(event, NetEvent::LoginSuccess) {
+            self.unlock_achievement("a23_login");
+        }
     }
 
     // ---- per-state animation step (§11.9) ----
@@ -2118,7 +2192,10 @@ impl MenuGame {
         }
         let modifier = {
             let s = self.shared.borrow();
-            s.focus_held || s.was_focus_held
+            // C++ :1860-1862 — `isKeyPressed(LShift) || isKeyPressed(RShift)
+            // || focusHeld || wasFocusHeld` (the Shift half is the app-
+            // layer-fed `shift_held`, 29b8c) — two menu-item steps.
+            s.shift_held || s.focus_held || s.was_focus_held
         };
         let steps = if modifier { 2 } else { 1 };
         for _ in 0..steps {
@@ -2518,6 +2595,10 @@ impl MenuGame {
         // `> 20`), so exactly 20.0 does not yet quit.
         let mut s = self.shared.borrow_mut();
         s.rotation_speed += 0.0; // rotationSpeed is set by the menu Lua seam
+                                 // C++ :2848-2850 — the credits-bar's per-frame cycle:
+                                 // `currentCreditsId += mFT` (the texture selection is
+                                 // `credits_bar2_id()`, which the draw side consumes — 29b8b).
+        s.current_credits_id += ft;
         if s.exit_timer > 20.0 {
             s.quit();
         }
@@ -2527,6 +2608,15 @@ impl MenuGame {
     /// sync with the focus trigger.
     pub fn set_focus_held(&self, held: bool) {
         self.shared.borrow_mut().focus_held = held;
+    }
+
+    /// App-layer hook (29b8c): the C++ `leftRightActionImpl`'s Shift
+    /// modifier reads the keyboard live (`sf::Keyboard::isKeyPressed(
+    /// LShift) || isKeyPressed(RShift)`, MenuGame.cpp:1860-1862); the port
+    /// has no window access in oh-menu, so the app layer's per-frame input
+    /// snapshot feeds the equivalent (`MenuSlotAdapter::refresh_input`).
+    pub fn set_shift_held(&self, held: bool) {
+        self.shared.borrow_mut().shift_held = held;
     }
 
     /// C++ `MenuGame::onEvent(sf::Event::EventType::MouseWheelScrolled)`
@@ -2855,5 +2945,20 @@ impl Shared {
     #[must_use]
     pub fn font_height(&self, char_size: f32) -> f32 {
         self.font.height(char_size)
+    }
+
+    /// C++ `update()`'s credits-bar texture selection (MenuGame.cpp:
+    /// 2848-2850): `getByModIdx(creditsIds, toInt(currentCreditsId / 100))`
+    /// (29b8b) — the 0-based index into `CREDITS_BAR_IDS` the draw side's
+    /// `creditsBar2` sprite should show this frame (the id changes every
+    /// 100 accumulated seconds of frametime). `currentCreditsId` only
+    /// accumulates (non-negative), but the `rem_euclid` is the C++
+    /// `getMod` (Math.hpp:292) regardless. The draw-side note: until the
+    /// 15c texture table lands, all three textures are the same 1×1
+    /// placeholder (menu_draw's module docs), so the cycle is state-only.
+    #[must_use]
+    pub fn credits_bar2_id(&self) -> usize {
+        let idx = (self.current_credits_id / 100.0) as i32; // C++ toInt: trunc
+        idx.rem_euclid(CREDITS_BAR_IDS.len() as i32) as usize
     }
 }

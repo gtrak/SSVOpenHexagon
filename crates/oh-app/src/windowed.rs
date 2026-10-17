@@ -1483,6 +1483,15 @@ impl GameState for MenuSlotAdapter {
                 self.menu.handle_mouse_wheel(delta);
             }
         }
+        // C++ `leftRightActionImpl`'s Shift modifier (MenuGame.cpp:1860-
+        // 1862) — `isKeyPressed(LShift) || isKeyPressed(RShift)` (29b8c):
+        // the C++ reads the keyboard live in the action; the port's
+        // equivalent is this per-frame snapshot feed (the menu has no
+        // window access in oh-menu — the `set_shift_held` hook).
+        self.menu.set_shift_held(
+            input.is_key_pressed(oh_config::Key::L_SHIFT)
+                || input.is_key_pressed(oh_config::Key::R_SHIFT),
+        );
         self.input_manager.borrow_mut().refresh(input);
         // issue 025f (D-031) — the soft-input (system IME) transition
         // edge: the menu's `is_entering_text` (the C++ `isEnteringText`,

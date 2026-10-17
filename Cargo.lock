@@ -2083,6 +2083,7 @@ dependencies = [
  "oh-data",
  "oh-math",
  "oh-menu-system",
+ "oh-rng",
 ]
 
 [[package]]

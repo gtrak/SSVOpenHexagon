@@ -611,7 +611,12 @@ impl MenuDraw {
         self.credits_bar1.set_position(Vec2::new(w - 20.0, 20.0));
         // `creditsBar2.setOrigin({getLocalWidth(creditsBar2), 0});
         // setScale({0.373, 0.373}); setPosition({w - 20, 17 +
-        // getGlobalBottom(creditsBar1)});`
+        // getGlobalBottom(creditsBar1)});` The C++'s per-frame
+        // `setTexture(creditsIds[getByModIdx(...)])` cycle (MenuGame.cpp:
+        // 2848-2850, 29b8b) is state-only here: the frame id
+        // (`s.credits_bar2_id`) selects one of the three `CREDITS_BAR_IDS`
+        // textures, but they are the same 1×1 placeholder until the 15c
+        // texture table lands (module docs).
         self.credits_bar2.set_origin(Vec2::new(
             self.credits_bar2.get_local_bounds().get_width(),
             0.0,
@@ -1329,6 +1334,15 @@ struct SharedSnapshot {
     random_tip: [String; 2],
     hexagon_rotation: f32,
     scrollbar_offset: i32,
+    /// C++ `currentCreditsId`'s texture selection (MenuGame.cpp:2848-2850,
+    /// 29b8b): the `creditsBar2` sprite's frame id (into
+    /// `oh_menu::menu_game::CREDITS_BAR_IDS`). State-only until the 15c
+    /// texture table lands — all three textures are the same 1×1
+    /// placeholder (module docs), so the cycle is not visible yet (the
+    /// 13b `names_scroll` allow pattern: written, unread until the draw
+    /// consumes the real textures).
+    #[allow(dead_code)]
+    credits_bar2_id: usize,
 }
 
 impl SharedSnapshot {
@@ -1352,6 +1366,7 @@ impl SharedSnapshot {
             random_tip: s.random_tip.clone(),
             hexagon_rotation: s.hexagon_rotation,
             scrollbar_offset: s.scrollbar_offset,
+            credits_bar2_id: s.credits_bar2_id(),
         }
     }
 }

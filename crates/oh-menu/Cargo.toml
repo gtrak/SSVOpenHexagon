@@ -15,3 +15,7 @@ oh-data = { path = "../oh-data" }
 oh-config = { path = "../oh-config" }
 oh-menu-system = { path = "../oh-menu-system" }
 oh-assets = { path = "../oh-assets" }
+# The random-tip's `pcg32_fast` draw (the C++ `ssvu::getRndI` on the
+# thread-local SSVUtils engine, MenuGame.cpp:752-766 — 29b8a): the
+# oracle-pinned `Pcg32Fast` + `uniform_int` sampling.
+oh-rng = { path = "../oh-rng" }
