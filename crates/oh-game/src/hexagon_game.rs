@@ -750,15 +750,12 @@ impl<S: SharedStore> HexagonGame<S> {
             g.first_play = m_first_play;
         }
 
-        self.set_level_data_inner(
-            self.0
-                .assets
-                .get_level_data(m_id)
-                .expect("SSVOH_ASSERT(assets.isValidLevelId(mId))"),
-            m_first_play,
-            &mut g,
-            &mut e,
-        );
+        let level_data = self
+            .0
+            .assets
+            .get_level_data(m_id)
+            .expect("SSVOH_ASSERT(assets.isValidLevelId(mId))");
+        self.set_level_data_inner(&level_data, m_first_play, &mut g, &mut e);
 
         g.difficulty_mult = m_difficulty_mult;
 

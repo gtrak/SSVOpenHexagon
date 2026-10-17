@@ -305,7 +305,7 @@ impl oh_game::seams::Audio for Audio {
     fn load_and_play_music(&self, pack_id: &str, id: &str, offset_seconds: f32) -> bool {
         let asset_id = format!("{pack_id}_{id}");
         // C++ `_musicPathGetter(assetId)` (== `assets.getMusicPath`).
-        let Some(path) = self.assets.get_music_path(&asset_id).cloned() else {
+        let Some(path) = self.assets.get_music_path(&asset_id) else {
             eprintln!("[hg::AudioImpl::playMusic] No path for music id '{asset_id}'\n");
             return false;
         };
@@ -458,7 +458,7 @@ fn decode_sound(
         return cached.clone();
     }
     let path = assets.get_sound_path(asset_id)?;
-    let buffer = match decode_ogg(path) {
+    let buffer = match decode_ogg(&path) {
         Some(b) => {
             // One-time (cache-miss) diagnostic: the C++ loads the buffer once in
             // `HGAssets`; confirming the OGG decoded on-device (the issue-025e

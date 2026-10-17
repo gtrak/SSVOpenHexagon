@@ -32,9 +32,9 @@ use std::path::{Path, PathBuf};
 /// - `Null` — no slot at all: C++ `getTextureOrNullTexture` /
 ///   `getFontOrNullFont` return a `static` null object so the game keeps
 ///   running on a missing asset.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AssetRef<'a> {
-    Present(&'a str),
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AssetRef {
+    Present(String),
     Null,
 }
 
@@ -103,8 +103,8 @@ impl AssetStorage {
     /// an unknown id). C++ analog: `getSoundBuffer(id)` returns the in-memory
     /// `sf::SoundBuffer*`; the port exposes the source path so `oh-audio` can
     /// decode it into a `SoundBuffer`.
-    pub fn get_sound_path(&self, id: &str) -> Option<&Path> {
-        self.sound_paths.get(id).map(PathBuf::as_path)
+    pub fn get_sound_path(&self, id: &str) -> Option<PathBuf> {
+        self.sound_paths.get(id).cloned()
     }
 
     /// C++ `getTexture(id)` → `sf::Texture*` (non-null iff a slot exists,
@@ -141,18 +141,18 @@ impl AssetStorage {
 
     /// C++ `getTextureOrNullTexture(id)`: the slot if present, else the
     /// `static` null texture.
-    pub fn texture_or_null<'a>(&'a self, id: &'a str) -> AssetRef<'a> {
+    pub fn texture_or_null(&self, id: &str) -> AssetRef {
         if self.textures.contains_key(id) {
-            AssetRef::Present(id)
+            AssetRef::Present(id.to_string())
         } else {
             AssetRef::Null
         }
     }
 
     /// C++ `getFontOrNullFont(id)`.
-    pub fn font_or_null<'a>(&'a self, id: &'a str) -> AssetRef<'a> {
+    pub fn font_or_null(&self, id: &str) -> AssetRef {
         if self.fonts.contains_key(id) {
-            AssetRef::Present(id)
+            AssetRef::Present(id.to_string())
         } else {
             AssetRef::Null
         }
@@ -194,7 +194,7 @@ mod tests {
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
         assert!(s.load_texture("t", &manifest));
         assert_eq!(s.get_texture("t"), Some(true));
-        assert_eq!(s.texture_or_null("t"), AssetRef::Present("t"));
+        assert_eq!(s.texture_or_null("t"), AssetRef::Present("t".to_string()));
         assert_eq!(s.font_or_null("nope"), AssetRef::Null);
     }
 }

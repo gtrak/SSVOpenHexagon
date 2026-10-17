@@ -25,13 +25,21 @@
 //! - the actual SFML texture/font/sound/shader *handles* (render/audio
 //!   backend, issue 10) — the registry records `loaded`/ids only;
 //! - Steam Workshop pack enumeration (`steamManager == nullptr` here, so the
-//!   C++ `if(steamManager != nullptr)` branch is skipped; oh-steam owns it);
-//! - the F1 favorite TOGGLE (`getCurrentLocalProfile().addFavoriteLevel` /
-//!   `removeFavoriteLevel`, MenuGame.cpp:4843-4895 — the menu's
-//!   `addRemoveFavoriteLevel`; the *read* half, `isLevelFavorite`, is the
-//!   `is_level_favorite` below) and the profile-selection menu's dynamic
-//!   item add/remove (29b6);
-//! - the `reloadPack` / `reloadLevel` / `reloadAllShaders` dev-tool paths.
+//!   C++ `if(steamManager != nullptr)` branch is skipped; oh-steam owns it).
+//!
+//! Interior mutability (issue 29i1): the C++'s `HGAssets` is ONE object the
+//! menu and the engine share (main.cpp:381/:434), and the menu's F3/F4 debug
+//! reload (`reloadPack` / `reloadLevel`, the `MenuGame::reloadAssets`
+//! handler) re-reads level/style/music/sound data FROM DISK IN PLACE —
+//! observable to the engine through the SAME object. The port shares ONE
+//! `Arc<Assets>`, so the reload-mutable state (the `levelDatas` /
+//! `levelDataIdsByPack` / `styleDataMap` / `musicDataMap` / `musicPathMap`
+//! tables + the `AssetStorage`) lives behind a `Mutex` (`AssetState` below —
+//! the same short-lock pattern as the `profiles` store); the getters for
+//! those tables return owned clones (the C++'s references generalize).
+//! The shader registry stays a plain field: `reloadAllShaders` re-reads the
+//! sources but never inserts/removes entries (issue 10 attaches the GLSL
+//! payload later).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -71,6 +79,29 @@ struct ProfileStore {
     current: Option<String>,
 }
 
+/// The reload-mutable asset tables (the C++ `HGAssetsImpl` members the
+/// F3/F4 debug reload replaces in place — module docs): behind the `Mutex`
+/// so the menu's `Arc<Assets>`-shared `reload_pack` / `reload_level` write
+/// what the engine's getters read (the C++'s single-object semantics).
+#[derive(Debug, Default)]
+struct AssetState {
+    // C++ `levelDatas` (`unordered_map<string, LevelData>`).
+    level_datas: HashMap<String, LevelData>,
+    // C++ `levelDataIdsByPack` (`unordered_map<string, vector<string>>`).
+    level_data_ids_by_pack: HashMap<String, Vec<String>>,
+    // C++ `musicPathMap` (`unordered_map<string, string>`).
+    music_path_map: HashMap<String, String>,
+    // C++ `musicDataMap` / `styleDataMap` are `std::map` (SORTED) — the
+    // missing-asset fallback returns the smallest-key entry, so the port
+    // keeps them ordered.
+    music_data_map: BTreeMap<String, MusicData>,
+    style_data_map: BTreeMap<String, StyleData>,
+    // C++ `assetStorage` (the sound-buffer registry half the reload
+    // `loadSoundBuffer` / `hasSoundBuffer` calls hit; the textures / fonts
+    // halves too — one `AssetStorage` object in the C++).
+    storage: AssetStorage,
+}
+
 /// C++ `hg::HGAssets` (the `HGAssetsImpl` body).
 #[derive(Debug)]
 pub struct Assets {
@@ -78,26 +109,14 @@ pub struct Assets {
     root: PathBuf,
     levels_only: bool,
 
-    storage: AssetStorage,
-
-    // C++ `levelDatas` (`unordered_map<string, LevelData>`).
-    level_datas: HashMap<String, LevelData>,
-    // C++ `levelDataIdsByPack` (`unordered_map<string, vector<string>>`).
-    level_data_ids_by_pack: HashMap<String, Vec<String>>,
+    // The reload-mutable tables + the storage (module docs).
+    state: Mutex<AssetState>,
 
     // C++ `packDatas` (`unordered_map<string, PackData>`).
     pack_datas: HashMap<String, PackData>,
     // C++ `packInfos` / `selectablePackInfos` (`vector<PackInfo>`).
     pack_infos: Vec<PackInfo>,
     selectable_pack_infos: Vec<PackInfo>,
-
-    // C++ `musicPathMap` (`unordered_map<string, string>`).
-    music_path_map: HashMap<String, String>,
-    // C++ `musicDataMap` / `styleDataMap` are `std::map` (SORTED) — the
-    // missing-asset fallback returns the smallest-key entry, so the port keeps
-    // them ordered.
-    music_data_map: BTreeMap<String, MusicData>,
-    style_data_map: BTreeMap<String, StyleData>,
 
     // C++ `profileDataMap` (`std::map<string, ProfileData>`) +
     // `currentProfilePtr` (Assets.hpp:67-68) — the shared local-profile
@@ -131,15 +150,10 @@ impl Assets {
         let mut a = Self {
             root,
             levels_only,
-            storage: AssetStorage::new(),
-            level_datas: HashMap::new(),
-            level_data_ids_by_pack: HashMap::new(),
+            state: Mutex::new(AssetState::default()),
             pack_datas: HashMap::new(),
             pack_infos: Vec::new(),
             selectable_pack_infos: Vec::new(),
-            music_path_map: HashMap::new(),
-            music_data_map: BTreeMap::new(),
-            style_data_map: BTreeMap::new(),
             profiles: Mutex::new(ProfileStore::default()),
             pack_ids_with_missing_deps: BTreeSet::new(),
             shaders: ShaderRegistry::new(),
@@ -153,7 +167,9 @@ impl Assets {
             }
             let (object, mut error) =
                 read_file_with_errors(&a.root.join("Assets").join("assets.json"));
-            load_assets_from_json(&mut a.storage, &a.root, "Assets/", &object);
+            let mut st = a.state.lock().expect("asset state poisoned");
+            load_assets_from_json(&mut st.storage, &a.root, "Assets/", &object);
+            drop(st);
             a.load_info.add_formatted_error(&mut error);
         }
 
@@ -376,7 +392,13 @@ impl Assets {
             let file_name = logical_filename(&p);
             let asset_id = format!("{pack_id}_{file_name}");
             let real = self.root.join(&p);
-            if !self.storage.load_sound_buffer(&asset_id, &real) {
+            let loaded = self
+                .state
+                .lock()
+                .expect("asset state poisoned")
+                .storage
+                .load_sound_buffer(&asset_id, &real);
+            if !loaded {
                 // C++: log "Failed to load sound buffer '<p>'"
             }
             self.load_info.assets += 1;
@@ -388,7 +410,11 @@ impl Assets {
         for p in pack_scan::scan_single_by_ext(&self.root, &format!("{pack_path}Music/"), ".ogg") {
             let base = file_name_no_ext(&p);
             let asset_id = format!("{pack_id}_{base}");
-            self.music_path_map.insert(asset_id, p.clone());
+            self.state
+                .lock()
+                .expect("asset state poisoned")
+                .music_path_map
+                .insert(asset_id, p.clone());
             self.load_info.assets += 1;
         }
     }
@@ -405,7 +431,11 @@ impl Assets {
 
             let music_data = load_music_from_json(&object)?;
             let asset_id = format!("{pack_id}_{}", music_data.id);
-            self.music_data_map.insert(asset_id, music_data);
+            self.state
+                .lock()
+                .expect("asset state poisoned")
+                .music_data_map
+                .insert(asset_id, music_data);
             self.load_info.assets += 1;
         }
         Ok(())
@@ -424,7 +454,11 @@ impl Assets {
 
             let style_data = StyleData::from_json(&object)?;
             let asset_id = format!("{pack_id}_{}", style_data.id);
-            self.style_data_map.insert(asset_id, style_data);
+            self.state
+                .lock()
+                .expect("asset state poisoned")
+                .style_data_map
+                .insert(asset_id, style_data);
             self.load_info.assets += 1;
         }
         Ok(())
@@ -445,11 +479,12 @@ impl Assets {
             let level_data = LevelData::from_json(&object, pack_path, pack_id)?;
             let asset_id = format!("{pack_id}_{}", level_data.id);
 
-            self.level_data_ids_by_pack
+            let mut st = self.state.lock().expect("asset state poisoned");
+            st.level_data_ids_by_pack
                 .entry(pack_id.to_string())
                 .or_default()
                 .push(asset_id.clone());
-            self.level_datas.insert(asset_id, level_data);
+            st.level_datas.insert(asset_id, level_data);
             self.load_info.levels += 1;
         }
         Ok(())
@@ -546,7 +581,14 @@ impl Assets {
         let to_remove: Vec<String> = profile
             .get_favorite_level_ids()
             .iter()
-            .filter(|id| !self.level_datas.contains_key(*id))
+            .filter(|id| {
+                !self
+                    .state
+                    .lock()
+                    .expect("asset state poisoned")
+                    .level_datas
+                    .contains_key(*id)
+            })
             .cloned()
             .collect();
         for id in to_remove {
@@ -824,11 +866,15 @@ impl Assets {
         // Snapshot priorities (owned) so the sort closure does not borrow
         // `self` while `level_data_ids_by_pack` is mutably borrowed.
         let prios: HashMap<String, i32> = self
+            .state
+            .lock()
+            .expect("asset state poisoned")
             .level_datas
             .iter()
             .map(|(id, ld)| (id.clone(), ld.menu_priority))
             .collect();
-        for ids in self.level_data_ids_by_pack.values_mut() {
+        let mut st = self.state.lock().expect("asset state poisoned");
+        for ids in st.level_data_ids_by_pack.values_mut() {
             ids.sort_by_key(|id| prios.get(id).copied().unwrap_or(0));
         }
     }
@@ -867,58 +913,111 @@ impl Assets {
 
     /// C++ `getTextureOrNullTexture(id)`: the slot if present, else the
     /// `static` null texture so the game keeps running on a missing asset.
-    pub fn get_texture_or_null<'a>(&'a self, id: &'a str) -> AssetRef<'a> {
-        self.storage.texture_or_null(id)
+    /// Owned (module docs: the reload-mutable `AssetStorage` lives behind
+    /// the `Mutex`; the C++'s reference generalizes to a clone).
+    #[must_use]
+    pub fn get_texture_or_null(&self, id: &str) -> AssetRef {
+        self.state
+            .lock()
+            .expect("asset state poisoned")
+            .storage
+            .texture_or_null(id)
     }
 
     /// C++ `getFontOrNullFont(id)`.
-    pub fn get_font_or_null<'a>(&'a self, id: &'a str) -> AssetRef<'a> {
-        self.storage.font_or_null(id)
+    #[must_use]
+    pub fn get_font_or_null(&self, id: &str) -> AssetRef {
+        self.state
+            .lock()
+            .expect("asset state poisoned")
+            .storage
+            .font_or_null(id)
     }
 
     /// C++ `getTexture(id)` (`assert` non-null in C++; `Option` here).
+    #[must_use]
     pub fn get_texture(&self, id: &str) -> Option<bool> {
-        self.storage.get_texture(id)
+        self.state
+            .lock()
+            .expect("asset state poisoned")
+            .storage
+            .get_texture(id)
     }
 
     /// C++ `getFont(id)`.
+    #[must_use]
     pub fn get_font(&self, id: &str) -> Option<bool> {
-        self.storage.get_font(id)
+        self.state
+            .lock()
+            .expect("asset state poisoned")
+            .storage
+            .get_font(id)
     }
 
     /// C++ `getSoundBuffer(assetId)`.
+    #[must_use]
     pub fn get_sound_buffer(&self, asset_id: &str) -> Option<bool> {
-        self.storage.get_sound_buffer(asset_id)
+        self.state
+            .lock()
+            .expect("asset state poisoned")
+            .storage
+            .get_sound_buffer(asset_id)
     }
 
     /// The on-disk path of a registered sound buffer (the C++ `getSoundBuffer`
     /// returns the in-memory `sf::SoundBuffer*`; the port exposes the source
-    /// path so `oh-audio` can decode it — issue 025e).
+    /// path so `oh-audio` can decode it — issue 025e). Owned (module docs).
     #[must_use]
-    pub fn get_sound_path(&self, asset_id: &str) -> Option<&std::path::Path> {
-        self.storage.get_sound_path(asset_id)
+    pub fn get_sound_path(&self, asset_id: &str) -> Option<PathBuf> {
+        self.state
+            .lock()
+            .expect("asset state poisoned")
+            .storage
+            .get_sound_path(asset_id)
     }
 
     /// C++ `isValidLevelId`.
     #[must_use]
     pub fn is_valid_level_id(&self, level_id: &str) -> bool {
-        self.level_datas.contains_key(level_id)
+        self.state
+            .lock()
+            .expect("asset state poisoned")
+            .level_datas
+            .contains_key(level_id)
     }
 
     /// C++ `getLevelData(assetId)` (`assert` validity; `Option` here).
-    pub fn get_level_data(&self, asset_id: &str) -> Option<&LevelData> {
-        self.level_datas.get(asset_id)
+    /// Owned (module docs: the reload replaces these entries in place).
+    #[must_use]
+    pub fn get_level_data(&self, asset_id: &str) -> Option<LevelData> {
+        self.state
+            .lock()
+            .expect("asset state poisoned")
+            .level_datas
+            .get(asset_id)
+            .cloned()
     }
 
     /// C++ `packHasLevels(packId)`.
     #[must_use]
     pub fn pack_has_levels(&self, pack_id: &str) -> bool {
-        self.level_data_ids_by_pack.contains_key(pack_id)
+        self.state
+            .lock()
+            .expect("asset state poisoned")
+            .level_data_ids_by_pack
+            .contains_key(pack_id)
     }
 
     /// C++ `getLevelIdsByPack(packId)` (`assert` presence; `Option` here).
-    pub fn get_level_ids_by_pack(&self, pack_id: &str) -> Option<&Vec<String>> {
-        self.level_data_ids_by_pack.get(pack_id)
+    /// Owned (module docs).
+    #[must_use]
+    pub fn get_level_ids_by_pack(&self, pack_id: &str) -> Option<Vec<String>> {
+        self.state
+            .lock()
+            .expect("asset state poisoned")
+            .level_data_ids_by_pack
+            .get(pack_id)
+            .cloned()
     }
 
     /// C++ `getPackDatas()`.
@@ -959,30 +1058,48 @@ impl Assets {
 
     /// C++ `getMusicData(packId, id)`: the entry, or the smallest-key entry
     /// as a fail-soft fallback (C++ `assert`s the map is non-empty; `None`
-    /// here when it is).
-    pub fn get_music_data(&self, pack_id: &str, id: &str) -> Option<&MusicData> {
+    /// here when it is). Owned (module docs).
+    #[must_use]
+    pub fn get_music_data(&self, pack_id: &str, id: &str) -> Option<MusicData> {
         let asset_id = format!("{pack_id}_{id}");
-        self.music_data_map
+        let st = self.state.lock().expect("asset state poisoned");
+        st.music_data_map
             .get(&asset_id)
-            .or_else(|| self.music_data_map.iter().next().map(|(_, v)| v))
+            .or_else(|| st.music_data_map.iter().next().map(|(_, v)| v))
+            .cloned()
     }
 
-    /// C++ `getStyleData(packId, id)` (same fail-soft fallback).
-    pub fn get_style_data(&self, pack_id: &str, id: &str) -> Option<&StyleData> {
+    /// C++ `getStyleData(packId, id)` (same fail-soft fallback). Owned
+    /// (module docs).
+    #[must_use]
+    pub fn get_style_data(&self, pack_id: &str, id: &str) -> Option<StyleData> {
         let asset_id = format!("{pack_id}_{id}");
-        self.style_data_map
+        let st = self.state.lock().expect("asset state poisoned");
+        st.style_data_map
             .get(&asset_id)
-            .or_else(|| self.style_data_map.iter().next().map(|(_, v)| v))
+            .or_else(|| st.style_data_map.iter().next().map(|(_, v)| v))
+            .cloned()
     }
 
-    /// C++ `getMusicPath(assetId)`.
-    pub fn get_music_path(&self, asset_id: &str) -> Option<&String> {
-        self.music_path_map.get(asset_id)
+    /// C++ `getMusicPath(assetId)`. Owned (module docs).
+    #[must_use]
+    pub fn get_music_path(&self, asset_id: &str) -> Option<String> {
+        self.state
+            .lock()
+            .expect("asset state poisoned")
+            .music_path_map
+            .get(asset_id)
+            .cloned()
     }
 
-    /// C++ `getLevelDatas()`.
-    pub fn get_level_datas(&self) -> &HashMap<String, LevelData> {
-        &self.level_datas
+    /// C++ `getLevelDatas()`. Owned (module docs).
+    #[must_use]
+    pub fn get_level_datas(&self) -> HashMap<String, LevelData> {
+        self.state
+            .lock()
+            .expect("asset state poisoned")
+            .level_datas
+            .clone()
     }
 
     /// C++ `getPackIdsWithMissingDependencies()`.
@@ -1050,6 +1167,383 @@ impl Assets {
     #[must_use]
     pub fn is_valid_shader_id(&self, id: usize) -> bool {
         self.shaders.is_valid_id(id)
+    }
+
+    // ------------------------------------------------------------------
+    // RELOAD (C++ `reloadAllShaders` / `reloadPack` / `reloadLevel`,
+    // Assets.cpp:1159-1443) — the F3/F4 debug asset reload: re-read the
+    // pack's (or one level's) data from disk IN PLACE. The state the
+    // reload replaces (module docs): `levelDatas` + `levelDataIdsByPack`
+    // (insert-or-replace), `styleDataMap` / `musicDataMap` (replace-or-
+    // insert), `musicPathMap` (emplace — first wins), the sound-buffer
+    // registry (first load wins). A file DELETED from disk is NOT removed
+    // (the C++ never erases on reload — the stale entry stays), and the
+    // load-results / error state (`loadInfo`) is untouched (the C++'s
+    // reloads return the result string instead of recording).
+    // ------------------------------------------------------------------
+
+    /// C++ `reloadAllShaders()` (Assets.cpp:1159-1171): re-read every
+    /// registered shader's source from disk (the C++ re-compiles the GLSL
+    /// in place — issue 10's payload; the port's load stand-in is "the
+    /// file exists", so a re-read is a re-check). A failure logs and
+    /// leaves the registry untouched (the C++'s `continue`).
+    pub fn reload_all_shaders(&self) {
+        for id in 0..self.shaders.len() {
+            let Some(shader) = self.shaders.get_by_id(id) else {
+                continue;
+            };
+            if !self.root.join(&shader.path).is_file() {
+                // C++: `ssvu::lo("hg::HGAssetsImplImpl::reloadAllShaders")
+                // << "Failed to load shader '<path>'\n" (the channel keeps
+                // the C++'s `ImplImpl` typo).
+                println!(
+                    "[hg::HGAssetsImplImpl::reloadAllShaders] Failed to load shader '{}'\n",
+                    shader.path
+                );
+            }
+        }
+    }
+
+    /// C++ `reloadPack(mPackId, mPath)` (Assets.cpp:1174-1278): the debug
+    /// reload of a WHOLE pack. `mPath` is the pack's logical folder path
+    /// WITH a trailing slash (the C++'s `PackData::folderPath`). Returns
+    /// the multi-line result string the C++'s `MenuGame::reloadAssets`
+    /// dialog shows.
+    pub fn reload_pack(&self, pack_id: &str, pack_path: &str) -> String {
+        let mut output = String::new();
+
+        // Levels — the C++ aborts EVERYTHING when the folder is missing.
+        let levels = format!("{pack_path}Levels/");
+        if !self.root.join(&levels).is_dir() {
+            return "invalid level folder path\n".to_string();
+        }
+        for p in pack_scan::scan_single_by_ext(&self.root, &levels, ".json") {
+            // C++ `LevelData{ssvuj::getFromFile(p), mPath, mPackId}`:
+            // a parse failure logs (inside `read_file_with_errors` — the
+            // C++'s `ssvuj::logReadError` line) and yields a Null object →
+            // the default-valued `LevelData` (id = "nullId") — the port
+            // mirrors that (the C++'s `getFromFile` discards the error
+            // string; the formatted `LogInfo` recording is the
+            // `getFromFileWithErrors` half, NOT this path).
+            let (object, _error) = read_file_with_errors(&self.root.join(&p));
+            let level_data = match LevelData::from_json(&object, pack_path, pack_id) {
+                Ok(ld) => ld,
+                Err(e) => {
+                    // C++: a type-mismatched field `getExtr` would throw
+                    // with no surrounding catch (process abort); the
+                    // port's clean-error deviation class (the `Assets::
+                    // new` `FatalLoadError` analog) — log + skip the file.
+                    println!("[ssvuj::logReadError] {}", e.formatted_messages());
+                    continue;
+                }
+            };
+            let asset_id = format!("{pack_id}_{}", level_data.id);
+            let mut st = self.state.lock().expect("asset state poisoned");
+            // C++'s find/emplace/replace: a NEW key appends to
+            // `levelDataIdsByPack` + inserts; an EXISTING key replaces in
+            // place (no id-list append).
+            if !st.level_datas.contains_key(&asset_id) {
+                st.level_data_ids_by_pack
+                    .entry(pack_id.to_string())
+                    .or_default()
+                    .push(asset_id.clone());
+            }
+            st.level_datas.insert(asset_id, level_data);
+        }
+        output.push_str("Levels successfully reloaded\n");
+
+        // Styles — `styleDataMap[key] =` (replace-or-insert).
+        let styles = format!("{pack_path}Styles/");
+        if !self.root.join(&styles).is_dir() {
+            output.push_str("invalid style folder path\n");
+        } else {
+            for p in pack_scan::scan_single_by_ext(&self.root, &styles, ".json") {
+                let (object, _error) = read_file_with_errors(&self.root.join(&p));
+                match StyleData::from_json(&object) {
+                    Ok(style_data) => {
+                        let asset_id = format!("{pack_id}_{}", style_data.id);
+                        self.state
+                            .lock()
+                            .expect("asset state poisoned")
+                            .style_data_map
+                            .insert(asset_id, style_data);
+                    }
+                    Err(e) => {
+                        println!("[ssvuj::logReadError] {}", e.formatted_messages());
+                    }
+                }
+            }
+            output.push_str("Styles successfully reloaded\n");
+        }
+
+        // Music data — `musicDataMap[key] =` (replace-or-insert).
+        let music = format!("{pack_path}Music/");
+        if !self.root.join(&music).is_dir() {
+            output.push_str("invalid music data folder path\n");
+        } else {
+            for p in pack_scan::scan_single_by_ext(&self.root, &music, ".json") {
+                let (object, _error) = read_file_with_errors(&self.root.join(&p));
+                match load_music_from_json(&object) {
+                    Ok(music_data) => {
+                        let asset_id = format!("{pack_id}_{}", music_data.id);
+                        self.state
+                            .lock()
+                            .expect("asset state poisoned")
+                            .music_data_map
+                            .insert(asset_id, music_data);
+                    }
+                    Err(e) => {
+                        println!("[ssvuj::logReadError] {}", e.formatted_messages());
+                    }
+                }
+            }
+            output.push_str("Music data successfully reloaded\n");
+        }
+
+        // Music files — `musicPathMap.emplace` (FIRST WINS — an existing
+        // entry is NOT replaced).
+        if !self.root.join(&music).is_dir() {
+            output.push_str("invalid music folder path\n");
+        } else {
+            for p in pack_scan::scan_single_by_ext(&self.root, &music, ".ogg") {
+                let base = file_name_no_ext(&p);
+                let asset_id = format!("{pack_id}_{base}");
+                self.state
+                    .lock()
+                    .expect("asset state poisoned")
+                    .music_path_map
+                    .entry(asset_id)
+                    .or_insert(p);
+            }
+            output.push_str("Music files successfully reloaded\n");
+        }
+
+        // Custom sounds — the `AssetStorage` first-load-wins (`p`
+        // = the bare file name WITH the `.ogg`, the C++'s
+        // `p.getFileName()`).
+        let sounds = format!("{pack_path}Sounds/");
+        if !self.root.join(&sounds).is_dir() {
+            output.push_str("invalid custom sound folder path\n");
+        } else {
+            for p in pack_scan::scan_single_by_ext(&self.root, &sounds, ".ogg") {
+                let file_name = logical_filename(&p);
+                let asset_id = format!("{pack_id}_{file_name}");
+                let real = self.root.join(&p);
+                let loaded = self
+                    .state
+                    .lock()
+                    .expect("asset state poisoned")
+                    .storage
+                    .load_sound_buffer(&asset_id, &real);
+                if !loaded {
+                    // C++: the failed line is appended AND the tail line
+                    // still follows (no early return).
+                    output.push_str("Failed to load sound buffer '");
+                    output.push_str(&p);
+                    output.push_str("'\n");
+                }
+            }
+            output.push_str("Custom sound files successfully reloaded\n");
+        }
+
+        output
+    }
+
+    /// C++ `reloadLevel(mPackId, mPath, mId)` (Assets.cpp:1280-1443): the
+    /// debug reload of ONE level — by-NAME file scans (`mId + ".json"`,
+    /// `styleId + ".json"`, `musicId + ".json"`, `musicId + ".ogg"` unless
+    /// `nullMusicId`, `soundId + ".ogg"` unless `nullSoundId` — all from
+    /// the NEWLY loaded level data). Returns the result string (the C++
+    /// `return`s early on every terminal arm — the port preserves each).
+    pub fn reload_level(&self, pack_id: &str, pack_path: &str, level_id: &str) -> String {
+        // Level — the C++ aborts on a missing folder or a missing file.
+        let levels = format!("{pack_path}Levels/");
+        if !self.root.join(&levels).is_dir() {
+            return "invalid level folder path\n".to_string();
+        }
+        let level_files =
+            pack_scan::scan_single_by_name(&self.root, &levels, &format!("{level_id}.json"));
+        if level_files.is_empty() {
+            return "no matching level data file found\n".to_string();
+        }
+        // "There is only one file, so we can just subscript index 0."
+        let level_file = &level_files[0];
+        let (object, _error) = read_file_with_errors(&self.root.join(level_file));
+        let level_data = match LevelData::from_json(&object, pack_path, pack_id) {
+            Ok(ld) => ld,
+            Err(e) => {
+                // C++: a type-mismatched field `getExtr` would throw with
+                // no surrounding catch (process abort); the port's
+                // clean-error deviation class — log + return the output so
+                // far (empty at this point, as in the C++'s crash).
+                println!("[ssvuj::logReadError] {}", e.formatted_messages());
+                return String::new();
+            }
+        };
+        let asset_id = format!("{pack_id}_{level_id}");
+        {
+            let mut st = self.state.lock().expect("asset state poisoned");
+            // The C++'s find/emplace/replace (the id-list append only on a
+            // NEW key — as `reload_pack`'s level section).
+            if !st.level_datas.contains_key(&asset_id) {
+                st.level_data_ids_by_pack
+                    .entry(pack_id.to_string())
+                    .or_default()
+                    .push(asset_id.clone());
+            }
+            st.level_datas.insert(asset_id, level_data.clone());
+        }
+        let mut output = format!("level data {level_id}.json successfully loaded\n");
+
+        // Style (the NEWLY loaded level's `styleId`).
+        let styles = format!("{pack_path}Styles/");
+        if !self.root.join(&styles).is_dir() {
+            output.push_str("invalid style folder path\n");
+        } else {
+            let style_files = pack_scan::scan_single_by_name(
+                &self.root,
+                &styles,
+                &format!("{}.json", level_data.style_id),
+            );
+            if style_files.is_empty() {
+                output.push_str("no matching style file found\n");
+            } else {
+                let (object, _error) = read_file_with_errors(&self.root.join(&style_files[0]));
+                match StyleData::from_json(&object) {
+                    Ok(style_data) => {
+                        let asset_id = format!("{pack_id}_{}", level_data.style_id);
+                        self.state
+                            .lock()
+                            .expect("asset state poisoned")
+                            .style_data_map
+                            .insert(asset_id, style_data);
+                        output.push_str(&format!(
+                            "style data {}.json successfully loaded\n",
+                            level_data.style_id
+                        ));
+                    }
+                    Err(e) => {
+                        println!("[ssvuj::logReadError] {}", e.formatted_messages());
+                        return output;
+                    }
+                }
+            }
+        }
+
+        // Music data (the NEWLY loaded level's `musicId`).
+        let music = format!("{pack_path}Music/");
+        if !self.root.join(&music).is_dir() {
+            output.push_str("invalid music data folder path\n");
+        } else {
+            let music_data_files = pack_scan::scan_single_by_name(
+                &self.root,
+                &music,
+                &format!("{}.json", level_data.music_id),
+            );
+            if music_data_files.is_empty() {
+                output.push_str("no matching music data file found\n");
+            } else {
+                let (object, _error) = read_file_with_errors(&self.root.join(&music_data_files[0]));
+                match load_music_from_json(&object) {
+                    Ok(music_data) => {
+                        let asset_id = format!("{pack_id}_{}", level_data.music_id);
+                        self.state
+                            .lock()
+                            .expect("asset state poisoned")
+                            .music_data_map
+                            .insert(asset_id, music_data);
+                        output.push_str(&format!(
+                            "music data {}.json successfully loaded\n",
+                            level_data.music_id
+                        ));
+                    }
+                    Err(e) => {
+                        println!("[ssvuj::logReadError] {}", e.formatted_messages());
+                        return output;
+                    }
+                }
+            }
+        }
+
+        // Music files (`nullMusicId` → the section is skipped; the
+        // missing-folder line still fires — the C++'s `else if` gates the
+        // INNER half only).
+        if !self.root.join(&music).is_dir() {
+            output.push_str("invalid music folder path\n");
+        } else if level_data.music_id != "nullMusicId" {
+            let asset_id = format!("{pack_id}_{}", level_data.music_id);
+            let music_files = pack_scan::scan_single_by_name(
+                &self.root,
+                &music,
+                &format!("{}.ogg", level_data.music_id),
+            );
+            if music_files.is_empty() {
+                output.push_str("no matching music file found\n");
+            } else {
+                // C++ `musicPathMap.emplace` — first wins.
+                self.state
+                    .lock()
+                    .expect("asset state poisoned")
+                    .music_path_map
+                    .entry(asset_id)
+                    .or_insert(music_files[0].clone());
+            }
+        }
+
+        // Sound files (`nullSoundId` → the C++'s early `return output`).
+        if level_data.sound_id == "nullSoundId" {
+            return output;
+        }
+        let sounds = format!("{pack_path}Sounds/");
+        if !self.root.join(&sounds).is_dir() {
+            output.push_str("invalid custom sound folder path\n");
+            return output;
+        }
+        // The C++'s `assetId` here is WITHOUT the extension (`soundId`
+        // only — unlike `reload_pack`'s scan, which keys on the bare file
+        // name WITH `.ogg`; the port mirrors the C++ verbatim).
+        let sound_asset_id = format!("{pack_id}_{}", level_data.sound_id);
+        // The C++'s `hasSoundBuffer` short-circuit.
+        if self
+            .state
+            .lock()
+            .expect("asset state poisoned")
+            .storage
+            .has_sound_buffer(&sound_asset_id)
+        {
+            output.push_str(&format!(
+                "custom sound file {}.ogg is already loaded\n",
+                level_data.sound_id
+            ));
+            return output;
+        }
+        let sound_files = pack_scan::scan_single_by_name(
+            &self.root,
+            &sounds,
+            &format!("{}.ogg", level_data.sound_id),
+        );
+        if sound_files.is_empty() {
+            output.push_str("no matching custom sound file found\n");
+            return output;
+        }
+        let real = self.root.join(&sound_files[0]);
+        let loaded = self
+            .state
+            .lock()
+            .expect("asset state poisoned")
+            .storage
+            .load_sound_buffer(&sound_asset_id, &real);
+        if !loaded {
+            output.push_str("Failed to load sound buffer '");
+            output.push_str(&sound_files[0]);
+            output.push_str("'\n");
+            return output;
+        }
+        output.push_str(&format!(
+            "new custom sound file {}.ogg successfully loaded\n",
+            level_data.sound_id
+        ));
+        output
     }
 }
 

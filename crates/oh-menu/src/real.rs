@@ -58,7 +58,6 @@ impl MenuAssets for RealMenuAssets {
     fn level_ids_for_pack(&self, pack_id: &str) -> Vec<String> {
         self.assets
             .get_level_ids_by_pack(pack_id)
-            .cloned()
             .unwrap_or_default()
     }
 
@@ -67,10 +66,15 @@ impl MenuAssets for RealMenuAssets {
         // C++ `assets.getMusicData(levelData.packId, levelData.musicId)`
         // (MenuGame.cpp:5545-5556): missing music → the C++ default-
         // constructed `MusicData` (empty name/author/album).
-        let music = self.assets.get_music_data(&l.pack_id, &l.music_id);
+        let (music_name, music_author, music_album) =
+            match self.assets.get_music_data(&l.pack_id, &l.music_id) {
+                Some(m) => (m.name, m.author, m.album),
+                None => (String::new(), String::new(), String::new()),
+            };
         Some(LevelInfo {
             id: l.id.clone(),
             pack_id: l.pack_id.clone(),
+            pack_path: l.pack_path.clone(),
             name: l.name.clone(),
             author: l.author.clone(),
             description: l.description.clone(),
@@ -80,9 +84,9 @@ impl MenuAssets for RealMenuAssets {
             unscored: l.unscored,
             validators: l.validators.clone(),
             validators_without_pack_id: l.validators_without_pack_id.clone(),
-            music_name: music.map(|m| m.name.clone()).unwrap_or_default(),
-            music_author: music.map(|m| m.author.clone()).unwrap_or_default(),
-            music_album: music.map(|m| m.album.clone()).unwrap_or_default(),
+            music_name,
+            music_author,
+            music_album,
         })
     }
 
@@ -93,7 +97,7 @@ impl MenuAssets for RealMenuAssets {
         let Some(style) = self.assets.get_style_data(&l.pack_id, &l.style_id) else {
             return Vec::new();
         };
-        let mut style = style.clone();
+        let mut style = style;
         style.compute_colors();
         style.get_colors().to_vec()
     }
@@ -105,7 +109,7 @@ impl MenuAssets for RealMenuAssets {
         let Some(style) = self.assets.get_style_data(&l.pack_id, &l.style_id) else {
             return Color::default();
         };
-        let mut style = style.clone();
+        let mut style = style;
         style.compute_colors();
         *style.get_text_color()
     }
@@ -199,7 +203,29 @@ impl MenuAssets for RealMenuAssets {
         )
         .is_ok()
     }
-    fn reload_assets(&self, _entire_pack: bool, _current_level_id: &str) {}
+    fn reload_all_shaders(&self) {
+        // C++ `assets.reloadAllShaders()` (Assets.cpp:1159-1171) — the F3/F4
+        // handler's first call (MenuGame.cpp:3101).
+        self.assets.reload_all_shaders();
+    }
+    fn reload_assets(&self, entire_pack: bool, current_level_id: &str) -> String {
+        // C++ `assets.reloadPack(levelData->packId, levelData->packPath)` /
+        // `assets.reloadLevel(… + levelData->id)` (MenuGame.cpp:3104-3114):
+        // the current level's `packId` / `packPath` / `id` — the `Assets`
+        // store's entry (the C++'s `levelData` member's source).
+        let Some(level) = self.assets.get_level_data(current_level_id) else {
+            // C++: `assets.getLevelData` would `assert` on an unknown id;
+            // the port's legacy `None` arm (the menu handler always passes
+            // a level it just listed, so the C++ assert never fires).
+            return String::new();
+        };
+        if entire_pack {
+            self.assets.reload_pack(&level.pack_id, &level.pack_path)
+        } else {
+            self.assets
+                .reload_level(&level.pack_id, &level.pack_path, &level.id)
+        }
+    }
     fn find_pack_id_by_name(&self, name: &str) -> Option<String> {
         // C++ `loadCommandLineLevel` (MenuGame.cpp:1696-1703): iterate
         // `assets.getPackDatas()` (an `unordered_map`) for the first
@@ -244,7 +270,7 @@ impl RealMenuAssets {
     fn style_of(&self, level_id: &str) -> Option<oh_data::StyleData> {
         let l = self.assets.get_level_data(level_id)?;
         let style = self.assets.get_style_data(&l.pack_id, &l.style_id)?;
-        let mut style = style.clone();
+        let mut style = style;
         style.compute_colors();
         Some(style)
     }

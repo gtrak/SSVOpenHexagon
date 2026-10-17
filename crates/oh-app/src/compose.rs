@@ -102,7 +102,6 @@ impl AssetsApi for RealAssetsApi {
     fn get_music_data(&self, pack_id: &str, id: &str) -> Result<MusicData, LuaError> {
         self.assets
             .get_music_data(pack_id, id)
-            .cloned()
             .ok_or_else(|| LuaError::ExecutionError {
                 message: format!("Asset '{pack_id}_{id}' not found\n"),
             })
@@ -111,7 +110,6 @@ impl AssetsApi for RealAssetsApi {
     fn get_style_data(&self, pack_id: &str, id: &str) -> Result<StyleData, LuaError> {
         self.assets
             .get_style_data(pack_id, id)
-            .cloned()
             .ok_or_else(|| LuaError::ExecutionError {
                 message: format!("Asset '{pack_id}_{id}' not found\n"),
             })

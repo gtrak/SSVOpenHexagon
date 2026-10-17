@@ -69,6 +69,10 @@ pub type IgnoreInputsCallback = Box<dyn Fn(bool)>;
 pub struct LevelInfo {
     pub id: String,
     pub pack_id: String,
+    /// C++ `LevelData::packPath` (the pack's logical folder path, WITH a
+    /// trailing slash — the F3/F4 `reloadAssets` handler's `reloadPack` /
+    /// `reloadLevel` `mPath` argument, MenuGame.cpp:3109-3114).
+    pub pack_path: String,
     pub name: String,
     pub author: String,
     /// C++ `LevelData.description` (the level-selection left panel).
@@ -225,8 +229,18 @@ pub trait MenuAssets {
     /// store erase is separate and runs only on success). `true` = the
     /// file existed and was removed (the C++'s `std::remove` == 0).
     fn profile_remove_file(&self, name: &str) -> bool;
-    /// `reloadAssets(reloadEntirePack)` (F3/F4, debug only).
-    fn reload_assets(&self, entire_pack: bool, current_level_id: &str);
+    /// C++ `assets.reloadAllShaders()` (Assets.cpp:1159-1171) — the F3/F4
+    /// handler's first reload call (MenuGame.cpp:3101): re-read every
+    /// registered shader's source from disk (a failure logs, the registry
+    /// is untouched).
+    fn reload_all_shaders(&self);
+    /// C++ `assets.reloadPack(levelData->packId, levelData->packPath)` /
+    /// `assets.reloadLevel(… + levelData->id)` (Assets.cpp:1174-1278 /
+    /// :1280-1443; MenuGame.cpp:3104-3114) — the F3/F4 debug reload: re-
+    /// read the pack's (or the one level's) level / style / music / sound
+    /// data from disk, in place. Returns the multi-line result log the
+    /// C++ handler uppercases into the dialog box.
+    fn reload_assets(&self, entire_pack: bool, current_level_id: &str) -> String;
     // ---- command-line boot (C++ `loadCommandLineLevel`, MenuGame.cpp:1688+)
     /// The C++ iterates `assets.getPackDatas()` (an `unordered_map`) and
     /// takes the FIRST entry whose `name` equals `mPack` (MenuGame.cpp:
@@ -697,6 +711,10 @@ pub struct FakeAssetsInner {
     /// across all profiles).
     pub favorites: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     pub reload_log: Vec<(bool, String)>,
+    /// C++ `reloadAllShaders()` call count (the F3/F4 handler's first
+    /// reload call — the menu test asserts it fired alongside the pack /
+    /// level reload).
+    pub shaders_reload_count: u32,
     /// C++ `pSaveCurrent()` call log — `Some(name)` = the save ran, `None`
     /// = the no-current-profile early return (the `play_locally` test
     /// asserts the first-save).
@@ -719,6 +737,7 @@ impl FakeAssets {
                 current_profile: None,
                 favorites: std::collections::BTreeMap::new(),
                 reload_log: Vec::new(),
+                shaders_reload_count: 0,
                 profile_save_log: Vec::new(),
             }),
         })
@@ -747,6 +766,7 @@ impl FakeAssets {
             let lvl = LevelInfo {
                 id: id.clone(),
                 pack_id: pack_id.to_string(),
+                pack_path: format!("Packs/{pack_id}/"),
                 name: name.to_string(),
                 author: "author".to_string(),
                 description: String::new(),
@@ -782,6 +802,19 @@ impl FakeAssets {
     #[must_use]
     pub fn profile_save_log(&self) -> Vec<Option<String>> {
         self.inner.borrow().profile_save_log.clone()
+    }
+
+    /// The `reloadAssets` call log — `(entire_pack, level_id)` per F3/F4
+    /// handler run (the 29i1 menu test asserts through it).
+    #[must_use]
+    pub fn reload_log(&self) -> Vec<(bool, String)> {
+        self.inner.borrow().reload_log.clone()
+    }
+
+    /// The `reloadAllShaders()` call count (the F3/F4 handler's first call).
+    #[must_use]
+    pub fn shaders_reload_count(&self) -> u32 {
+        self.inner.borrow().shaders_reload_count
     }
 
     /// Sets the pack's `name` (the C++ `PackData.name` the `-p` argument
@@ -933,11 +966,16 @@ impl MenuAssets for FakeAssets {
         inner.profiles.retain(|p| p != name);
         true
     }
-    fn reload_assets(&self, entire_pack: bool, current_level_id: &str) {
+    fn reload_all_shaders(&self) {
+        self.inner.borrow_mut().shaders_reload_count += 1;
+    }
+    fn reload_assets(&self, entire_pack: bool, current_level_id: &str) -> String {
         self.inner
             .borrow_mut()
             .reload_log
             .push((entire_pack, current_level_id.to_string()));
+        // The C++'s multi-line result log (the dialog box's source).
+        String::from("FAKE RELOAD RESULT\n")
     }
     fn find_pack_id_by_name(&self, name: &str) -> Option<String> {
         let inner = self.inner.borrow();
