@@ -185,7 +185,8 @@ Single-VM is the goal; the two credible candidates are **reference Lua 5.1** and
   loses on dialect risk.
 
 **Decide with §7's spike, not by preference.** Whichever way: record a
-`DECISIONS.md` entry (next free is **D-036**), a `deviations.md` row, correct the
+`DECISIONS.md` entry (the number is **D-037** — D-036 was claimed by the wasm/web
+target's decision while this issue was open), a `deviations.md` row, correct the
 now-falsified claims (`oh-lua/Cargo.toml:7-10` "matching the C++ build"; the
 skill's "fork" framing), and keep any determinism claim scoped to the VM(s) that
 actually run.
@@ -206,3 +207,55 @@ actually run.
 | 30b | the `oh-lua` VM-abstraction seam (`number2str`, error/traceback, sandbox steps, FFI) behind features |
 | 30c | wire the chosen VM; re-pin the Lua parity corpus; gate green on the chosen feature mode(s) |
 | 30d | (only if unified on a non-LuaJIT VM) the desktop/Android perf decision — interpreter vs `luau-jit` |
+
+## 11. The measurement — 030a LANDED (2026-10-17), and what it settles
+
+The §7 spike is no longer a one-off experiment: it is a permanent, gate-wired test
+module. `oh-parity` carries the differential-simulation harness (43 corpus cases over
+the shipped packs; per-frame fingerprints of RNG/walls/player/score/customScore/status
+timers/entities; a first-divergent-frame comparator; a multi-process repeat; perf; and a
+self-check) plus eight explicit VM probes, run by `tools/lua-parity.sh` as **gate stage
+5**. `backend-luajit` (default) and `backend-luau` are mutually-exclusive host features,
+so both VMs are buildable and comparable on the host — the property the spike needed.
+
+**Measured:**
+
+- **43/43 corpus cases byte-identical across backends**, and **3 separate processes per
+  backend identical** — no gameplay nondeterminism from the VM swap. This is the result
+  the spike existed to get, and it is now re-proved on every gate rather than believed.
+- **`pairs` order IS VM-dependent** (Luau stable across 4 observations, LuaJIT varying
+  across 3) **and gameplay is unaffected** — which settles the question §3 raised:
+  iteration order is not observable in this engine, because the corpus is byte-identical
+  regardless.
+- **6 of 8 VM probes differ, and every difference is dialect surface**: number spellings
+  (including a literal-parse difference), the `error()` chunk prefix, the sandbox surface
+  (e.g. `require('ffi')`), and Integer width (8-byte exact vs 4-byte saturating). Two are
+  identical (`%.14g`, number→string).
+- **Perf (debug, 2500 frames)**: light level 6.09 vs 6.60 µs/frame (LuaJIT/Luau, ~+8%,
+  ≈1.2% of the 200–360 fps frame budget); the Lua-bound heavy case (`stress1`) is
+  backend-neutral (1037 vs 1029 µs/frame).
+- **Android**: `cargo check -p oh-app --target aarch64-linux-android` passes with Luau
+  (LuaJIT regression-checked too), NDK 27.2.12479018.
+
+**For §8's decision: keep `backend-luajit` as the default.** The parity evidence says
+Luau would be safe *on the shipped corpus*, but two things argue against unifying now:
+(a) the C++ build runs LuaJIT, so LuaJIT is the parity default and a divergence class is
+eliminated rather than managed; (b) the corpus is in-repo-only — third-party/user packs
+are exactly where an untested dialect difference would show up, and there is no such
+corpus to test against here. Keeping `backend-luau` gate-covered (stage 5 proves parity
+on every run) leaves the switch as a one-line default change if a reason appears
+(wasm/Android runtime constraints, say), rather than a migration.
+
+**Not established, stated plainly:** release-mode perf on either backend; on-device
+perf (the Android evidence is compile-only); `pairs`-order stability beyond 3–4
+processes; third-party pack content; the emscripten build under these features
+(verified by construction so far — issue 26 is the lane that actually runs it in a
+browser).
+
+**One stale item in 030a's own report, corrected here:** it lists "the C++ third column
+(030b blocked on system X11/GL packages)" as not established. 030b has since landed the
+frame-level C++ oracle (3627/3627 frames identical, with committed vectors), so that
+column now exists — meaning the Luau arm can be compared **against the C++ directly**,
+not only against LuaJIT. That three-way check (C++ ↔ LuaJIT ↔ Luau over the same corpus)
+is the natural next evidence if the default is ever revisited; it is a follow-up, not a
+gap in 030a.
