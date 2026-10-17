@@ -197,6 +197,13 @@ impl CWall {
         self.hue_mod = hue_mod;
     }
 
+    /// 030b fingerprint (additive-only; the C++ twin is `getHueMod()`, see
+    /// .agents/plans/001-rust-port/parity/cpp-fingerprint-definition.md).
+    #[must_use]
+    pub const fn get_hue_mod(&self) -> f32 {
+        self.hue_mod
+    }
+
     #[must_use]
     pub fn get_vertex_positions(&self) -> [Vec2; 4] {
         self.vertex_positions

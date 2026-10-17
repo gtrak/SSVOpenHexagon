@@ -31,12 +31,26 @@ pub type State = u64;
 /// [[nodiscard]] seed_type seed() const noexcept;
 /// template <typename T> T get_int(T min, T max) noexcept;
 /// template <typename T> T get_real(T min, T max) noexcept;
-/// void advance(const state_type delta) noexcept;
+/// `void advance(const state_type delta) noexcept;
+/// ```
+///
+/// 030b additions (NOT in the C++ header — the C++ instrumentation patch
+/// adds the same three to the twin wrapper):
+/// ```cpp
+/// [[nodiscard]] std::uint64_t draws() const noexcept;         // 030b
+/// [[nodiscard]] state_type state() const noexcept;           // 030b
+/// private: std::uint64_t draws{0};                           // 030b
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RandomNumberGenerator {
     seed: Seed,
     engine: Pcg32Fast,
+    // Task 030b fingerprint: the game-RNG draw count (one wrapper call =
+    // one draw; the per-frame delta is the fingerprint's `draws` column —
+    // see .agents/plans/001-rust-port/parity/cpp-fingerprint-definition.md,
+    // "The RNG trap"). Reset with the object (the C++ twin resets by
+    // `newGame` replacing `rng` with a fresh wrapper).
+    draws: u64,
 }
 
 impl RandomNumberGenerator {
@@ -45,7 +59,11 @@ impl RandomNumberGenerator {
     pub fn new(seed: Seed) -> Self {
         let mut engine = Pcg32Fast::from_seed(seed);
         engine.advance(1);
-        Self { seed, engine }
+        Self {
+            seed,
+            engine,
+            draws: 0,
+        }
     }
 
     /// C++ `seed()` accessor (returns the stored seed, not the state).
@@ -54,12 +72,29 @@ impl RandomNumberGenerator {
         self.seed
     }
 
+    /// Task 030b: the number of `get_int` / `get_real` calls on this wrapper
+    /// so far (the C++ twin counts the same calls on
+    /// `hg::random_number_generator`).
+    #[must_use]
+    pub fn draws(&self) -> u64 {
+        self.draws
+    }
+
+    /// Task 030b: the canonical MCG state label (fingerprint field 15 —
+    /// the C++ twin is `random_number_generator::state()`, the public
+    /// `pcg32_fast` `operator-` against the wrapped-state engine).
+    #[must_use]
+    pub fn state_position(&self) -> u64 {
+        self.engine.state_position()
+    }
+
     /// Port of `get_int<T>(min, max)` for the integral types the game uses
     /// (`int` via the Lua API; unsigned variants for parity with the C++
     /// template). Delegates to [`uniform_int`].
     #[must_use]
     pub fn get_int<T: IntDist>(&mut self, min: T, max: T) -> T {
         debug_assert!(min <= max, "SSVOH_ASSERT(min <= max)");
+        self.draws += 1;
         uniform_int(&mut self.engine, min, max)
     }
 
@@ -68,6 +103,7 @@ impl RandomNumberGenerator {
     #[must_use]
     pub fn get_real<T: RealDist>(&mut self, min: T, max: T) -> T {
         debug_assert!(min <= max, "SSVOH_ASSERT(min <= max)");
+        self.draws += 1;
         uniform_real(&mut self.engine, min, max)
     }
 
@@ -484,5 +520,58 @@ mod tests {
                 "full-width int range mismatch (seed 12345)"
             );
         }
+    }
+
+    /// Pins the canonical MCG state label (task 030b fingerprint field 15)
+    /// to the C++ probe (`tools/oracle/pcg_state_probe.cpp`, g++ 15.2):
+    /// `f - pcg32_fast{3}` after the wrapper ctor's `advance(1)` plus
+    /// `extra` bumps. The label is the bump count from the wrapped state 3,
+    /// so for seeds 0/1 (where `seed | 3 == 3`) it is exactly `1 + extra`.
+    #[test]
+    fn state_position_matches_cpp_probe() {
+        // (seed, extra) -> label, verbatim from the probe output.
+        let cases: [(u64, u64, u64); 16] = [
+            (0, 0, 1),
+            (0, 1, 2),
+            (0, 7, 8),
+            (0, 1000, 1001),
+            (1, 0, 1),
+            (1, 63, 64),
+            (1, 1000, 1001),
+            (12345, 0, 3227583411176240611),
+            (12345, 1, 3227583411176240612),
+            (12345, 7, 3227583411176240618),
+            (12345, 63, 3227583411176240674),
+            (12345, 100, 3227583411176240711),
+            (12345, 1000, 3227583411176241611),
+            (987654321, 0, 2833726022148399333),
+            (987654321, 1000, 2833726022148400333),
+            (4294967295, 1000, 2765020584010523108),
+        ];
+        for (seed, extra, label) in cases {
+            let mut e = Pcg32Fast::from_seed(seed);
+            e.advance(1 + extra);
+            assert_eq!(
+                e.state_position(),
+                label,
+                "state label mismatch (seed {seed}, +{extra} bumps)"
+            );
+        }
+    }
+
+    /// The label is the bump count from the wrapped state: advancing by k
+    /// bumps the label by exactly k (mod 2^62) — the probe's `linearity`.
+    #[test]
+    fn state_position_is_affine_in_bumps() {
+        let mut a = Pcg32Fast::from_seed(12345);
+        a.advance(1);
+        let base = a.state_position();
+        let mut b = Pcg32Fast::from_seed(12345);
+        b.advance(1 + 1000);
+        assert_eq!(
+            (b.state_position() - base) % (1u64 << 62),
+            1000,
+            "the label must advance by exactly the bump count"
+        );
     }
 }

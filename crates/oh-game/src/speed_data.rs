@@ -45,6 +45,23 @@ impl SpeedData {
         }
     }
 
+    // 030b fingerprint accessors (the C++ `SpeedData` fields are public;
+    // see .agents/plans/001-rust-port/parity/cpp-fingerprint-definition.md).
+    #[must_use]
+    pub const fn min(&self) -> f32 {
+        self.min
+    }
+
+    #[must_use]
+    pub const fn max(&self) -> f32 {
+        self.max
+    }
+
+    #[must_use]
+    pub const fn ping_pong(&self) -> f32 {
+        self.ping_pong
+    }
+
     /// C++ `update(const ssvu::FT ft)`.
     ///
     /// Order of checks: `_speed > _max` first, then `else if _speed < _min`.

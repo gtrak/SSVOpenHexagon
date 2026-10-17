@@ -364,6 +364,14 @@ pub struct EngineState {
     // 495-506); `discordAttempt` starts at `1`, `discordHung` at `false`.
     pub(crate) discord_hung: bool,
     pub(crate) discord_attempt: i8,
+
+    // 030b fingerprint (OFF BY DEFAULT, additive-only; see
+    // .agents/plans/001-rust-port/parity/cpp-fingerprint-definition.md):
+    // `fingerprint_file == None` = disabled (the default) — `update` takes
+    // no extra path, so default behaviour AND output are unchanged.
+    pub(crate) fingerprint_file: Option<std::fs::File>,
+    pub(crate) fingerprint_frame: u64, // 0-based, reset by `new_game`
+    pub(crate) fingerprint_last_draws: u64, // reset by `new_game`
 }
 
 fn entropy_seed() -> u64 {
@@ -616,6 +624,11 @@ impl<S: SharedStore> HexagonGame<S> {
             // C++ `discordAttempt{1}` / `discordHung{false}` (HexagonGame.hpp:91,89).
             discord_hung: false,
             discord_attempt: 1,
+            // 030b fingerprint: OFF by default (the C++ `fingerprintFile` is
+            // nullptr until `setFingerprintPath`).
+            fingerprint_file: None,
+            fingerprint_frame: 0,
+            fingerprint_last_draws: 0,
         };
 
         // C++ `HexagonGame` ctor's "Keyboard binds" section
@@ -724,6 +737,16 @@ impl<S: SharedStore> HexagonGame<S> {
         m_difficulty_mult: f32,
         m_execute_last_replay: bool,
     ) {
+        // 030b fingerprint (additive-only): the frame counter is per-game
+        // (see .agents/plans/001-rust-port/parity/
+        // cpp-fingerprint-definition.md). `st.rng` is replaced below with a
+        // fresh wrapper (draws == 0), so the draw baseline resets with it.
+        {
+            let mut e = self.est();
+            e.fingerprint_frame = 0;
+            e.fingerprint_last_draws = 0;
+        }
+
         // C++: save replay when restarting without having died.
         if !m_first_play {
             self.save_replay();
@@ -1612,6 +1635,34 @@ impl<S: SharedStore> HexagonGame<S> {
     /// exposed directly for tests).
     pub fn set_advance_tick_count(&self, n: i32) {
         self.est().advance_tick_count = Some(n);
+    }
+
+    /// 030b fingerprint — the C++ twin of `HexagonGame::setFingerprintPath`
+    /// (OFF BY DEFAULT, additive-only; the definition:
+    /// `.agents/plans/001-rust-port/parity/cpp-fingerprint-definition.md`).
+    ///
+    /// When `Some(path)`, the end-of-`update` hook writes one line per
+    /// frame, `<frame> <hash> <draws>\n` (hash = FNV-1a64 over the exact
+    /// v1 field order; floats as raw IEEE bits; the game-RNG state as its
+    /// canonical MCG label). `None` closes any open file: the hook takes no
+    /// extra path and default behaviour AND output are unchanged.
+    ///
+    /// Returns `false` (and leaves the file closed) when the path cannot be
+    /// opened — mirroring the C++ `fopen` failure (null file, hook off).
+    pub fn set_fingerprint_path(&self, path: Option<&std::path::Path>) -> bool {
+        let mut e = self.est();
+        e.fingerprint_file.take(); // drops (closes) the previous file (fclose)
+
+        e.fingerprint_frame = 0;
+        e.fingerprint_last_draws = 0;
+
+        match path.and_then(|p| std::fs::File::create(p).ok()) {
+            Some(file) => {
+                e.fingerprint_file = Some(file);
+                true
+            }
+            None => false,
+        }
     }
 
     // ------------------------------------------------------------------

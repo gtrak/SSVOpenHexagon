@@ -486,6 +486,147 @@ impl<S: SharedStore> HexagonGame<S> {
                 self.invalidate_score("SHADERS REQUIRED");
             }
         }
+
+        // 030b fingerprint (OFF BY DEFAULT, additive-only): the end-of-update
+        // line `<frame> <hash> <draws>` — see .agents/plans/001-rust-port/
+        // parity/cpp-fingerprint-definition.md (the C++ twin is the same
+        // call at the end of `HexagonGame::update`, HGUpdate.cpp).
+        self.maybe_emit_fingerprint();
+    }
+
+    /// 030b fingerprint (OFF BY DEFAULT, additive-only) — the port twin of
+    /// the C++ `HexagonGame::maybeEmitFingerprint` (HGUpdate.cpp). The field
+    /// set, ORDER, hash and the RNG trap are the definition note's; a drift
+    /// in either implementation is a fingerprint-definition break.
+    fn maybe_emit_fingerprint(&self) {
+        let mut e = self.est();
+        if e.fingerprint_file.is_none() {
+            return; // OFF by default: no path, no behaviour change.
+        }
+        let g = self.st();
+
+        let mut b = FingerprintBuilder::new();
+
+        // S1/S2: the standard walls, in vector (spawn) order. The four
+        // vertices carry position AND orientation (no derived trig).
+        b.u32(g.walls.len() as u32);
+        for w in &g.walls {
+            for p in w.get_vertex_positions() {
+                b.f32(p.x);
+                b.f32(p.y);
+            }
+
+            let s = w.get_speed();
+            b.f32(s.speed);
+            b.f32(s.accel);
+            b.f32(s.min());
+            b.f32(s.max());
+            b.f32(s.ping_pong());
+
+            let c = w.get_curve();
+            b.f32(c.speed);
+            b.f32(c.accel);
+            b.f32(c.min());
+            b.f32(c.max());
+            b.f32(c.ping_pong());
+
+            b.f32(w.get_hue_mod());
+            b.u8(u8::from(w.is_dead()));
+        }
+
+        // S3/S4: the custom walls, in ascending ALIVE-handle order.
+        let alive = g.cw_manager.alive_handles();
+        b.u32(alive.len() as u32);
+        for &h in &alive {
+            for p in g.cw_manager.get_vertex_pos4(h) {
+                b.f32(p.x);
+                b.f32(p.y);
+            }
+
+            b.u8(g.cw_manager.get_killing_side(h));
+
+            let mut flags: u8 = 0;
+            if !g.cw_manager.get_can_collide(h) {
+                flags |= 1; // bit 0 = NoCollision (CWFlags / port bitfield)
+            }
+            if g.cw_manager.get_deadly(h) {
+                flags |= 2; // bit 1 = Deadly
+            }
+            b.u8(flags);
+        }
+
+        // S5: the player (position + rotation angle).
+        let p_pos = e.player.get_position();
+        b.f32(p_pos.x);
+        b.f32(p_pos.y);
+        b.f32(e.player.get_player_angle());
+
+        // S6: the status scalars.
+        b.f32(g.status.pulse);
+        b.f32(g.status.pulse_direction);
+        b.f32(g.status.pulse_delay);
+        b.f32(g.status.beat_pulse);
+        b.f32(g.status.beat_pulse_delay);
+        b.f32(g.status.pulse_3d);
+        b.f32(g.status.pulse_3d_direction);
+        b.f32(g.status.flash_effect);
+        b.f32(g.status.radius);
+        b.f32(g.status.fast_spin);
+        b.f32(g.status.camera_shake);
+
+        // S7: the status booleans.
+        b.u8(u8::from(g.status.has_died));
+        b.u8(match g.status.must_state_change {
+            StateChange::None => 0,
+            StateChange::MustRestart => 1,
+            StateChange::MustReplay => 2,
+        });
+        b.u8(u8::from(g.status.score_invalid));
+        b.u8(u8::from(g.status.started));
+        b.u8(u8::from(g.status.show_player_trail));
+
+        // S8/S9/S10: the custom score + the timekeeping (the `Final time`
+        // print is exactly field 9, at the final frame).
+        b.f32(g.status.get_custom_score());
+        b.f64(g.status.get_time_seconds());
+        b.f64(g.status.get_increment_time_seconds());
+
+        // S11: the level-status timers.
+        b.u64(g.level_status.current_increments);
+        b.u32(g.level_status.sides);
+        b.f32(g.level_status.speed_mult);
+        b.f32(g.level_status.delay_mult);
+        b.f32(g.level_status.rotation_speed);
+
+        // S12/S13: the difficulty and the replay's recorded score.
+        b.f32(g.difficulty_mult);
+        b.f64(e.last_played_score);
+
+        // S14: the entity counts.
+        b.u32(e.particles.len() as u32);
+        b.u32(e.trail_particles.len() as u32);
+        b.u32(e.swap_particles.len() as u32);
+
+        // S15: the game-RNG canonical state label.
+        b.u64(g.rng.state_position());
+
+        let draws_now = g.rng.draws();
+        let line = format!(
+            "{} {:016x} {}\n",
+            e.fingerprint_frame,
+            b.hash(),
+            draws_now - e.fingerprint_last_draws
+        );
+
+        if let Some(file) = e.fingerprint_file.as_mut() {
+            // The hook is observation-only; a write failure must not mutate
+            // gameplay (the C++ twin's `fputs` failure is likewise inert).
+            use std::io::Write as _;
+            let _ = file.write_all(line.as_bytes());
+        }
+
+        e.fingerprint_frame += 1;
+        e.fingerprint_last_draws = draws_now;
     }
 
     /// C++ `postUpdate()` — `postUpdate_ImguiLuaConsole()` only
@@ -1630,6 +1771,58 @@ impl<S: SharedStore> HexagonGame<S> {
     #[must_use]
     pub fn effect_timeline_pending(&self) -> usize {
         self.est().effect_timeline_manager.entries_count()
+    }
+}
+
+// 030b fingerprint — the FNV-1a 64 field builder (the definition note:
+// .agents/plans/001-rust-port/parity/cpp-fingerprint-definition.md, v1).
+// Floats enter as RAW IEEE-754 bit patterns (never an epsilon compare: a
+// 1-ULP divergence must change the hash). The byte order and field order
+// must stay bit-identical to the C++ twin (HGUpdate.cpp).
+struct FingerprintBuilder {
+    hash: u64,
+}
+
+impl FingerprintBuilder {
+    #[must_use]
+    const fn new() -> Self {
+        Self {
+            hash: 0xcbf29ce484222325,
+        }
+    }
+
+    fn mix_byte(&mut self, byte: u8) {
+        self.hash ^= u64::from(byte);
+        self.hash = self.hash.wrapping_mul(0x0000_0100_0000_01b3); // FNV-1a 64 prime (0x100000001b3)
+    }
+
+    fn u8(&mut self, v: u8) {
+        self.mix_byte(v);
+    }
+
+    fn u32(&mut self, v: u32) {
+        self.u8(v as u8);
+        self.u8((v >> 8) as u8);
+        self.u8((v >> 16) as u8);
+        self.u8((v >> 24) as u8);
+    }
+
+    fn u64(&mut self, v: u64) {
+        self.u32(v as u32);
+        self.u32((v >> 32) as u32);
+    }
+
+    fn f32(&mut self, v: f32) {
+        self.u32(v.to_bits());
+    }
+
+    fn f64(&mut self, v: f64) {
+        self.u64(v.to_bits());
+    }
+
+    #[must_use]
+    const fn hash(&self) -> u64 {
+        self.hash
     }
 }
 

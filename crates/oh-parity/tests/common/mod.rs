@@ -618,6 +618,9 @@ pub fn read_corpus(path: impl AsRef<Path>) -> serde_json::Value {
 /// the live alwaysSpinRight run's outcome is seed-dependent by C++ design
 /// and is pinned as PROPERTIES only; see the corpus `evidence`).
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // each test binary compiles this module separately:
+                    // `gen_corpus` / `parity_cpp_fingerprints` build their own case structs
+                    // from `cpp_fingerprints.json` and don't read `Run`.
 pub struct Run {
     /// `<pack-shortname>_<level-shortname>` (the determinism-harness pair).
     pub pair: String,
@@ -640,6 +643,7 @@ pub struct Run {
 impl Run {
     /// Parse one `runs[]` entry.
     #[must_use]
+    #[allow(dead_code)] // as the struct: the 030b tests don't read it.
     pub fn from(entry: &serde_json::Value) -> Self {
         Self {
             pair: entry["pair"].as_str().expect("pair").to_string(),

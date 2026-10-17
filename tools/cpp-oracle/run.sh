@@ -2,11 +2,15 @@
 # Build (and run) the C++ reference binary in a container — task 030b's "C++ column".
 #
 #   tools/cpp-oracle/run.sh image             # build the dependency image (docker)
+#   tools/cpp-oracle/run.sh init              # git submodule update --init the 5 extlibs the build needs
 #   tools/cpp-oracle/run.sh seed              # fetch every CPM pin by SHA into $BUILD/*-src
+#   tools/cpp-oracle/run.sh instrument        # apply fingerprint.patch to the tree (the instrumented build)
+#   tools/cpp-oracle/run.sh deinstrument      # reverse it (the reference tree back to pristine)
 #   tools/cpp-oracle/run.sh configure         # cmake configure  (VERIFIED GREEN 2026-10-17)
 #   tools/cpp-oracle/run.sh build             # configure + build (LONG: SFML+LuaJIT+the game)
 #   tools/cpp-oracle/run.sh shell             # interactive shell in the image
 #   tools/cpp-oracle/run.sh run -- <args>     # run the built binary from _RELEASE
+#   tools/cpp-oracle/run.sh run [-e KEY=VAL ...] -- ARGS...   (run the built binary)
 #
 # WHY THIS EXISTS (learned the hard way):
 #  * The C++ fetches SFML/luajit/zlib/imgui/imgui-sfml/libsodium/boostpfr via CPM,
@@ -20,6 +24,24 @@
 #    CMake at the local trees with FETCHCONTENT_SOURCE_DIR_<NAME>.
 #  * `libsodium-cmake` carries `libsodium` as a SUBMODULE -> `git submodule update
 #    --init --recursive`, or configure dies on a missing `version.h.in`.
+#  * WALL #5 (030b, 2026-10-17): a fresh LANE WORKTREE has the `extlibs/*` git
+#    submodules UNINITIALIZED (empty dirs). The container mounts the worktree at
+#    /src, so `include(vrm_cmake)` (CMakeLists.txt:256, module from
+#    extlibs/vrm_cmake/cmake) and every `#include "SSVUtils/..."` / "SSVStart/..." /
+#    "SSVMenuSystem/..." die on the empty tree. `init` checks the five pinned
+#    submodules out (SSVUtils, SSVStart, SSVMenuSystem, vrm_cmake, vrm_pp —
+#    `extlibs/SFML` is listed in .gitmodules but UNUSED: the build uses the CPM
+#    vittorioromeo/SFML fork). Run it once per worktree; it only touches the
+#    worktree (the submodule commit pointers are the repo's pinned state).
+#  * WALL #6 (030b, 2026-10-17): the old `build` one-liner built its job count
+#    as `\"$(nproc)\"` INSIDE the container's `sh -lc` string, so cmake saw a
+#    literal-quoted `-j"24"` and printed its usage. The job count is now expanded
+#    by the HOST shell before docker run.
+#  * WALL #7 (030b, 2026-10-17): the pinned SFML fork (dacceddb) predates the
+#    GCC 13+ libstdc++ change that stopped transitively including <cstdint>,
+#    so its PCH dies on `std::uint32_t has not been declared` under the
+#    container's g++ 15. The fix is ENVIRONMENTAL (no source change): force
+#    `-include cstdint` through CMAKE_CXX_FLAGS in the cmake invocation below.
 #
 # The repo is mounted READ-ONLY at /src; everything build-related lives OUTSIDE the
 # checkout (${REPO%/}/../oh-cpp-build) so the reference tree stays pristine.
@@ -58,6 +80,32 @@ case "$CMD" in
     docker build -t "$IMAGE" "$REPO/tools/cpp-oracle"
     ;;
 
+  init)
+    # The extlibs submodules the C++ build actually needs (pinned SHAs are the
+    # repo's state — `git submodule update --init` checks exactly those out).
+    ( cd "$REPO" && timeout 900 git submodule update --init \
+        extlibs/SSVUtils extlibs/SSVStart extlibs/SSVMenuSystem \
+        extlibs/vrm_cmake extlibs/vrm_pp )
+    ;;
+
+  instrument)
+    # The C++ column's instrumentation lives ONLY as
+    # tools/cpp-oracle/fingerprint.patch: master's reference tree stays pristine
+    # so that every D-014 `file:line` citation keeps addressing the same text.
+    # The patch is exactly equivalent to the (development) in-tree edits that
+    # produced the vectors — verified by reverse-applying it and diffing the
+    # seven files against master (all byte-identical).
+    # The container mounts $REPO READ-ONLY at /src, so the patch cannot be
+    # applied from inside: do it here, on the host, before `build`.
+    git -C "$REPO" apply "$REPO/tools/cpp-oracle/fingerprint.patch" \
+      && echo "instrumented (-fingerprint hook in the tree) — remember: deinstrument"
+    ;;
+
+  deinstrument)
+    git -C "$REPO" apply -R "$REPO/tools/cpp-oracle/fingerprint.patch" \
+      && echo "pristine (the reference tree is back to master)"
+    ;;
+
   seed)
     mkdir -p "$BUILD"
     for p in "${PINS[@]}"; do
@@ -80,17 +128,55 @@ case "$CMD" in
     DOCKER_ARGS=(--rm -v "$REPO":/src:ro -v "$BUILD":/build)
     case "$CMD" in
       configure|build)
-        # shellcheck disable=SC2046
-        docker run "${DOCKER_ARGS[@]}" "$IMAGE" sh -lc \
-          "cmake -S /src -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release $(fc_flags)$([ "$CMD" = build ] && echo ' && cmake --build /build -j\"$(nproc)\"')"
+        # The build job count is expanded HERE (host shell), not inside the
+        # container's sh: an escaped `\"$(nproc)\"` inside the sh -lc string
+        # reaches cmake as a literal-quoted `-j"24"` and cmake prints its
+        # usage (verified 2026-10-17, the 030b build wall #5).
+        if [ "$CMD" = configure ]; then
+          # shellcheck disable=SC2046
+          docker run "${DOCKER_ARGS[@]}" "$IMAGE" sh -lc \
+            "cmake -S /src -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS='-include cstdint' $(fc_flags)"
+        else
+          # shellcheck disable=SC2046
+          docker run "${DOCKER_ARGS[@]}" "$IMAGE" sh -lc \
+            "cmake -S /src -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS='-include cstdint' $(fc_flags) && cmake --build /build -j $(nproc)"
+        fi
         ;;
       shell)
         docker run -it "${DOCKER_ARGS[@]}" "$IMAGE" bash
         ;;
       run)
+        # Optional `-e KEY=VAL` flags before the `--` separator are forwarded
+        # to the container as `--env` (debug hooks, e.g. OH030B_FP_DEBUG_PATH).
+        EXTRA_ENV=()
+        while [ "${1:-}" = "-e" ]; do
+          shift
+          EXTRA_ENV+=("--env" "${1:?-e needs KEY=VAL}")
+          shift
+        done
         [ "${1:-}" = "--" ] && shift || true
-        docker run "${DOCKER_ARGS[@]}" -w /src/_RELEASE "$IMAGE" sh -lc \
-          'bin=$(find /build -maxdepth 3 -type f -name "OpenHexagon*" -perm -u+x | head -1); exec "$bin" "$@"' sh "$@"
+        # Inner script (run by the container's sh; the binary name is the
+        # cmake target SSVOpenHexagon). Kept single-quoted: no apostrophes
+        # inside, or the OUTER shell mis-parses (learned the hard way).
+        RUN_SCRIPT='
+          set -e
+          bin=$(find /build -maxdepth 2 -type f -perm -u+x | grep -E "/(SSVOpenHexagon|OpenHexagon)[.a-z]*$" | head -1)
+          [ -n "$bin" ] || { echo "no built SSVOpenHexagon binary in /build" >&2; exit 1; }
+          # main() sets the CWD to the parent of argv[0]
+          # (src/SSVOpenHexagon/Core/main.cpp) and loads `Assets/` / `Packs/`
+          # from the CWD, so stage a _RELEASE-shaped dir under the writable
+          # /build: the binary symlink (as argv[0]) + symlinks to every
+          # /src/_RELEASE entry (read-only sources).
+          mkdir -p /build/_RELEASE
+          for e in /src/_RELEASE/*; do
+            n=$(basename "$e")
+            [ "$n" = "SSVOpenHexagon" ] && continue
+            ln -sfn "$e" "/build/_RELEASE/$n"
+          done
+          ln -sfn "$bin" /build/_RELEASE/SSVOpenHexagon
+          exec /build/_RELEASE/SSVOpenHexagon "$@"
+        '
+        docker run "${DOCKER_ARGS[@]}" "${EXTRA_ENV[@]}" -w /build "$IMAGE" sh -lc "$RUN_SCRIPT" sh "$@"
         ;;
     esac
     ;;

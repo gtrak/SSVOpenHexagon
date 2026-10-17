@@ -1,0 +1,490 @@
+diff --git a/include/SSVOpenHexagon/Components/CCustomWallManager.hpp b/include/SSVOpenHexagon/Components/CCustomWallManager.hpp
+index 310bf18..86aeb21 100644
+--- a/include/SSVOpenHexagon/Components/CCustomWallManager.hpp
++++ b/include/SSVOpenHexagon/Components/CCustomWallManager.hpp
+@@ -100,6 +100,25 @@ public:
+         return _count;
+     }
+ 
++    // 030b fingerprint (additive-only; see .agents/plans/001-rust-port/
++    // parity/cpp-fingerprint-definition.md): the ALIVE custom-wall handles
++    // in ascending order (`_handleAvailable[h]` is true when the handle is
++    // FREE, so live == the negation). A destroyed handle must not be read
++    // through the getters.
++    [[nodiscard]] std::vector<CCustomWallHandle> aliveHandles() const noexcept
++    {
++        std::vector<CCustomWallHandle> alive;
++        for(std::size_t h = 0; h < _handleAvailable.size(); ++h)
++        {
++            if(!_handleAvailable[h])
++            {
++                alive.emplace_back(static_cast<CCustomWallHandle>(h));
++            }
++        }
++
++        return alive;
++    }
++
+     [[nodiscard]] std::size_t maxHandles() const noexcept
+     {
+         return _customWalls.size();
+diff --git a/include/SSVOpenHexagon/Components/CWall.hpp b/include/SSVOpenHexagon/Components/CWall.hpp
+index 21ad8c2..1f7abbf 100644
+--- a/include/SSVOpenHexagon/Components/CWall.hpp
++++ b/include/SSVOpenHexagon/Components/CWall.hpp
+@@ -71,6 +71,15 @@ public:
+ 
+     void setHueMod(float hueMod) noexcept;
+ 
++    // 030b fingerprint (additive-only; see .agents/plans/001-rust-port/
++    // parity/cpp-fingerprint-definition.md): the hue modifier (0 for every
++    // shipped level; included so a future non-zero use cannot silently
++    // desync the fingerprint).
++    [[nodiscard, gnu::always_inline]] float getHueMod() const noexcept
++    {
++        return _hueMod;
++    }
++
+     [[nodiscard, gnu::always_inline]] const std::array<sf::Vector2f, 4>&
+     getVertexPositions() const noexcept
+     {
+diff --git a/include/SSVOpenHexagon/Core/HexagonGame.hpp b/include/SSVOpenHexagon/Core/HexagonGame.hpp
+index e1e6d06..afe5ea1 100644
+--- a/include/SSVOpenHexagon/Core/HexagonGame.hpp
++++ b/include/SSVOpenHexagon/Core/HexagonGame.hpp
+@@ -42,6 +42,7 @@
+ #include <SFML/System/Clock.hpp>
+ 
+ #include <cstdint>
++#include <cstdio>
+ #include <sstream>
+ #include <unordered_set>
+ #include <functional>
+@@ -231,6 +232,14 @@ private:
+     random_number_generator rng;
+     HexagonGameStatus status;
+ 
++    // 030b fingerprint (OFF BY DEFAULT, additive-only; see
++    // .agents/plans/001-rust-port/parity/cpp-fingerprint-definition.md).
++    // `fingerprintFile` null = disabled (the default): `update` takes no
++    // extra path, so default behaviour AND output are unchanged.
++    std::FILE* fingerprintFile{nullptr};
++    std::int64_t fingerprintFrame{0}; // 0-based, reset by `newGame`
++    std::uint64_t fingerprintLastDraws{0}; // reset by `newGame`
++
+     float deathInputIgnore{0.f};
+ 
+     struct ActiveReplay
+@@ -367,6 +376,11 @@ private:
+     void updateParticles(ssvu::FT mFT);
+     void updateTrailParticles(ssvu::FT mFT);
+     void updateSwapParticles(ssvu::FT mFT);
++    // 030b fingerprint (OFF BY DEFAULT, additive-only; see
++    // .agents/plans/001-rust-port/parity/cpp-fingerprint-definition.md):
++    // emits the end-of-`update` line `<frame> <hash> <draws>` when a
++    // fingerprint file is open.
++    void maybeEmitFingerprint();
+ 
+     // Post update methods
+     void postUpdate();
+@@ -558,6 +572,11 @@ public:
+     [[nodiscard]] bool mustShowReplayUI() const noexcept;
+ 
+     [[nodiscard]] float getSwapCooldown() const noexcept;
++
++    // 030b fingerprint (see the definition note): open the per-frame
++    // fingerprint output at `path` (one line per `update`, `<frame> <hash>
++    // <draws>`). OFF by default; additive-only.
++    void setFingerprintPath(const std::string& path);
+ };
+ 
+ } // namespace hg
+diff --git a/include/SSVOpenHexagon/Core/RandomNumberGenerator.hpp b/include/SSVOpenHexagon/Core/RandomNumberGenerator.hpp
+index 433edf8..eb1175f 100644
+--- a/include/SSVOpenHexagon/Core/RandomNumberGenerator.hpp
++++ b/include/SSVOpenHexagon/Core/RandomNumberGenerator.hpp
+@@ -9,6 +9,7 @@
+ 
+ #include <SSVUtils/Internal/PCG/PCG.hpp>
+ 
++#include <cstdint>
+ #include <random>
+ 
+ namespace hg {
+@@ -23,6 +24,10 @@ public:
+ private:
+     seed_type _seed;
+     engine_type _rng;
++    // 030b fingerprint (OFF BY DEFAULT, additive-only; see
++    // .agents/plans/001-rust-port/parity/cpp-fingerprint-definition.md):
++    // the game-RNG draw count (one get_int/get_real call = one draw).
++    std::uint64_t _draws{0};
+ 
+ public:
+     explicit random_number_generator(const seed_type seed) noexcept;
+@@ -34,6 +39,7 @@ public:
+         const T min, const T max) noexcept
+     {
+         SSVOH_ASSERT(min <= max);
++        ++_draws; // 030b
+         return std::uniform_int_distribution<T>{min, max}(_rng);
+     }
+ 
+@@ -42,6 +48,7 @@ public:
+         const T min, const T max) noexcept
+     {
+         SSVOH_ASSERT(min <= max);
++        ++_draws; // 030b
+         return std::uniform_real_distribution<T>{min, max}(_rng);
+     }
+ 
+@@ -49,6 +56,24 @@ public:
+     {
+         _rng.advance(delta);
+     }
++
++    // 030b fingerprint: the number of get_int/get_real calls so far.
++    [[nodiscard]] std::uint64_t draws() const noexcept
++    {
++        return _draws;
++    }
++
++    // 030b fingerprint: the canonical pcg32_fast state label — the number of
++    // engine bumps d in [0, 2^62) with 3 * M^d == state (mod 2^64). The
++    // engine state and `engine::distance` are protected in
++    // pcg_random.hpp, so the label comes from the PUBLIC `operator-`
++    // (`lhs - rhs == rhs.distance(lhs.state_)`) against the wrapped-state
++    // engine `pcg32_fast{3}` (states are always == 3 (mod 4)). Pure-integer,
++    // transcendental-free, unique per state.
++    [[nodiscard]] state_type state() const noexcept
++    {
++        return _rng - engine_type{3};
++    }
+ };
+ 
+ } // namespace hg
+diff --git a/src/SSVOpenHexagon/Core/HGUpdate.cpp b/src/SSVOpenHexagon/Core/HGUpdate.cpp
+index fb1453f..e294b4d 100644
+--- a/src/SSVOpenHexagon/Core/HGUpdate.cpp
++++ b/src/SSVOpenHexagon/Core/HGUpdate.cpp
+@@ -48,9 +48,62 @@
+ 
+ #include <cstring>
+ #include <cstdint>
++#include <cstdio>
+ 
+ namespace hg {
+ 
++namespace
++{
++// 030b fingerprint — the FNV-1a 64 field builder (the definition note:
++// .agents/plans/001-rust-port/parity/cpp-fingerprint-definition.md, v1).
++// Floats enter as RAW IEEE-754 bit patterns (never an epsilon compare: a
++// 1-ULP divergence must change the hash).
++struct FingerprintBuilder
++{
++    std::uint64_t hash{0xcbf29ce484222325ULL};
++
++    void mixByte(const std::uint8_t byte)
++    {
++        hash ^= byte;
++        hash *= 0x100000001b3ULL;
++    }
++
++    void u8(const std::uint8_t v)
++    {
++        mixByte(v);
++    }
++
++    void u32(const std::uint32_t v)
++    {
++        u8(static_cast<std::uint8_t>(v & 0xffu));
++        u8(static_cast<std::uint8_t>((v >> 8) & 0xffu));
++        u8(static_cast<std::uint8_t>((v >> 16) & 0xffu));
++        u8(static_cast<std::uint8_t>((v >> 24) & 0xffu));
++    }
++
++    void u64(const std::uint64_t v)
++    {
++        u32(static_cast<std::uint32_t>(v & 0xffffffffu));
++        u32(static_cast<std::uint32_t>(v >> 32));
++    }
++
++    void f32(const float v)
++    {
++        std::uint32_t bits;
++        std::memcpy(&bits, &v, sizeof(bits));
++        u32(bits);
++    }
++
++    void f64(const double v)
++    {
++        std::uint64_t bits;
++        std::memcpy(&bits, &v, sizeof(bits));
++        u64(bits);
++    }
++};
++
++} // namespace
++
+ void HexagonGame::fastForwardTo(const double target)
+ {
+     const HRTimePoint tpBegin = HRClock::now();
+@@ -422,6 +475,165 @@ void HexagonGame::update(ssvu::FT mFT, const float timescale)
+             invalidateScore("SHADERS REQUIRED");
+         }
+     }
++
++    // 030b fingerprint (OFF BY DEFAULT, additive-only): the end-of-update
++    // line `<frame> <hash> <draws>` — see .agents/plans/001-rust-port/
++    // parity/cpp-fingerprint-definition.md.
++    maybeEmitFingerprint();
++}
++
++// ------------------------------------------------------------------------
++// 030b fingerprint (OFF BY DEFAULT, additive-only). The definition (field
++// set, order, hash, the RNG trap) is .agents/plans/001-rust-port/parity/
++// cpp-fingerprint-definition.md; the port's twin is crates/oh-game.
++// ------------------------------------------------------------------------
++
++void HexagonGame::setFingerprintPath(const std::string& mPath)
++{
++    if(fingerprintFile != nullptr)
++    {
++        std::fclose(fingerprintFile);
++    }
++
++    fingerprintFile = std::fopen(mPath.c_str(), "w");
++    fingerprintFrame = 0;
++    fingerprintLastDraws = 0;
++}
++
++void HexagonGame::maybeEmitFingerprint()
++{
++    if(fingerprintFile == nullptr)
++    {
++        return; // OFF by default: no path, no behaviour change.
++    }
++
++    FingerprintBuilder b;
++
++    // S1/S2: the standard walls, in vector (spawn) order. The four
++    // vertices carry position AND orientation (no derived trig).
++    b.u32(static_cast<std::uint32_t>(walls.size()));
++
++    for(const CWall& w : walls)
++    {
++        for(const sf::Vector2f& p : w.getVertexPositions())
++        {
++            b.f32(p.x);
++            b.f32(p.y);
++        }
++
++        const SpeedData& s = w.getSpeed();
++        b.f32(s._speed);
++        b.f32(s._accel);
++        b.f32(s._min);
++        b.f32(s._max);
++        b.f32(s._pingPong);
++
++        const SpeedData& c = w.getCurve();
++        b.f32(c._speed);
++        b.f32(c._accel);
++        b.f32(c._min);
++        b.f32(c._max);
++        b.f32(c._pingPong);
++
++        b.f32(w.getHueMod());
++        b.u8(w.isDead() ? 1u : 0u);
++    }
++
++    // S3/S4: the custom walls, in ascending ALIVE-handle order (a
++    // destroyed handle is never read through the getters).
++    const std::vector<CCustomWallHandle> alive = cwManager.aliveHandles();
++    b.u32(static_cast<std::uint32_t>(alive.size()));
++
++    for(const CCustomWallHandle h : alive)
++    {
++        for(const sf::Vector2f& p : cwManager.getVertexPos4(h))
++        {
++            b.f32(p.x);
++            b.f32(p.y);
++        }
++
++        b.u8(cwManager.getKillingSide(h));
++
++        std::uint8_t flags{0};
++        if(!cwManager.getCanCollide(h))
++        {
++            flags |= 1u; // bit 0 = NoCollision (CWFlags / port bitfield)
++        }
++
++        if(cwManager.getDeadly(h))
++        {
++            flags |= 2u; // bit 1 = Deadly
++        }
++
++        b.u8(flags);
++    }
++
++    // S5: the player (position + rotation angle).
++    const sf::Vector2f pPos = player.getPosition();
++    b.f32(pPos.x);
++    b.f32(pPos.y);
++    b.f32(player.getPlayerAngle());
++
++    // S6: the status scalars.
++    b.f32(status.pulse);
++    b.f32(status.pulseDirection);
++    b.f32(status.pulseDelay);
++    b.f32(status.beatPulse);
++    b.f32(status.beatPulseDelay);
++    b.f32(status.pulse3D);
++    b.f32(status.pulse3DDirection);
++    b.f32(status.flashEffect);
++    b.f32(status.radius);
++    b.f32(status.fastSpin);
++    b.f32(status.cameraShake);
++
++    // S7: the status booleans.
++    b.u8(status.hasDied ? 1u : 0u);
++    b.u8(static_cast<std::uint8_t>(status.mustStateChange));
++    b.u8(status.scoreInvalid ? 1u : 0u);
++    b.u8(status.started ? 1u : 0u);
++    b.u8(status.showPlayerTrail ? 1u : 0u);
++
++    // S8/S9/S10: the custom score + the timekeeping (the `Final time`
++    // print is exactly field 9, at the final frame).
++    b.f32(status.getCustomScore());
++    b.f64(status.getTimeSeconds());
++    b.f64(status.getIncrementTimeSeconds());
++
++    // S11: the level-status timers.
++    b.u64(levelStatus.currentIncrements);
++    b.u32(static_cast<std::uint32_t>(levelStatus.sides));
++    b.f32(levelStatus.speedMult);
++    b.f32(levelStatus.delayMult);
++    b.f32(levelStatus.rotationSpeed);
++
++    // S12/S13: the difficulty and the replay's recorded score.
++    b.f32(difficultyMult);
++    b.f64(lastPlayedScore);
++
++    // S14: the entity counts (the particles are mostly cosmetic; counts
++    // are the comparable part — see the definition note).
++    b.u32(static_cast<std::uint32_t>(particles.size()));
++    b.u32(static_cast<std::uint32_t>(trailParticles.size()));
++    b.u32(static_cast<std::uint32_t>(swapParticles.size()));
++
++    // S15: the game-RNG canonical state label (see the definition note's
++    // "The canonical RNG-state label").
++    b.u64(rng.state());
++
++    const std::uint64_t drawsNow = rng.draws();
++    const std::uint64_t drawsDelta = drawsNow - fingerprintLastDraws;
++
++    char line[64];
++    std::snprintf(line, sizeof(line), "%lld %016llx %llu\n",
++        static_cast<long long>(fingerprintFrame),
++        static_cast<unsigned long long>(b.hash),
++        static_cast<unsigned long long>(drawsDelta));
++
++    std::fputs(line, fingerprintFile);
++
++    ++fingerprintFrame;
++    fingerprintLastDraws = drawsNow;
+ }
+ 
+ void HexagonGame::updateWalls(ssvu::FT mFT)
+diff --git a/src/SSVOpenHexagon/Core/HexagonGame.cpp b/src/SSVOpenHexagon/Core/HexagonGame.cpp
+index 5b5241b..a0d5d1d 100644
+--- a/src/SSVOpenHexagon/Core/HexagonGame.cpp
++++ b/src/SSVOpenHexagon/Core/HexagonGame.cpp
+@@ -558,6 +558,13 @@ void HexagonGame::saveReplay()
+ void HexagonGame::newGame(const std::string& mPackId, const std::string& mId,
+     bool mFirstPlay, float mDifficultyMult, bool executeLastReplay)
+ {
++    // 030b fingerprint (additive-only): the frame counter is per-game
++    // (see .agents/plans/001-rust-port/parity/cpp-fingerprint-definition.md).
++    // `rng` is replaced below with a fresh wrapper (draws == 0), so the
++    // draw baseline resets with it.
++    fingerprintFrame = 0;
++    fingerprintLastDraws = 0;
++
+     // Save replay when restarting without having died
+     if(!mFirstPlay)
+     {
+diff --git a/src/SSVOpenHexagon/Core/main.cpp b/src/SSVOpenHexagon/Core/main.cpp
+index 42f4040..4c738ad 100644
+--- a/src/SSVOpenHexagon/Core/main.cpp
++++ b/src/SSVOpenHexagon/Core/main.cpp
+@@ -85,6 +85,10 @@ struct ParsedArgs
+     bool printLuaDocs{false};
+     bool headless{false};
+     bool server{false};
++    // 030b fingerprint (OFF BY DEFAULT, additive-only; see
++    // .agents/plans/001-rust-port/parity/cpp-fingerprint-definition.md):
++    // `-fingerprint <path>` — one line per update frame.
++    std::optional<std::string> fingerprintPath;
+ };
+ 
+ [[nodiscard]] ParsedArgs parseArgs(const int argc, char* argv[])
+@@ -123,6 +127,16 @@ struct ParsedArgs
+             continue;
+         }
+ 
++        // 030b fingerprint (OFF BY DEFAULT): `-fingerprint <path>` — the
++        // per-frame state hash (definition: .agents/plans/001-rust-port/
++        // parity/cpp-fingerprint-definition.md).
++        if(!std::strcmp(argv[i], "-fingerprint") && i + 1 < argc)
++        {
++            ++i;
++            result.fingerprintPath = argv[i];
++            continue;
++        }
++
+         // Find command-line argument to run in server mode
+         if(!std::strcmp(argv[i], "-server"))
+         {
+@@ -244,7 +258,8 @@ getFirstCompressedReplayFilenameFromArgs(const std::vector<std::string>& args)
+ [[nodiscard]] int mainClient(const bool headless,
+     const std::vector<std::string>& args,
+     const std::optional<std::string>& cliLevelName,
+-    const std::optional<std::string>& cliLevelPack)
++    const std::optional<std::string>& cliLevelPack,
++    const std::optional<std::string>& fingerprintPath = std::nullopt)
+ {
+     // ------------------------------------------------------------------------
+     // Steam integration
+@@ -565,6 +580,15 @@ getFirstCompressedReplayFilenameFromArgs(const std::vector<std::string>& args)
+ 
+             // TODO (P2): check level validity
+ 
++            // 030b fingerprint (OFF BY DEFAULT, additive-only): open the
++            // per-frame output BEFORE the run (definition note:
++            // .agents/plans/001-rust-port/parity/
++            // cpp-fingerprint-definition.md).
++            if(fingerprintPath.has_value())
++            {
++                hg.setFingerprintPath(fingerprintPath.value());
++            }
++
+             std::cout << "Player died.\nFinal time: "
+                       << hg.runReplayUntilDeathAndGetScore(replayFile,
+                                1 /* maxProcessingSeconds */,
+@@ -657,7 +681,7 @@ int main(int argc, char* argv[])
+     // ------------------------------------------------------------------------
+     // Parse command line arguments
+     const auto [args, cliLevelName, cliLevelPack, printLuaDocs, headlessB,
+-        server] = parseArgs(argc, argv);
++        server, fingerprintPath] = parseArgs(argc, argv);
+     const auto headless = headlessB; // Workaround binding capture
+ 
+     //
+@@ -684,5 +708,5 @@ int main(int argc, char* argv[])
+     // Client mode
+     SSVOH_ASSERT(!printLuaDocs);
+     SSVOH_ASSERT(!server);
+-    return mainClient(headless, args, cliLevelName, cliLevelPack);
++    return mainClient(headless, args, cliLevelName, cliLevelPack, fingerprintPath);
+ }

@@ -21,6 +21,10 @@ echo "=== pcg ==="
 "$CXX" "${FLAGS[@]}" -o "$OUT/pcg" "$HERE/pcg_probe.cpp"
 "$OUT/pcg"
 
+echo "=== pcg state position (030b fingerprint field 15) ==="
+"$CXX" "${FLAGS[@]}" -o "$OUT/pcgstate" "$HERE/pcg_state_probe.cpp"
+"$OUT/pcgstate"
+
 echo "=== replay ==="
 "$CXX" "${FLAGS[@]}" -o "$OUT/replay" "$HERE/replay_probe.cpp" "$HERE/stubs.cpp" \
   "$ROOT/src/SSVOpenHexagon/Core/Replay.cpp" "$ROOT/src/SSVOpenHexagon/Utils/Timestamp.cpp" -lz

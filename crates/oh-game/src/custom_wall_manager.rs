@@ -48,6 +48,18 @@ impl CCustomWallManager {
             && h < self.handle_available.len() as CCustomWallHandle
     }
 
+    /// 030b fingerprint (additive-only; the C++ twin is `aliveHandles()`,
+    /// see .agents/plans/001-rust-port/parity/cpp-fingerprint-definition.md):
+    /// the ALIVE custom-wall handles in ascending order (`handle_available[h]
+    /// == true` means the handle is FREE, so live == the negation). A
+    /// destroyed handle must not be read through the getters.
+    #[must_use]
+    pub fn alive_handles(&self) -> Vec<CCustomWallHandle> {
+        (0..self.handle_available.len() as CCustomWallHandle)
+            .filter(|&h| !self.handle_available[h as usize])
+            .collect()
+    }
+
     fn check_valid_handle(&self, h: CCustomWallHandle, msg: &str) -> bool {
         if self.handle_available[h as usize] {
             eprintln!(

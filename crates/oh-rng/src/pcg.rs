@@ -64,6 +64,64 @@ impl Pcg32Fast {
     pub fn backstep(&mut self, delta: u64) {
         self.advance(delta.wrapping_neg());
     }
+
+    /// The canonical state label — task 030b fingerprint field 15.
+    ///
+    /// C++ twin: the PUBLIC `operator-` of `pcg32_fast` (the protected
+    /// `engine::distance` is not callable from outside the engine),
+    /// `f - pcg32_fast{3}` == `rhs.distance(lhs.state_)` with `rhs` the
+    /// wrapped-state engine: the number of engine bumps `d` in
+    /// `[0, 2^62)` with `3 * M^d == self.state (mod 2^64)`. Bit-exact port
+    /// of the `engine::distance` `is_mcg` path (`pcg_random.hpp`):
+    /// `the_bit` starts at 4 and doubles; `cur_plus` is 0 (`no_stream`
+    /// MCG) so the `+ cur_plus` / `cur_plus` update terms are omitted
+    /// (contribute 0); result `>> 2`. Ground truth: the C++ probe
+    /// (`.agents/plans/001-rust-port/mapping/oracle-vectors.md`,
+    /// "PCG state position"; `tools/oracle/pcg_state_probe.cpp`).
+    #[must_use]
+    pub fn state_position(&self) -> u64 {
+        distance_from_wrapped(self.state)
+    }
+}
+
+/// `engine::distance(cur_state, newstate, cur_mult, cur_plus, mask)` with
+/// `cur_state == 3` (the wrapped-state engine, `no_stream` MCG: `cur_plus
+/// == 0`, `mask == !0`), i.e. the number of bumps from state 3 to `state`.
+///
+/// ```cpp
+/// itype the_bit = 4; // is_mcg
+/// itype distance = 0;
+/// while ((cur_state & mask) != (newstate & mask))
+/// {
+///     if ((cur_state & the_bit) != (newstate & the_bit))
+///     {
+///         cur_state = cur_state * cur_mult + cur_plus; // * M (+ 0)
+///         distance |= the_bit;
+///     }
+///     the_bit <<= 1;
+///     cur_mult *= cur_mult;
+/// }
+/// return distance >> 2; // is_mcg
+/// ```
+pub fn distance_from_wrapped(state: u64) -> u64 {
+    debug_assert_eq!(
+        state & 3,
+        3,
+        "pcg32_fast states are always == 3 (mod 4); the wrapped-state label is only defined on the MCG coset"
+    );
+    let mut cur: u64 = 3; // the wrapped-state engine's state (3 | 3)
+    let mut mult: u64 = MULTIPLIER; // cur_mult = M, then M^2, M^4, ...
+    let mut the_bit: u64 = 4;
+    let mut distance: u64 = 0;
+    while cur != state {
+        if (cur & the_bit) != (state & the_bit) {
+            cur = cur.wrapping_mul(mult);
+            distance |= the_bit;
+        }
+        the_bit <<= 1;
+        mult = mult.wrapping_mul(mult);
+    }
+    distance >> 2
 }
 
 /// `xsh_rs_mixin::output` instantiated with itype = `u64`, xtype = `u32`.

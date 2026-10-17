@@ -494,3 +494,66 @@ are u32-BE length + raw bytes; `double` is raw host-endian (LE) — see the
 `cdccccccccdc5e40` tail of `stc_top_scores` (123.45). `PEncryptedMsg`
 fields: nonce (24 raw bytes), `messageLength` u64-BE, `ciphertextLength`
 u64-BE, ciphertext (raw bytes, only `ciphertextLength` written).
+
+## PCG state position (task 030b — the fingerprint's field 15)
+
+`tools/oracle/pcg_state_probe.cpp` (g++ 15.2, `-std=c++20 -O0`, the
+`extlibs/SSVUtils` pin `6200143`). The canonical `pcg32_fast` (MCG,
+`no_stream`, `M = 6364136223846793005`, states `≡ 3 (mod 4)`) state label:
+the public `operator-` — `f - pcg32_fast{3}` — i.e. `rhs.distance(
+lhs.state_)` with `rhs` the wrapped-state engine: the number of engine
+bumps `d ∈ [0, 2^62)` with `3 · M^d ≡ f.state (mod 2^64)`. Wrapper
+semantics: engine{seed} + `advance(1)`; the probe advances `1 + extra`.
+
+```
+statepos <seed> <extra> <label>
+statepos 0 0 1
+statepos 0 1 2
+statepos 0 2 3
+statepos 0 3 4
+statepos 0 7 8
+statepos 0 63 64
+statepos 0 100 101
+statepos 0 1000 1001
+statepos 1 0 1
+statepos 1 1 2
+statepos 1 2 3
+statepos 1 3 4
+statepos 1 7 8
+statepos 1 63 64
+statepos 1 100 101
+statepos 1 1000 1001
+statepos 12345 0 3227583411176240611
+statepos 12345 1 3227583411176240612
+statepos 12345 2 3227583411176240613
+statepos 12345 3 3227583411176240614
+statepos 12345 7 3227583411176240618
+statepos 12345 63 3227583411176240674
+statepos 12345 100 3227583411176240711
+statepos 12345 1000 3227583411176241611
+statepos 987654321 0 2833726022148399333
+statepos 987654321 1 2833726022148399334
+statepos 987654321 2 2833726022148399335
+statepos 987654321 3 2833726022148399336
+statepos 987654321 7 2833726022148399340
+statepos 987654321 63 2833726022148399396
+statepos 987654321 100 2833726022148399433
+statepos 987654321 1000 2833726022148400333
+statepos 4294967295 0 2765020584010522108
+statepos 4294967295 1 2765020584010522109
+statepos 4294967295 2 2765020584010522110
+statepos 4294967295 3 2765020584010522111
+statepos 4294967295 7 2765020584010522115
+statepos 4294967295 63 2765020584010522171
+statepos 4294967295 100 2765020584010522208
+statepos 4294967295 1000 2765020584010523108
+linearity 1000
+```
+
+`linearity` = `(label(seed, 1000) - label(seed, 0)) mod 2^62` for
+seed 12345 — must be exactly `1000` (the label is the bump count from the
+wrapped state `3`, hence an affine function of the advance count). Seeds
+0/1 collapse to the wrapped state (`seed | 3 == 3`), so their labels are
+the raw bump count `1 + extra`. The port's `oh_rng::pcg::
+distance_from_wrapped` (the fingerprint's port-side field 15) is pinned to
+these values in `crates/oh-rng/src/pcg.rs` unit tests.
