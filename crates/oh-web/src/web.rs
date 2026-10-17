@@ -65,6 +65,31 @@ fn log(msg: &str) {
     console::log_1(&JsValue::from_str(msg));
 }
 
+/// PROTOTYPE WORKAROUND (tracker rows 29b6/29c1, QUEUED): seed ONE default
+/// profile into the preloaded MEMFS tree (`/RELEASE/Profiles/default.json`)
+/// so `main_client`'s local profile scan finds a profile and the boot
+/// reaches the main menu instead of the blocking "PROFILE CREATION" screen
+/// (master's profile/save system is a known no-op — `Assets::profile_create`
+/// never writes, so `_RELEASE/Profiles/` is empty). The JSON keys mirror
+/// `load_profile_from_json` (`crates/oh-data/src/load_from_json.rs`):
+/// `name` (string), `scores` (map str→f32), `favorites` (array of
+/// strings). A write failure is logged, never fatal (boot continues).
+/// REMOVE THIS WHEN THE REAL PROFILE SYSTEM LANDS.
+fn seed_default_profile() {
+    let dir = format!("{BASE_DIR}/Profiles");
+    let path = format!("{dir}/default.json");
+    match std::fs::create_dir_all(&dir)
+        .and_then(|()| std::fs::write(&path, r#"{"name":"DEFAULT","scores":{},"favorites":[]}"#))
+    {
+        Ok(()) => log(&format!(
+            "oh-web: seeded default profile at {path} (29b6/29c1 workaround)"
+        )),
+        Err(e) => log(&format!(
+            "oh-web: WARNING - failed to seed default profile at {path}: {e} (boot continues)"
+        )),
+    }
+}
+
 /// The boot (called from `main` AFTER `__wasm_call_ctors()`).
 pub fn boot() {
     // The single-init guard (the 26c.1/26c.2 "main ran twice" artifact):
@@ -74,6 +99,16 @@ pub fn boot() {
         return;
     }
     log("oh-web: boot started (after __wasm_call_ctors)");
+
+    // PROTOTYPE WORKAROUND (tracker rows 29b6/29c1, QUEUED): master's
+    // profile/save system is a known no-op (`Assets::profile_create` never
+    // writes), so `_RELEASE/Profiles/` is empty and `main_client` would boot
+    // into the BLOCKING "PROFILE CREATION" screen instead of the menu. Seed
+    // ONE default profile into the preloaded MEMFS tree so the local profile
+    // scan (`pack_scan::scan_single_by_ext` over `Profiles/*.json`) finds it
+    // and the boot proceeds to the main menu. Remove this block when the
+    // real profile system lands.
+    seed_default_profile();
 
     // The real composition (sub-goal W5): the C++ `mainClient` port with
     // `headless = false` — `RealFs` rooted at the preloaded `_RELEASE`
