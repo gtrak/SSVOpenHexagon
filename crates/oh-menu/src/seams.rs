@@ -313,6 +313,15 @@ pub trait MenuConfig {
     fn set_fullscreen(&self, value: bool);
     /// `Config::setCurrentResolution(w, h)` (the `"<w>x<h>"` items).
     fn set_resolution(&self, w: u32, h: u32);
+    /// `Config::getWidth()` — the CONFIGURED resolution width
+    /// (`getFullscreen() ? getFullscreenWidth() : getWindowedWidth()`,
+    /// Config.cpp:1102-1106): the dialog box's centering space (the C++
+    /// `calculateFMaxAndWAndH(Config::getWidth(), …)`,
+    /// HexagonDialogBox.cpp:208-209 / :238-239 — the dialog centers in
+    /// the config resolution, NOT the actual window / layout size, D6).
+    fn resolution_width(&self) -> f32;
+    /// `Config::getHeight()` (Config.cpp:1107-1111).
+    fn resolution_height(&self) -> f32;
     /// `Config::setCurrentResolutionAuto(window)` (no-op seam default).
     fn set_resolution_auto(&self);
     /// `sf::VideoMode::getFullscreenModes()` filtered to 32-bit; the C++
@@ -1089,6 +1098,11 @@ impl FakeConfig {
             let mut v = cfg.inner.borrow_mut();
             v.size_x = 800.0;
             v.size_y = 450.0;
+            // The configured resolution matches the fake window (the
+            // dialog's D6 centering space — the C++ desktop's
+            // window == config × pixelMult shape).
+            v.resolution_w = 800;
+            v.resolution_h = 450;
             v.zoom_factor = 1.0;
             v.timescale = 1.0;
             v.text_scaling = 1.0;
@@ -1210,6 +1224,12 @@ impl MenuConfig for FakeConfig {
         v.resolution_h = h;
         v.size_x = w as f32;
         v.size_y = h as f32;
+    }
+    fn resolution_width(&self) -> f32 {
+        self.inner.borrow().resolution_w as f32
+    }
+    fn resolution_height(&self) -> f32 {
+        self.inner.borrow().resolution_h as f32
     }
     fn set_resolution_auto(&self) {}
     fn resolution_modes(&self) -> Vec<(u32, u32)> {

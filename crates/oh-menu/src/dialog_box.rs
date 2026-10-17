@@ -106,7 +106,12 @@ impl HexagonDialogBox {
         self.input.clear();
         self.char_size = char_size;
 
-        // C++ splits `output` on '\n'.
+        // C++ splits `output` on '\n' — a line is pushed AT each '\n'
+        // ONLY (HexagonDialogBox.cpp:46-58): the segment after the LAST
+        // '\n' is never pushed. For every real dialog message (all end
+        // in '\n') this yields N lines; for a message NOT ending in
+        // '\n' the last line is dropped and `create("A")` yields
+        // `empty() == true` (the C++'s exact shape — D1).
         let mut dialog_text = Vec::new();
         let mut temp = String::new();
         for c in output.chars() {
@@ -116,7 +121,6 @@ impl HexagonDialogBox {
                 temp.push(c);
             }
         }
-        dialog_text.push(temp);
         self.dialog_text = dialog_text;
 
         let size = self.dialog_text.len() as f32;

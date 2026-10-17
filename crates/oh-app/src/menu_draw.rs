@@ -1305,7 +1305,28 @@ pub fn draw(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn DrawTarget) {
     if !dialog.empty() && !matches!(state, States::LoadingScreen | States::EpilepsyWarning) {
         // C++ `window.setView(overlayCamera.apply())` (re-applied).
         target.set_view(app.overlay_view());
-        draw_dialog_box(app, &dialog, dialog_box_text_color, backdrop, w, h, target);
+        // C++ `calculateFMaxAndWAndH(Config::getWidth(),
+        // Config::getHeight(), yPos)` (HexagonDialogBox.cpp:208-209 /
+        // :238-239) — the dialog centers in the CONFIG resolution, not
+        // the layout space (D6): on an Android / resized desktop window
+        // the layout `w` / `h` diverge from the config (the C++ centers
+        // as 1024 wide, the old port as 1733).
+        let (config_width, config_height) = {
+            let s = menu.shared().borrow();
+            (
+                s.config().resolution_width(),
+                s.config().resolution_height(),
+            )
+        };
+        draw_dialog_box(
+            app,
+            &dialog,
+            dialog_box_text_color,
+            backdrop,
+            config_width,
+            config_height,
+            target,
+        );
     }
 
     // C++ :5986-5988 — the `lastMouseClick` edge (module docs: no mouse).
@@ -3902,8 +3923,10 @@ fn draw_dialog_box(
     target: &mut dyn DrawTarget,
 ) {
     // C++ frame quads (`drawTopLeft` / `drawCenter` /
-    // `drawCenterUpperHalf` → `drawBox` → `window.draw`); `Config::
-    // getWidth()/getHeight()` map to the config size (module docs).
+    // `drawCenterUpperHalf` → `drawBox` → `window.draw`); `config_width`
+    // / `config_height` are `Config::getWidth()` / `getHeight()` (the
+    // CONFIG resolution — the C++ `calculateFMaxAndWAndH` space,
+    // HexagonDialogBox.cpp:208-209 / :238-239; D6).
     let mut quads: Vec<DialogQuad> = Vec::new();
     dialog.draw(txt_color, backdrop, config_width, config_height, &mut quads);
     app.menu_quads.clear();
@@ -3913,15 +3936,16 @@ fn draw_dialog_box(
     target.draw_vertices(app.menu_quads.as_slice(), RenderStates::default());
 
     // C++ `drawText(txtColor, xOffset, yOffset)` per mode (HexagonDialogBox
-    // .cpp:163, :209, :228).
+    // .cpp:185-186, :231-232, :259-261 — the offset carries ONE
+    // `doubleFrameSize`, D5).
     app.txt_dialog.set_character_size(dialog.char_size());
     app.txt_dialog.set_fill_color(txt_color);
     let interline = dialog.line_height() * 1.5;
     let (x_offset, y_offset) = match dialog.draw_mode() {
         DBoxDraw::TopLeft => (
-            dialog.x_pos() + 2.0 * dialog.double_frame_size() + dialog.dialog_width() / 2.0,
+            dialog.x_pos() + dialog.double_frame_size() + dialog.dialog_width() / 2.0,
             dialog.y_pos() - dialog.line_height() * FONT_HEIGHT_DIFFERENTIAL
-                + 2.0 * dialog.double_frame_size(),
+                + dialog.double_frame_size(),
         ),
         DBoxDraw::Center => {
             let fmax = (1024.0 / config_width).max(768.0 / config_height);
@@ -3931,7 +3955,7 @@ fn draw_dialog_box(
             (
                 cw / 2.0,
                 ch - half - dialog.line_height() * FONT_HEIGHT_DIFFERENTIAL
-                    + 2.0 * dialog.double_frame_size(),
+                    + dialog.double_frame_size(),
             )
         }
         DBoxDraw::CenterUpperHalf => {
@@ -3941,7 +3965,7 @@ fn draw_dialog_box(
             (
                 cw / 2.0,
                 ch - dialog.total_height() - dialog.line_height() * FONT_HEIGHT_DIFFERENTIAL
-                    + 2.0 * dialog.double_frame_size(),
+                    + dialog.double_frame_size(),
             )
         }
     };
@@ -4048,7 +4072,7 @@ mod tests {
 
     /// A `DrawTarget` that records the call stream (type + a short
     /// fingerprint per call) so the tests assert the C++ draw-call ORDER.
-    #[derive(Default)]
+    #[derive(Default, Debug)]
     struct Recording {
         calls: Vec<String>,
         /// issue 025h — the drawn texts' (string, position) pairs, so the
@@ -4973,5 +4997,140 @@ mod tests {
                 none_y
             );
         }
+    }
+
+    /// 29b-dialog (D5): the `drawText` offset carries ONE
+    /// `doubleFrameSize` per mode (C++ `HexagonDialogBox.cpp:185-186`
+    /// TopLeft x/y, `:231-232` Center y, `:259-261` CenterUpperHalf y)
+    /// — the old port's `2.0 * double_frame_size` put the text baseline
+    /// `2×frameSize` (24 px at frameSize 12) lower, and the TopLeft x 24
+    /// px right.
+    #[test]
+    fn dialog_text_offset_carries_one_double_frame_size() {
+        let (menu, mut app) = menu_and_app();
+        let f = font();
+        {
+            let mut s = menu.shared().borrow_mut();
+            s.state = States::SMain;
+            // The C++'s MenuGame dialog call site (Center, the only mode
+            // the menu shows): `create(msg, 22, 12.f, center)` —
+            // `double_frame_size` = 2×12 = 24, `line_height` = 15.4
+            // (LinearFontHeight(22)).
+            s.show_dialog_box("A LINE\n");
+        }
+        let mut rec = Recording::default();
+        draw(&menu, &mut app, &mut rec);
+
+        // Center y (C++ `:231-232`): `h − halfHeight − lineHeight·0.9 +
+        // doubleFrameSize`, then the first line's `+ 5.0`. The FakeConfig
+        // resolution = 800×450 (the fake window): fmax = max(1024/800,
+        // 768/450) = 768/450 = 1.7066667 → `ch = 450·fmax/2 = 384.0`.
+        let line_h = 15.4_f32;
+        let double_frame = 24.0_f32;
+        let total = line_h + 2.0 * double_frame; // 1-line dialog
+        let fmax = (1024.0_f32 / 800.0_f32).max(768.0_f32 / 450.0_f32);
+        let ch = 450.0_f32 * fmax / 2.0;
+        let expected_y = ch - total / 2.0 - line_h * 0.9 + double_frame + 5.0;
+        let (_, pos) = rec
+            .texts
+            .iter()
+            .find(|(t, _)| t == "A LINE")
+            .unwrap_or_else(|| panic!("the dialog line is not drawn: {rec:?}"));
+        assert!(
+            (pos.y - expected_y).abs() < 1e-3,
+            "center y {} != C++ {}",
+            pos.y,
+            expected_y
+        );
+
+        // TopLeft x (C++ `:185-186`): `xPos + doubleFrameSize +
+        // dialogWidth/2` − the line's own `width/2` centering (D5: ONE
+        // doubleFrameSize, not two). Set the TopLeft mode directly (the
+        // menu only shows Center — the mode's draw math is still the
+        // C++'s).
+        let width_of =
+            |s: &str, size: u32| -> f32 { Text::new(f.clone(), s.to_string(), size).measure().0 };
+        {
+            let mut s = menu.shared().borrow_mut();
+            s.dialog.create_with_key(
+                "A\n",
+                22,
+                12.0, // frameSize (the C++'s `12.f`) → doubleFrameSize 24
+                DBoxDraw::TopLeft,
+                oh_menu::dialog_box::DialogKey::Unknown,
+                10.0, // xPos
+                20.0, // yPos
+                line_h,
+                100.0, // dialogWidth
+            );
+        }
+        let mut rec = Recording::default();
+        draw(&menu, &mut app, &mut rec);
+        let expected_x: f32 = 10.0 + 24.0 + 100.0 / 2.0 - width_of("A", 22) / 2.0;
+        let expected_y: f32 = 20.0 - line_h * 0.9 + 24.0 + 5.0;
+        let (_, pos) = rec
+            .texts
+            .iter()
+            .find(|(t, _)| t == "A")
+            .unwrap_or_else(|| panic!("the TopLeft line is not drawn: {rec:?}"));
+        assert!(
+            (pos.x - expected_x).abs() < 1e-3,
+            "topLeft x {} != C++ {}",
+            pos.x,
+            expected_x
+        );
+        assert!(
+            (pos.y - expected_y).abs() < 1e-3,
+            "topLeft y {} != C++ {}",
+            pos.y,
+            expected_y
+        );
+    }
+
+    /// 29b-dialog (D6): the dialog centers in the CONFIG resolution
+    /// (`Config::getWidth()/getHeight()`, C++
+    /// `HexagonDialogBox.cpp:208-209 / :238-239`), NOT the layout space
+    /// derived from the actual window size. The FakeWindow is 800×450
+    /// (layout `w` = 800·fmax = 1365.33); the C++ centers the box as the
+    /// config resolution wide. With the config at 1024×768 the
+    /// center-line x is 1024/2 = 512 — where the old port put it at
+    /// 1365.33/2 = 682.67.
+    #[test]
+    fn dialog_centers_in_the_config_resolution_not_the_layout() {
+        let (menu, mut app) = menu_and_app();
+        let f = font();
+        let width_of =
+            |s: &str, size: u32| -> f32 { Text::new(f.clone(), s.to_string(), size).measure().0 };
+        // The config resolution (800×450 by default) diverged from the
+        // window (also 800×450): set it to 1024×768 so the centering
+        // space is unambiguously the config, not the layout.
+        menu.shared()
+            .borrow_mut()
+            .config()
+            .set_resolution(1024, 768);
+        {
+            let mut s = menu.shared().borrow_mut();
+            s.state = States::SMain;
+            s.show_dialog_box("A LINE\n");
+        }
+        let mut rec = Recording::default();
+        draw(&menu, &mut app, &mut rec);
+        // Center x (C++ `drawCenter`): `w'/2` with `w' = configW·fmax`,
+        // `fmax = max(1024/1024, 768/768) = 1.0` → `w' = 1024` → center
+        // `512.0`. The line is drawn at `center − width/2`.
+        let expected_center: f32 = 1024.0 / 2.0;
+        let (_, pos) = rec
+            .texts
+            .iter()
+            .find(|(t, _)| t == "A LINE")
+            .unwrap_or_else(|| panic!("the dialog line is not drawn: {rec:?}"));
+        let center = pos.x + width_of("A LINE", 22) / 2.0;
+        assert!(
+            (center - expected_center).abs() < 1e-3,
+            "config-space center {} != C++ {} (the layout-space center would be {})",
+            center,
+            expected_center,
+            1365.33 / 2.0
+        );
     }
 }

@@ -9,7 +9,9 @@
 use oh_math::hg::color::Color;
 use oh_menu::dialog_box::{DBoxDraw, DialogKey, HexagonDialogBox};
 
-/// The dialog r#box splits on newlines, computes the height, and emits exactly
+/// The dialog r#box splits on newlines — a line AT each `\n` ONLY (the
+/// C++'s shape, HexagonDialogBox.cpp:46-58, D1: the segment after the
+/// LAST `\n` is never pushed) — computes the height, and emits exactly
 /// the outer + backdrop frame quads for a `Center` dialog.
 #[test]
 fn dialog_box_center_frame_geometry() {
@@ -26,9 +28,14 @@ fn dialog_box_center_frame_geometry() {
         15.4,
         300.0,
     );
-    assert_eq!(r#box.line_count(), 3); // "LINE1","LINE2","" (trailing newline)
+    assert_eq!(r#box.line_count(), 2); // "LINE1","LINE2" (D1: no trailing "")
     assert!(!r#box.empty());
     assert_eq!(r#box.key_to_close(), DialogKey::Unknown);
+    // D1: the trailing `\n`-terminated message has NO extra line — the
+    // total height is 2 lines + the frame (not 3): the old port's
+    // trailing-`""` push made EVERY dialog `1.5 × lineHeight` taller.
+    let dialog_height = 15.4 * 2.0 + (15.4 / 2.0) * (2.0 - 1.0);
+    assert_eq!(r#box.total_height(), dialog_height + 2.0 * 24.0);
 
     let mut quads = Vec::new();
     r#box.draw(Color::WHITE, Color::BLACK, 800.0, 450.0, &mut quads);
@@ -64,6 +71,65 @@ fn dialog_box_center_frame_geometry() {
         (mid - EXPECTED_MID).abs() < 1e-3,
         "mid={mid} expected={EXPECTED_MID}"
     );
+}
+
+/// D1: the C++'s split drops the segment after the LAST `\n` — a
+/// non-`\n`-terminated message yields `empty() == true` (the C++'s
+/// `create("A")` shape, HexagonDialogBox.cpp:46-58), and a
+/// `\n`-terminated message keeps every line up to the last `\n`.
+#[test]
+fn dialog_box_create_drops_the_trailing_segment() {
+    // `"A"` (no `\n`): the C++ pushes nothing → `empty()`.
+    let mut b = HexagonDialogBox::new();
+    b.create(
+        "A",
+        22,
+        12.0,
+        DBoxDraw::Center,
+        0.0,
+        0.0,
+        false,
+        15.4,
+        100.0,
+    );
+    assert!(
+        b.empty(),
+        "the C++'s `create(\"A\")` yields `empty() == true`"
+    );
+    assert_eq!(b.line_count(), 0);
+
+    // `"A\nB"` (last segment `B` dropped → 1 line, NOT 2).
+    let mut b = HexagonDialogBox::new();
+    b.create(
+        "A\nB",
+        22,
+        12.0,
+        DBoxDraw::Center,
+        0.0,
+        0.0,
+        false,
+        15.4,
+        100.0,
+    );
+    assert_eq!(b.line_count(), 1);
+    assert_eq!(b.dialog_text(), ["A"]);
+
+    // `"A\nB\n"` (ends in `\n`): all lines kept, no trailing `""`.
+    let mut b = HexagonDialogBox::new();
+    b.create(
+        "A\nB\n",
+        22,
+        12.0,
+        DBoxDraw::Center,
+        0.0,
+        0.0,
+        false,
+        15.4,
+        100.0,
+    );
+    assert_eq!(b.line_count(), 2);
+    assert_eq!(b.dialog_text(), ["A", "B"]);
+    assert!(!b.empty());
 }
 
 /// A password input r#box grows the total height by `4 * line_height` and

@@ -566,6 +566,14 @@ impl MenuConfig for ConfigMenuAdapter {
             .expect("config poisoned")
             .set_current_resolution(w, h);
     }
+    fn resolution_width(&self) -> f32 {
+        // C++ `Config::getWidth()` (Config.cpp:1102-1106).
+        self.config.read().expect("config poisoned").get_width() as f32
+    }
+    fn resolution_height(&self) -> f32 {
+        // C++ `Config::getHeight()` (Config.cpp:1107-1111).
+        self.config.read().expect("config poisoned").get_height() as f32
+    }
     fn set_resolution_auto(&self) {
         // C++ "automatically set resolution" item (MenuGame.cpp:1321-1323)
         // → the `windowedAutoResolution` / `fullscreenAutoResolution` flags
