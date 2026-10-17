@@ -8,13 +8,13 @@
 //! W2 — this W0 skeleton proves the target, the build recipe, and the
 //! wasm-bindgen loader end-to-end.
 //!
-//! **Build**: `cargo build -p oh-web --target wasm32-unknown-emscripten
-//! --no-default-features --features backend-luau` (the emsdk env recipe;
-//! the target's rustflags live in the root
+//! **Build**: `cargo build -p oh-web --target wasm32-unknown-emscripten` (the
+//! emsdk env recipe; the target's rustflags live in the root
 //! `.cargo/config.toml`'s `[target.wasm32-unknown-emscripten]` table, the
-//! verbatim 26c.1/26c.2 recipe; the `backend-luau` feature is 030a's
-//! Lua-VM-backend selection — emscripten cannot run LuaJIT, so the web
-//! build selects Luau explicitly, "features first, target default after".
+//! verbatim 26c.1/26c.2 recipe). **No backend features any more**: D-037 made
+//! Luau the port's single Lua VM, so emscripten — which cannot run LuaJIT — is
+//! simply the default configuration now (030d deleted the
+//! `backend-luajit`/`backend-luau` selection this recipe used to name).
 //! It emits `oh-web.js` (MODULARIZE +
 //! EXPORT_ES6 — default-exports the Module factory) + `oh_web.wasm`; the page
 //! is `site/index.html` (serve the folder with the two artifacts next to it).

@@ -62,8 +62,9 @@ linker = "x86_64-linux-android28-clang"
 #   at Luau's compile step (verified: the resulting objects carry 0
 #   emscripten-EH refs and 3 `__cpp_exception` refs). Set it in the build
 #   invocation: `CXXFLAGS=-fwasm-exceptions cargo build --release -p oh-web
-#   --target wasm32-unknown-emscripten --no-default-features
-#   --features backend-luau`.
+#   --target wasm32-unknown-emscripten`. (No backend features: D-037 made Luau
+#   the port's single VM, so 030d deleted the selection these lines used to
+#   name — the emscripten build is the default configuration now.)
 # - `-sMAX/MIN_WEBGL_VERSION=2` (the 26c.1 MANDATORY gotcha): without them
 #   emscripten logs "WebGL 2 requested but only WebGL 1 is supported" and
 #   `emscripten_webgl_create_context` returns 0.

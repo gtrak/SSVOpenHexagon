@@ -37,15 +37,9 @@ web-sys = { version = "0.3.106", features = [
   "Performance",
 ] }
 
-[features]
-# The Lua VM backend (lane 030a): forwarded onto the `oh-app` dependency
-# (which forwards it onto `oh-lua`) so the web binary builds under the
-# emscripten-only Luau backend. Emscripten cannot run LuaJIT (issue 30 §2),
-# so the web build is `--no-default-features --features backend-luau` —
-# "features first, target default after" (the 030a rule): the explicit
-# backend feature wins; `default` (`backend-luajit`) covers the no-op
-# native build, where `oh-app` is target-gated out and the reference is a
-# no-op.
-backend-luajit = ["oh-app/backend-luajit"]
-backend-luau = ["oh-app/backend-luau"]
-default = ["backend-luajit"]
+# D-037: there is ONE Lua VM (Luau), so there are no per-backend features to forward
+# any more. 030d deleted `backend-luajit`/`backend-luau` from oh-lua/oh-app, and lane
+# 026's forwarding block here — which selected Luau for emscripten via
+# `--no-default-features --features backend-luau` — went with them: the web build is now
+# the plain `cargo build -p oh-web --target wasm32-unknown-emscripten`, which is what a
+# single-VM tree means. (The block's history is in D-036/D-037.)
