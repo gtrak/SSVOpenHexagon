@@ -1346,6 +1346,11 @@ struct MenuSlotAdapter {
     /// ReleasedEdges` docs — the C++ `checkCloseBootScreens`'s
     /// event-driven seam; the `refresh_input` docs, below).
     released_edges: std::sync::Arc<std::sync::RwLock<oh_render::window::ReleasedEdges>>,
+    /// issue 029b2: the window's mouse-wheel-event sink (the
+    /// `oh_render::window` `wheel_events_sink` docs — the C++ `MenuGame::
+    /// onEvent(MouseWheelScrolled)` handler's data path, MenuGame.cpp:
+    /// 299-356; the `refresh_input` docs, below).
+    wheel_events: std::sync::Arc<std::sync::RwLock<Vec<f32>>>,
     /// The window's entered-text sink (the C++ `runEvents`'s `TextEntered`
     /// dispatch — the `MenuGame::handle_text_entered` docs; the
     /// `refresh_input` docs, below).
@@ -1463,6 +1468,19 @@ impl GameState for MenuSlotAdapter {
                     }
                     _ => self.menu.handle_release_edge(),
                 }
+            }
+        }
+        // C++ `MenuGame::onEvent(MouseWheelScrolled)` (MenuGame.cpp:
+        // 299-356) — the per-event handler over the window's wheel-event
+        // sink (the C++ `runEvents` per-event order — each recorded
+        // delta runs the handler: the menu-navigation `wheelProgress`
+        // accumulation, the LevelSelection `YScrollTo` scroll + the
+        // `a35_eagerformore` end-scroll gag, the focus-held quick pack
+        // change).
+        {
+            let mut events = self.wheel_events.write().expect("wheel sink poisoned");
+            for delta in events.drain(..) {
+                self.menu.handle_mouse_wheel(delta);
             }
         }
         self.input_manager.borrow_mut().refresh(input);
@@ -2112,6 +2130,16 @@ impl WindowedClient {
         let entered_text_sink: std::sync::Arc<std::sync::RwLock<Vec<char>>> =
             std::sync::Arc::new(std::sync::RwLock::new(Vec::new()));
         window.set_entered_text_sink(entered_text_sink.clone());
+        // issue 029b2: the mouse-wheel-event sink (the C++ `MenuGame::
+        // onEvent(MouseWheelScrolled)` handler's data path — MenuGame.
+        // cpp:299-356; the window's fold records one delta per
+        // `MouseWheelScrolled`; the menu state's `refresh_input` drain
+        // runs the C++ handler per recorded delta, the C++ `runEvents`
+        // per-event order). Desktop and Android: the fold records
+        // identically (the winit `MouseWheel` event).
+        let wheel_events_sink: std::sync::Arc<std::sync::RwLock<Vec<f32>>> =
+            std::sync::Arc::new(std::sync::RwLock::new(Vec::new()));
+        window.set_wheel_events_sink(wheel_events_sink.clone());
         // 029e3 — the window's FPS slot (the C++ `TimerBase::fps{0}`
         // initial value, TimerBase.hpp:23 — `0.0f32.to_bits()`; the
         // client field's docs carry the loop-order semantics).
@@ -2222,11 +2250,15 @@ impl WindowedClient {
         let menu_draw = RefCell::new(crate::menu_draw::MenuDraw::new(&font, &font_bold));
 
         // ------------------------------------------------------------------
-        // C++ main.cpp:427-434 — the MenuGame (the Steam / Discord /
-        // HexagonClient arguments are their null equivalents: issues
-        // 20/21/17; `NoopNetwork` / `NoopAudio` / the real `Assets` via
+        // C++ main.cpp:427-434 — the MenuGame (the Discord / HexagonClient
+        // arguments are their null equivalents: issues 21/17;
+        // `NoopNetwork` / `NoopAudio` / the real `Assets` via
         // `RealMenuAssets` — one `_RELEASE` load shared with the engine,
-        // as the C++ shares one `HGAssets`).
+        // as the C++ shares one `HGAssets`). The C++ ctor's `steamManager`
+        // argument's `unlock_achievement` half (29b2 / 29b8: the
+        // `a35_eagerformore` wheel-scroll + `a23_login` call sites) runs
+        // on the composition's shared `SteamManager` (the same manager
+        // the engine's `steam_manager` seam uses — the C++'s one global).
         let game = Rc::new(composed.game.clone());
         let engine_slot: Rc<RefCell<Option<Rc<GameEngine>>>> = Rc::new(RefCell::new(None));
 
@@ -2338,6 +2370,15 @@ impl WindowedClient {
             trigger_refresh_cb,
             rich_presence_cb,
             {
+                let steam = steam.clone();
+                Some(Box::new(move |id| {
+                    // C++ `steamManager.unlock_achievement(id)` — the
+                    // C++'s two menu-side call sites (`"a35_eagerformore"`
+                    // @MenuGame.cpp:335; `"a23_login"` @:2591).
+                    steam.unlock_achievement(id);
+                }))
+            },
+            {
                 let menu_manager = menu_manager.clone();
                 Some(Box::new(move |ignore| {
                     // C++ `setIgnoreAllInputs`' `game.ignoreAllInputs` half
@@ -2394,6 +2435,7 @@ impl WindowedClient {
             input_manager: menu_manager.clone(),
             menu_draw,
             released_edges: released_sink.clone(),
+            wheel_events: wheel_events_sink.clone(),
             entered_text: entered_text_sink.clone(),
             soft_input,
             // The first menu state is the boot `LoadingScreen` (not a
@@ -3043,6 +3085,7 @@ mod tests {
             None,
             None,
             None,
+            None, // `unlock_achievement` — the 29b2/29b8 Steam seam (None in the tests)
             None,
             Rc::new(oh_menu::layout::LinearFontHeight),
         ));
@@ -3057,6 +3100,7 @@ mod tests {
             input_manager: Rc::new(RefCell::new(Manager::new())),
             menu_draw: RefCell::new(crate::menu_draw::MenuDraw::new(&f, &f)),
             released_edges: released_edges.clone(),
+            wheel_events: Arc::new(RwLock::new(Vec::new())),
             entered_text: Arc::new(RwLock::new(Vec::new())),
             soft_input: Arc::new(NoOpSoftInput),
             was_entering_text: Cell::new(false),
@@ -3137,6 +3181,7 @@ mod tests {
             None,
             None,
             None,
+            None, // `unlock_achievement` — the 29b2/29b8 Steam seam (None in the tests)
             None,
             Rc::new(oh_menu::layout::LinearFontHeight),
         ));
@@ -3151,6 +3196,7 @@ mod tests {
             input_manager: Rc::new(RefCell::new(Manager::new())),
             menu_draw: RefCell::new(crate::menu_draw::MenuDraw::new(&f, &f)),
             released_edges: released_edges.clone(),
+            wheel_events: Arc::new(RwLock::new(Vec::new())),
             entered_text: Arc::new(RwLock::new(Vec::new())),
             soft_input: Arc::new(NoOpSoftInput),
             was_entering_text: Cell::new(false),
@@ -3229,6 +3275,7 @@ mod tests {
             None,
             None,
             None,
+            None, // `unlock_achievement` — the 29b2/29b8 Steam seam (None in the tests)
             None,
             Rc::new(oh_menu::layout::LinearFontHeight),
         ));
@@ -3244,6 +3291,7 @@ mod tests {
             input_manager: Rc::new(RefCell::new(Manager::new())),
             menu_draw: RefCell::new(crate::menu_draw::MenuDraw::new(&f, &f)),
             released_edges: released_edges.clone(),
+            wheel_events: Arc::new(RwLock::new(Vec::new())),
             entered_text: entered_text.clone(),
             soft_input: Arc::new(NoOpSoftInput),
             was_entering_text: Cell::new(false),
@@ -3295,6 +3343,113 @@ mod tests {
         assert!(menu.shared().borrow().entered_chars.is_empty());
     }
 
+    /// issue 029b2 (the C++ `MenuGame::onEvent(MouseWheelScrolled)`
+    /// handler, MenuGame.cpp:299-356): the full wheel chain — the winit
+    /// `WindowEvent::MouseWheel` → `map_window_event` (the SFML sign
+    /// convention — the `Event::MouseWheelScrolled` variant's docs) →
+    /// the REAL `Window::apply_event` fold (one entry per event, the
+    /// pre-fix hole: the arm was `{ .. } => {}`, the wheel worked
+    /// NOWHERE) → the shared wheel-event sink → the REAL
+    /// `MenuSlotAdapter::refresh_input` drain (per recorded delta, the
+    /// C++ `runEvents` per-event order) → the C++ handler (the SMain
+    /// `wheelProgress` accumulation — a full line past ±1 fires
+    /// `upAction` / `downAction`, MenuGame.cpp:344-354).
+    #[test]
+    fn wheel_chain_drives_the_menu_navigation() {
+        use oh_render::window::map_window_event;
+        use winit::event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent};
+
+        let assets = {
+            let fa = FakeAssets::new();
+            fa.add_profile("P1");
+            fa
+        };
+        let menu = Rc::new(MenuGame::new(
+            assets,
+            FakeConfig::new(),
+            Rc::new(NoopNetwork),
+            oh_menu::RecordingAudio::new(),
+            Rc::new(NoopTouch),
+            Rc::new(oh_menu::NoMenuJoystick),
+            oh_menu::FakeWindow::new(),
+            None,
+            None,
+            None,
+            None, // `unlock_achievement` — the 29b2/29b8 Steam seam (None in the tests)
+            None,
+            Rc::new(oh_menu::layout::LinearFontHeight),
+        ));
+        let f = oh_render::font::Font::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../_RELEASE/Assets/OpenSquare-Regular.ttf"),
+        )
+        .expect("OpenSquare-Regular.ttf must load");
+        let wheel_events = Arc::new(RwLock::new(Vec::new()));
+        let adapter = MenuSlotAdapter {
+            menu: menu.clone(),
+            input_manager: Rc::new(RefCell::new(Manager::new())),
+            menu_draw: RefCell::new(crate::menu_draw::MenuDraw::new(&f, &f)),
+            released_edges: Arc::new(RwLock::new(ReleasedEdges::default())),
+            wheel_events: wheel_events.clone(),
+            entered_text: Arc::new(RwLock::new(Vec::new())),
+            soft_input: Arc::new(NoOpSoftInput),
+            was_entering_text: Cell::new(false),
+        };
+        let mut window = Window::headless(800, 480);
+        window.set_wheel_events_sink(wheel_events.clone());
+
+        // Boot through the two boot screens to SMain (one profile →
+        // SLPSelectBoot → ok).
+        adapter.menu.advance_boot_screen();
+        adapter.menu.advance_boot_screen();
+        adapter.menu.ok_action();
+        assert_eq!(adapter.menu.state(), States::SMain);
+        assert_eq!(
+            adapter.menu.selected_item_name().as_deref(),
+            Some("LEVEL SELECT")
+        );
+
+        // Wheel-UP lines (the winit `LineDelta(0, +1)` — X11 Button4 /
+        // wheel up, the SFML-positive sign) across frames: 0.5 + 0.5 +
+        // 0.1 of progress, the action firing on the 0.1 past +1.
+        for delta in [0.5, 0.5, 0.1] {
+            Window::apply_event(
+                &mut window,
+                map_window_event(&WindowEvent::MouseWheel {
+                    device_id: DeviceId::dummy(),
+                    delta: MouseScrollDelta::LineDelta(0.0, delta),
+                    phase: TouchPhase::Moved,
+                })
+                .expect("MouseWheel must map"),
+            );
+            adapter.refresh_input(&InputState::new());
+        }
+        assert_eq!(
+            adapter.menu.selected_item_name().as_deref(),
+            Some("EXIT"),
+            "the up-action wrapped from index 0 to the last item"
+        );
+        assert_eq!(adapter.menu.shared().borrow().wheel_progress, 0.0);
+
+        // Wheel DOWN: the negative line delta (the C++'s `wheelProgress
+        // < -1.f` arm → `downAction`): from EXIT (index 4) it wraps to
+        // the first item.
+        Window::apply_event(
+            &mut window,
+            map_window_event(&WindowEvent::MouseWheel {
+                device_id: DeviceId::dummy(),
+                delta: MouseScrollDelta::LineDelta(0.0, -2.0),
+                phase: TouchPhase::Moved,
+            })
+            .expect("MouseWheel must map"),
+        );
+        adapter.refresh_input(&InputState::new());
+        assert_eq!(
+            adapter.menu.selected_item_name().as_deref(),
+            Some("LEVEL SELECT")
+        );
+    }
+
     /// issue 025f (D-031): the soft-input (system IME) transition edge —
     /// the `MenuSlotAdapter::refresh_input` docs: the menu's
     /// `is_entering_text` (the C++ `isEnteringText` — the `oh-menu`
@@ -3337,6 +3492,7 @@ mod tests {
             None,
             None,
             None,
+            None, // `unlock_achievement` — the 29b2/29b8 Steam seam (None in the tests)
             None,
             Rc::new(oh_menu::layout::LinearFontHeight),
         ));
@@ -3351,6 +3507,7 @@ mod tests {
             input_manager: Rc::new(RefCell::new(Manager::new())),
             menu_draw: RefCell::new(crate::menu_draw::MenuDraw::new(&f, &f)),
             released_edges: Arc::new(RwLock::new(ReleasedEdges::default())),
+            wheel_events: Arc::new(RwLock::new(Vec::new())),
             entered_text: Arc::new(RwLock::new(Vec::new())),
             soft_input,
             was_entering_text: Cell::new(false),

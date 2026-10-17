@@ -42,6 +42,7 @@ fn menu_lists_every_pack_and_level() {
         None,
         None,
         None,
+        None, // `unlock_achievement` — the 29b2/29b8 Steam seam (None in the tests)
         Rc::new(LinearFontHeight),
     );
 

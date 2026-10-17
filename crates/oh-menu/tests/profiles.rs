@@ -37,6 +37,7 @@ fn menu_with_profiles(
         None,
         None,
         None,
+        None, // `unlock_achievement` — the 29b2/29b8 Steam seam (None in the tests)
         Rc::new(LinearFontHeight),
     );
     (menu, assets, audio)

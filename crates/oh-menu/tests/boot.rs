@@ -35,6 +35,7 @@ fn make_menu() -> (MenuGame, Rc<RecordingAudio>) {
         None,
         None,
         None,
+        None, // `unlock_achievement` — the 29b2/29b8 Steam seam (None in the tests)
         Rc::new(LinearFontHeight),
     );
     (menu, audio)
@@ -113,6 +114,7 @@ fn load_command_line_level_matches_pack_name_not_id() {
         None,
         None,
         None,
+        None, // `unlock_achievement` — the 29b2/29b8 Steam seam (None in the tests)
         Rc::new(LinearFontHeight),
     );
     menu.advance_boot_screen();
@@ -165,6 +167,7 @@ fn entered_text_fills_the_entered_str_and_ok_action_creates_the_profile() {
         None,
         None,
         None,
+        None, // `unlock_achievement` — the 29b2/29b8 Steam seam (None in the tests)
         Rc::new(LinearFontHeight),
     );
 

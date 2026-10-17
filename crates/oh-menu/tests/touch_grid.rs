@@ -76,6 +76,7 @@ fn menu_with_touch(profiles: &[&str]) -> (MenuGame, Rc<RecordingAudio>, Rc<Finge
         None,
         None,
         None,
+        None, // `unlock_achievement` — the 29b2/29b8 Steam seam (None in the tests)
         Rc::new(LinearFontHeight),
     );
     (menu, audio, touch)

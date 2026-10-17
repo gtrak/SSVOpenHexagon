@@ -46,6 +46,7 @@ fn phone_menu() -> (MenuGame, Rc<FakeWindow>) {
         None,
         None,
         None,
+        None, // `unlock_achievement` — the 29b2/29b8 Steam seam (None in the tests)
         Rc::new(LinearFontHeight),
     );
     (menu, window)
@@ -97,6 +98,7 @@ fn desktop_matching_window_unchanged() {
         None,
         None,
         None,
+        None, // `unlock_achievement` — the 29b2/29b8 Steam seam (None in the tests)
         Rc::new(LinearFontHeight),
     );
     let (w, h, fbt, skew) = refresh_view(800.0, 450.0);
@@ -155,6 +157,7 @@ fn center_tap_in_the_real_window_space_lands_in_ok_zone() {
         None,
         None,
         None,
+        None, // `unlock_achievement` — the 29b2/29b8 Steam seam (None in the tests)
         Rc::new(LinearFontHeight),
     );
     // Fresh-install boot: LoadingScreen → EpilepsyWarning → ETLPNewBoot.

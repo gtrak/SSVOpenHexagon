@@ -55,6 +55,16 @@ pub enum Event {
     /// `sf::Event::MouseMoved`.
     MouseMoved { position: Vec2 },
     /// `sf::Event::MouseWheelScrolled` (vertical, in "lines").
+    ///
+    /// Sign convention (verified against the SFML fork the C++ builds
+    /// against, `include/SFML/Window/Event.hpp` — "Wheel offset (positive
+    /// is up/left, negative is down/right)"): `delta` is POSITIVE when the
+    /// wheel moves UP (away from the user). The winit source agrees —
+    /// winit 0.30.13's X11 backend maps Button4 (wheel up) to
+    /// `LineDelta(0, +1)` / Button5 to `LineDelta(0, -1)`
+    /// (`src/platform_impl/linux/x11/event_processor.rs:1083-1091`), and
+    /// Windows' `WM_MOUSEWHEEL` is positive on wheel-up — so the `dy` the
+    /// `map_window_event` fold produces needs NO sign flip.
     MouseWheelScrolled { delta: f32 },
     /// `sf::Event::TextEntered`.
     TextEntered { character: char },
@@ -424,6 +434,13 @@ pub struct Window {
     // window's fold records one char per `TextEntered`, the menu's
     // drain runs the handler's filter; `None` = not installed).
     entered_text_sink: Option<std::sync::Arc<std::sync::RwLock<Vec<char>>>>,
+    // issue 029b2: the SHARED mouse-wheel-event sink the menu state's
+    // `refresh_input` drains (the C++ `MenuGame::onEvent(
+    // MouseWheelScrolled)` handler's data path, MenuGame.cpp:299-356;
+    // the entered-text-sink pattern: one entry per wheel event the fold
+    // applied, drained per frame in the C++'s per-event order;
+    // `None` = not installed).
+    wheel_events_sink: Option<std::sync::Arc<std::sync::RwLock<Vec<f32>>>>,
 }
 
 impl Window {
@@ -546,6 +563,7 @@ impl Window {
             touch_position_sink: None,
             released_edges_sink: None,
             entered_text_sink: None,
+            wheel_events_sink: None,
         }
     }
 
@@ -593,6 +611,22 @@ impl Window {
     /// shareable, as the sinks above).
     pub fn set_entered_text_sink(&mut self, sink: std::sync::Arc<std::sync::RwLock<Vec<char>>>) {
         self.entered_text_sink = Some(sink);
+    }
+
+    /// issue 029b2: install the shared mouse-wheel-event sink (the windowed
+    /// client installs it once before the loop — the C++ `MenuGame`
+    /// `MouseWheelScrolled` `onEvent` handler's data path; the `Window`
+    /// itself is not shareable, as the sinks above).
+    pub fn set_wheel_events_sink(&mut self, sink: std::sync::Arc<std::sync::RwLock<Vec<f32>>>) {
+        self.wheel_events_sink = Some(sink);
+    }
+
+    /// The wheel-event sink's write half (the `MouseWheelScrolled` appends
+    /// — `None` = no-op; the `apply_event` wheel arm calls it).
+    fn with_wheel_sink(&self, f: impl FnOnce(&mut Vec<f32>)) {
+        if let Some(sink) = &self.wheel_events_sink {
+            f(&mut sink.write().expect("wheel sink poisoned"));
+        }
     }
 
     /// The entered-text sink's write half (the `TextEntered` appends —
@@ -1037,7 +1071,16 @@ impl Window {
                     edges.fingers.insert(finger);
                 });
             }
-            Event::MouseWheelScrolled { .. } => {}
+            // C++ `MenuGame::onEvent(MouseWheelScrolled)` (MenuGame.cpp:
+            // 299-356) — the handler runs PER EVENT (the C++ `runEvents`
+            // drains the pending events between polls; the port's
+            // per-frame `refresh_input` drain calls the handler per
+            // recorded delta, the C++'s per-event order — one entry per
+            // event, like the entered-text sink). Sign: the SFML `delta`
+            // and the winit `dy` agree (the variant's docs) — no flip.
+            Event::MouseWheelScrolled { delta } => {
+                window.with_wheel_sink(|events| events.push(delta));
+            }
             // C++ `runEvents` (GameWindow.hpp:42-83): the `TextEntered`
             // event has NO input-state fold half — it is dispatched
             // straight to the state's `onEvent` handler (the C++
@@ -1324,6 +1367,75 @@ mod tests {
         // no-op (the `with_entered_text_sink` `None` arm) — no panic.
         let mut bare = Window::headless(800, 480);
         Window::apply_event(&mut bare, Event::TextEntered { character: 'x' });
+    }
+
+    /// issue 029b2: the `MouseWheelScrolled` fold arm (the C++
+    /// `MenuGame::onEvent(MouseWheelScrolled)` handler's data path —
+    /// MenuGame.cpp:299-356). The delta's SIGN is the SFML `delta`
+    /// convention (positive = wheel up, the variant's docs: the winit
+    /// X11 Button4 → `LineDelta(0, +1)` / Button5 → `LineDelta(0, -1)`
+    /// mapping + the SFML fork's `Event.hpp` comment) — the fold records
+    /// it as-is (no sign flip; a flip would invert the C++'s wheel
+    /// navigation and level-list scroll).
+    #[test]
+    fn wheel_fold_appends_the_delta_to_the_wheel_events_sink() {
+        use std::sync::{Arc, RwLock};
+
+        let mut w = Window::headless(800, 480);
+        let sink: Arc<RwLock<Vec<f32>>> = Arc::new(RwLock::new(Vec::new()));
+        w.set_wheel_events_sink(sink.clone());
+
+        // One entry per event, in arrival order (the C++ `runEvents`
+        // per-event order the menu drain preserves).
+        Window::apply_event(&mut w, Event::MouseWheelScrolled { delta: 1.0 });
+        Window::apply_event(&mut w, Event::MouseWheelScrolled { delta: -2.0 });
+        Window::apply_event(&mut w, Event::MouseWheelScrolled { delta: 0.5 });
+        assert_eq!(*sink.read().expect("poisoned"), vec![1.0, -2.0, 0.5]);
+
+        // No sink installed (headless / pre-install): the fold arm is a
+        // no-op (the `with_wheel_sink` `None` arm) — no panic.
+        let mut bare = Window::headless(800, 480);
+        Window::apply_event(&mut bare, Event::MouseWheelScrolled { delta: 1.0 });
+    }
+
+    /// issue 029b2: the winit `MouseWheel` → SFML `MouseWheelScrolled`
+    /// mapping's sign (the wheel-inversion trap, checked from the winit
+    /// source rather than assumed — the `Event::MouseWheelScrolled`
+    /// variant's docs): line deltas pass through as-is, pixel deltas are
+    /// scaled by `1/10` (the fold's established `pos.y / 10.0`), and a
+    /// wheel-UP event (X11 Button4 → `LineDelta(0, +1)`, winit 0.30.13
+    /// `event_processor.rs:1083-1091`) stays POSITIVE — the SFML fork's
+    /// `delta` "positive is up" convention.
+    #[test]
+    fn map_window_event_mouse_wheel_keeps_the_sfml_sign() {
+        use winit::dpi::PhysicalPosition;
+        use winit::event::DeviceId;
+
+        let wheel = |delta: winit::event::MouseScrollDelta| WindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta,
+            phase: winit::event::TouchPhase::Moved,
+        };
+        match map_window_event(&wheel(winit::event::MouseScrollDelta::LineDelta(0.0, 1.0))).unwrap()
+        {
+            Event::MouseWheelScrolled { delta } => assert_eq!(delta, 1.0),
+            other => panic!("expected MouseWheelScrolled, got {other:?}"),
+        }
+        match map_window_event(&wheel(winit::event::MouseScrollDelta::LineDelta(0.0, -1.0)))
+            .unwrap()
+        {
+            Event::MouseWheelScrolled { delta } => assert_eq!(delta, -1.0),
+            other => panic!("expected MouseWheelScrolled, got {other:?}"),
+        }
+        // Pixel deltas (touchpads): `pos.y / 10.0`, sign preserved.
+        match map_window_event(&wheel(winit::event::MouseScrollDelta::PixelDelta(
+            PhysicalPosition::new(0.0, -120.0),
+        )))
+        .unwrap()
+        {
+            Event::MouseWheelScrolled { delta } => assert_eq!(delta, -12.0),
+            other => panic!("expected MouseWheelScrolled, got {other:?}"),
+        }
     }
 
     #[test]

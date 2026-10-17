@@ -44,6 +44,17 @@ pub type TriggerRefreshCallback = Box<dyn Fn(&str, i32)>;
 /// `fnHGUpdateRichPresenceCallbacks()` — C++ `std::function<void()>`.
 pub type RichPresenceCallback = Box<dyn Fn()>;
 
+/// C++ `steamManager.unlock_achievement(id)` — the `MenuGame` ctor's
+/// `Steam::steam_manager&` argument (main.cpp:427-434: `MenuGame(
+/// steamManager, discordManager, assets, audio, window, hexagonClient)`):
+/// the C++'s two menu-side call sites are `ELoginSuccess` →
+/// `"a23_login"` (MenuGame.cpp:2591) and the level-list's end-of-list
+/// wheel scroll → `"a35_eagerformore"` (MenuGame.cpp:335). The ported
+/// composition backs this with the shared `oh_steam::SteamManager`
+/// (windowed — the same manager the engine's `steam_manager` seam
+/// uses); the tests pass `None` or a recording closure.
+pub type UnlockAchievementCallback = Box<dyn Fn(&str)>;
+
 /// `MenuGame::setIgnoreAllInputs`'s `game.ignoreAllInputs(bool)` half
 /// (MenuGame.cpp:3389-3402 → `ssvs::Input::Manager::ignoreAllInputs`,
 /// Manager.hpp:78-81) — the windowed composition wires it to the menu

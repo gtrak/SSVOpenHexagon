@@ -4096,6 +4096,7 @@ mod tests {
             None,
             None,
             None,
+            None, // `unlock_achievement` — the 29b2/29b8 Steam seam
             None, // `ignore_inputs` — the 010b seam; not exercised by these draw tests
             Rc::new(oh_menu::layout::LinearFontHeight),
         ));
@@ -4213,6 +4214,7 @@ mod tests {
             None,
             None,
             None,
+            None, // `unlock_achievement` — the 29b2/29b8 Steam seam
             None, // `ignore_inputs` — the 010b seam
             Rc::new(oh_menu::layout::LinearFontHeight),
         ));
@@ -4852,6 +4854,7 @@ mod tests {
                 Rc::new(oh_menu::NoopTouch),
                 Rc::new(oh_menu::NoMenuJoystick),
                 window,
+                None,
                 None,
                 None,
                 None,

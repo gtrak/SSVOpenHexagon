@@ -34,7 +34,7 @@ use crate::menu;
 use crate::seams::{
     AudioSink, IgnoreInputsCallback, LevelInfo, MenuAssets, MenuConfig, MenuJoystick, MenuTouch,
     MenuWindow, NetEvent, NetworkClient, NewGameCallback, RichPresenceCallback,
-    TriggerRefreshCallback,
+    TriggerRefreshCallback, UnlockAchievementCallback,
 };
 use crate::states::{DialogInputState, PackChange, States};
 
@@ -75,6 +75,12 @@ pub struct Shared {
     pub ignore_inputs: u32,
     pub focus_held: bool,
     pub was_focus_held: bool,
+    /// C++ `wheelProgress` (MenuGame.hpp:172; ctor `wheelProgress{0.f}`
+    /// MenuGame.cpp:187) — the wheel accumulator the `MouseWheelScrolled`
+    /// handler adds to on every non-LevelSelection event (MenuGame.cpp:
+    /// 344-354: a full line's worth of progress fires `upAction` /
+    /// `downAction` and resets to 0).
+    pub wheel_progress: f32,
     pub touch_delay: f32,
     // ---- level selection ----
     pub lvl_slct: LevelDrawer,
@@ -164,6 +170,10 @@ pub struct Shared {
     new_game: Option<NewGameCallback>,
     trigger_refresh: Option<TriggerRefreshCallback>,
     rich_presence: Option<RichPresenceCallback>,
+    /// C++ `steamManager` (the ctor's first argument, main.cpp:427-434)
+    /// — the `unlock_achievement` half (the C++'s two menu-side call
+    /// sites; `seams::UnlockAchievementCallback`'s docs).
+    unlock_achievement: Option<UnlockAchievementCallback>,
     ignore_inputs_cb: Option<IgnoreInputsCallback>,
     font: Rc<dyn crate::layout::FontHeightOracle>,
 }
@@ -181,6 +191,7 @@ impl Shared {
         new_game: Option<NewGameCallback>,
         trigger_refresh: Option<TriggerRefreshCallback>,
         rich_presence: Option<RichPresenceCallback>,
+        unlock_achievement: Option<UnlockAchievementCallback>,
         ignore_inputs_cb: Option<IgnoreInputsCallback>,
         font: Rc<dyn crate::layout::FontHeightOracle>,
     ) -> Self {
@@ -196,6 +207,8 @@ impl Shared {
             ignore_inputs: 1,
             focus_held: false,
             was_focus_held: false,
+            // C++ ctor `wheelProgress{0.f}` (MenuGame.cpp:187).
+            wheel_progress: 0.0,
             touch_delay: 0.0,
             lvl_slct: LevelDrawer::default(),
             fav_slct: LevelDrawer {
@@ -257,6 +270,7 @@ impl Shared {
             new_game,
             trigger_refresh,
             rich_presence,
+            unlock_achievement,
             ignore_inputs_cb,
             font,
         }
@@ -302,6 +316,15 @@ impl Shared {
     /// C++ `window.stop()` (EXIT items).
     pub fn quit(&mut self) {
         self.quit_requested = true;
+    }
+
+    /// C++ `steamManager.unlock_achievement(id)` (the `seams::
+    /// UnlockAchievementCallback` docs) — `None` = the C++'s
+    /// not-initialized manager (no-op).
+    pub fn unlock_achievement(&self, id: &str) {
+        if let Some(cb) = &self.unlock_achievement {
+            cb(id);
+        }
     }
 
     /// Fire the `fnHGTriggerRefresh` seam (keyboard/joystick bind controls).
@@ -1059,6 +1082,7 @@ impl MenuGame {
         new_game: Option<NewGameCallback>,
         trigger_refresh: Option<TriggerRefreshCallback>,
         rich_presence: Option<RichPresenceCallback>,
+        unlock_achievement: Option<UnlockAchievementCallback>,
         ignore_inputs: Option<IgnoreInputsCallback>,
         font: Rc<dyn crate::layout::FontHeightOracle>,
     ) -> Self {
@@ -1073,6 +1097,7 @@ impl MenuGame {
             new_game,
             trigger_refresh,
             rich_presence,
+            unlock_achievement,
             ignore_inputs,
             font.clone(),
         );
@@ -2038,6 +2063,89 @@ impl MenuGame {
     /// sync with the focus trigger.
     pub fn set_focus_held(&self, held: bool) {
         self.shared.borrow_mut().focus_held = held;
+    }
+
+    /// C++ `MenuGame::onEvent(sf::Event::EventType::MouseWheelScrolled)`
+    /// handler (MenuGame.cpp:299-356) — the app layer's
+    /// `MenuSlotAdapter::refresh_input` drains the window's wheel-event
+    /// sink and calls this PER RECORDED DELTA (the C++ `runEvents` runs
+    /// the handler per event between polls — `wheelProgress` and the
+    /// LevelSelection `YScrollTo` accumulate per event, so a frame's
+    /// several wheel events each pass the clamp, the C++'s semantics).
+    ///
+    /// The C++'s two non-navigation halves are documented seams: the
+    /// cursor re-enable (`setMouseCursorVisible(true)` while
+    /// `window.hasFocus()`, MenuGame.cpp:304-307) is the S1 mouse-input
+    /// seam (the port has no menu mouse state yet), and the bind-capture
+    /// gate (MenuGame.cpp:309-316 — `state == MOpts` + the current item's
+    /// `isWaitingForBind()`) is the S3 BindControl seam (the port's bind
+    /// items never enter a waiting state; capture is owned by oh-config's
+    /// `KeyboardBindControl` — `menu.rs` module docs).
+    pub fn handle_mouse_wheel(&self, delta: f32) {
+        if self.state() == States::LevelSelection {
+            // C++ :319-321 — `if(focusHeld) changePackQuick(
+            // mEvent.mouseWheelScroll.delta > 0 ? -1 : 1);`
+            if self.shared().borrow().focus_held {
+                self.shared()
+                    .borrow_mut()
+                    .change_pack_quick(if delta > 0.0 { -1 } else { 1 });
+                return;
+            }
+            // C++ :322-341 — `lvlDrawer->YScrollTo +=
+            // mEvent.mouseWheelScroll.delta * 48.f` + the two-sided
+            // clamp. The lower bound is NOT a clamp: the C++ comment is
+            // the verbatim "Why..." — the `a35_eagerformore` achievement
+            // + `error.ogg`, then `YScrollTo = 0` (the jump back to the
+            // list's top). A value cannot be both `> 0` and `< -4000`,
+            // so the C++'s `if / else if` is this `if / else` with the
+            // end-scroll test first (the C++'s call order inside the
+            // branch: unlock, sound, then the reset).
+            let mut s = self.shared().borrow_mut();
+            let end_scroll = {
+                let d = if s.favorites_active {
+                    &mut s.fav_slct
+                } else {
+                    &mut s.lvl_slct
+                };
+                d.y_scroll_to += delta * 48.0;
+                d.y_scroll_to < -4000.0
+            };
+            if end_scroll {
+                s.unlock_achievement("a35_eagerformore");
+                s.play_sound_override("error.ogg");
+                let d = if s.favorites_active {
+                    &mut s.fav_slct
+                } else {
+                    &mut s.lvl_slct
+                };
+                d.y_scroll_to = 0.0;
+            } else {
+                let d = if s.favorites_active {
+                    &mut s.fav_slct
+                } else {
+                    &mut s.lvl_slct
+                };
+                if d.y_scroll_to > 0.0 {
+                    d.y_scroll_to = 0.0;
+                }
+            }
+            return;
+        }
+        // C++ :344-354 — the per-menu index navigation (every non-
+        // LevelSelection state: the menus, the boot screens, the profile
+        // select): `wheelProgress += delta`; a full line of progress
+        // (past ±1) fires `upAction` / `downAction` and resets to 0.
+        let mut s = self.shared().borrow_mut();
+        s.wheel_progress += delta;
+        if s.wheel_progress > 1.0 {
+            s.wheel_progress = 0.0;
+            drop(s);
+            self.up_action();
+        } else if s.wheel_progress < -1.0 {
+            s.wheel_progress = 0.0;
+            drop(s);
+            self.down_action();
+        }
     }
 
     /// C++ `game.onEvent(sf::Event::EventType::TextEntered)` handler
