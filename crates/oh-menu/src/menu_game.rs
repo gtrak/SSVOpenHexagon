@@ -243,6 +243,20 @@ pub struct Shared {
     font: Rc<dyn crate::layout::FontHeightOracle>,
 }
 
+/// The C++ okAction's `ETLPNewBoot` / `ETLPNew` profile-creation block's
+/// three exits (MenuGame.cpp:2211-2256): `Skipped` (the empty-name
+/// `break` — the C++'s `if(!enteredStr.empty())` guard: it falls to the
+/// okAction tail, which plays select.ogg), `Rejected` (the duplicate-name
+/// `return` — the C++ exits okAction WITHOUT the select.ogg tail),
+/// `Created` (the name — the caller adds the "profile selection" menu
+/// item, the C++ `profiles.create` half, 29b6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProfileCreateResult {
+    Skipped,
+    Rejected,
+    Created(String),
+}
+
 impl Shared {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -930,14 +944,17 @@ impl Shared {
 
     // ---- profile editing (okAction / eraseAction) ----
 
-    /// C++ okAction's `ETLPNewBoot` / `ETLPNew` profile-creation block.
-    /// Returns `true` if a profile was created and the state advanced to
-    /// SMain (so the caller should return early).
-    pub fn create_profile_from_entered(&mut self) -> bool {
+    /// C++ okAction's `ETLPNewBoot` / `ETLPNew` profile-creation block
+    /// (the `pCreate` / `pSetCurrent` / `changeFavoriteLevelsToProfile`
+    /// half — the `profiles.create` menu-item half is the caller's, 29b6).
+    pub fn create_profile_from_entered(&mut self) -> ProfileCreateResult {
         if self.entered_str.is_empty() {
-            return false;
+            // C++ :2214 `if(!enteredStr.empty())` — the empty guard is
+            // faithful to the C++: it skips the `pCreate` call too (the
+            // block's `break` → the okAction tail's select.ogg).
+            return ProfileCreateResult::Skipped;
         }
-        // Reject duplicate names.
+        // Reject duplicate names (the C++ :2220-2233).
         for name in self.assets.profile_names() {
             if self.entered_str == name {
                 self.play_sound_override("error.ogg");
@@ -947,15 +964,18 @@ impl Shared {
                      PRESS ANY KEY OR BUTTON TO CLOSE THIS MESSAGE\n",
                 );
                 self.set_ignore_all_inputs(2);
-                return false;
+                // C++ :2232 `return;` — out of okAction (no select.ogg).
+                return ProfileCreateResult::Rejected;
             }
         }
+        // C++ :2235-2237 — `pCreate` + `pSetCurrent` + the favorites
+        // rebuild, then the menu item (the caller's half, 29b6).
         let name = self.entered_str.clone();
         self.assets.profile_create(&name);
         self.assets.profile_set_current(&name);
         self.change_favorite_levels_to_profile();
         self.entered_str.clear();
-        true
+        ProfileCreateResult::Created(name)
     }
 
     // ---- playSelectedLevel (§11.8) ----
@@ -2404,6 +2424,30 @@ impl MenuGame {
         s.touch_delay = 50.0;
     }
 
+    /// C++ okAction's profile-creation menu-item half (MenuGame.cpp:
+    /// 2241-2247): `profiles.create<i::Single>(enteredStr, [this, name]{
+    /// assets.pSetCurrent(name); changeFavoriteLevelsToProfile(); })` +
+    /// `profiles.sortByName()` — the label is the BARE name (the C++ has
+    /// no prefix), the comparator is the category's `sort_by_name` (the
+    /// plain byte-wise `<` on the item names — NOT the favorites list's
+    /// lowercased-name sort), and the item is pushed AT ITS SORTED
+    /// POSITION by the re-sort (the audit's row 6: the created profile
+    /// now APPEARS in the menu, at the right spot).
+    pub fn add_profile_selection_item(&self, name: &str) {
+        let s = self.shared.clone();
+        let name_c = name.to_string();
+        let cat = self
+            .profile_selection_menu
+            .get_category_by_name("profile selection");
+        let label = name.to_string();
+        cat.create_single(&label, move || {
+            let mut sh = s.borrow_mut();
+            sh.assets().profile_set_current(&name_c);
+            sh.change_favorite_levels_to_profile();
+        });
+        cat.sort_by_name();
+    }
+
     /// C++ `okAction()` (full switch).
     pub fn ok_action(&self) {
         {
@@ -2413,14 +2457,35 @@ impl MenuGame {
         let state = self.state();
         match state {
             States::ETLPNewBoot | States::ETLPNew => {
+                // Bind the result before the arms: the scrutinee's `RefMut`
+                // temporary would otherwise stay alive across the arm bodies
+                // (the re-entrancy discipline — the arms re-borrow `shared`).
                 let created = self.shared.borrow_mut().create_profile_from_entered();
-                if created {
-                    let mut s = self.shared.borrow_mut();
-                    if state == States::ETLPNewBoot {
-                        s.play_sound_override("openHexagon.ogg");
+                match created {
+                    // C++ :2235-2247 — `pCreate` + `pSetCurrent` + the
+                    // favorites rebuild already ran in `Shared`; now the
+                    // menu item (29b6) + the re-sort.
+                    ProfileCreateResult::Created(name) => {
+                        self.add_profile_selection_item(&name);
+                        let mut s = self.shared.borrow_mut();
+                        if state == States::ETLPNewBoot {
+                            // C++ :2249-2252 — the boot arm RETURNS from
+                            // okAction (no select.ogg tail).
+                            s.play_sound_override("openHexagon.ogg");
+                            s.change_state_to(States::SMain);
+                            return;
+                        }
+                        // C++ :2253-2254 — the ETLPNew arm `break`s →
+                        // the okAction tail's select.ogg.
+                        s.change_state_to(States::SMain);
                     }
-                    s.change_state_to(States::SMain);
-                    return;
+                    // C++ :2232 — the duplicate-name `return;` (out of
+                    // okAction, WITHOUT the select.ogg tail).
+                    ProfileCreateResult::Rejected => return,
+                    // C++ :2214 `if(!enteredStr.empty())` guard — the
+                    // `break` → the select.ogg tail (the port's guard is
+                    // faithful: the C++ skips the whole block too).
+                    ProfileCreateResult::Skipped => {}
                 }
             }
             States::SLPSelectBoot => {

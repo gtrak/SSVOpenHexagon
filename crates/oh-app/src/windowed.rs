@@ -3268,8 +3268,8 @@ mod tests {
     /// fresh-install profile creation (ETLPNewBoot → `ok_action` →
     /// SMain) reachable from device input (the pre-fix hole: the
     /// `TextEntered` fold arm was a no-op, so `enteredStr` could never
-    /// fill and `ok_action`'s `create_profile_from_entered` returned
-    /// false).
+    /// fill and `ok_action`'s `create_profile_from_entered` always
+    /// returned `ProfileCreateResult::Skipped`).
     #[test]
     fn entered_text_chain_accumulates_the_entered_str() {
         use oh_render::window::Event;
