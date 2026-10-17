@@ -5,9 +5,13 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+
+[target.'cfg(not(target_os = "emscripten"))'.dependencies]
 # The real IPC implementation (issue 21 binding decision — see
 # .agents/skills/lib-discord.md): the official Discord Game SDK has no sound
 # Rust crate, so the port speaks the Discord IPC protocol to the local
 # client. Pure Rust, small dep set; `init` fails (gracefully) when no local
 # Discord client is running — the game's degradation path.
+# Gated off on emscripten (uuid 0.8.2's `v4` module is cfg-gated out on that
+# target → E0599); the `NoDiscordCore` fallback covers the web path.
 discord-rich-presence = "1.1"

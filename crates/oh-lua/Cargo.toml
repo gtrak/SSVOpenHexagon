@@ -4,18 +4,9 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-# mlua on the LuaJIT feature: the C++ build bundles LuaJIT
-# (see extlibs + CMakeLists.txt pin, and .agents/skills/lib-luajit.md).
-# `vendored` compiles LuaJIT from source into the binary (the C++ likewise
-# compiles LuaJIT in). NOTE (issue 029k1): this is NOT bit-for-bit the C++
-# build — the C++ pins `vittorioromeo/LuaJIT @ 4dc5ffbf` (plain upstream
-# v2.1 + CMake, 2023-04-02) built with `LUAJIT_DISABLE_FFI=ON`; the port
-# vendors upstream LuaJIT @ `a4f56a4` (2025-01-13) via
-# `luajit-src 210.5.12+a4f56a4`, patched locally (extlibs/luajit-src,
-# [patch.crates-io]) to compile with `-DLUAJIT_DISABLE_FFI` as well. See
-# .agents/plans/001-rust-port/deviations.md (K3 / LuaJIT rows) and
-# .agents/tasks/issue-029k1-luajit-version-and-anr.md.
-mlua = { version = "0.10", features = ["luajit", "vendored"] }
+# mlua is a PER-TARGET dependency (see the tables below): LuaJIT on desktop
+# (the C++ build's backend; the 029k1 vendoring note is on that table's
+# mlua line), Luau on emscripten.
 thiserror = { workspace = true }
 # The game API (issue 007) registers over the concrete gameplay/data types
 # owned by these crates (LevelStatus, HexagonGameStatus, StyleData, the
@@ -25,6 +16,17 @@ oh-game = { path = "../oh-game" }
 oh-data = { path = "../oh-data" }
 oh-math = { path = "../oh-math" }
 oh-rng = { path = "../oh-rng" }
+
+# mlua backend per target: LuaJIT on desktop (the C++ build's backend),
+# Luau on emscripten (LuaJIT cannot build for wasm — its JIT is not
+# wasm-viable and its C build script needs `make`).
+# `vendored` is REQUIRED on wasm (mlua-sys/build/find_normal.rs panics
+# without it). See .agents/skills/lib-mlua.md §WASM.
+[target.'cfg(not(target_os = "emscripten"))'.dependencies]
+mlua = { version = "0.10", features = ["luajit", "vendored"] }
+
+[target.'cfg(target_os = "emscripten")'.dependencies]
+mlua = { version = "0.10", features = ["luau", "vendored"] }
 
 [features]
 # C++ `SSVOH_PRODUCE_LUA_METADATA` (D-023/D-024): the shipped C++ build has
