@@ -6,8 +6,15 @@ edition.workspace = true
 [dependencies]
 # mlua on the LuaJIT feature: the C++ build bundles LuaJIT
 # (see extlibs + CMakeLists.txt pin, and .agents/skills/lib-luajit.md).
-# `vendored` links the LuaJIT C source directly, matching the C++ build
-# which compiles LuaJIT into the binary (DECISIONS.md / skills).
+# `vendored` compiles LuaJIT from source into the binary (the C++ likewise
+# compiles LuaJIT in). NOTE (issue 029k1): this is NOT bit-for-bit the C++
+# build — the C++ pins `vittorioromeo/LuaJIT @ 4dc5ffbf` (plain upstream
+# v2.1 + CMake, 2023-04-02) built with `LUAJIT_DISABLE_FFI=ON`; the port
+# vendors upstream LuaJIT @ `a4f56a4` (2025-01-13) via
+# `luajit-src 210.5.12+a4f56a4`, patched locally (extlibs/luajit-src,
+# [patch.crates-io]) to compile with `-DLUAJIT_DISABLE_FFI` as well. See
+# .agents/plans/001-rust-port/deviations.md (K3 / LuaJIT rows) and
+# .agents/tasks/issue-029k1-luajit-version-and-anr.md.
 mlua = { version = "0.10", features = ["luajit", "vendored"] }
 thiserror = { workspace = true }
 # The game API (issue 007) registers over the concrete gameplay/data types
@@ -28,3 +35,9 @@ oh-rng = { path = "../oh-rng" }
 # feature mirrors the flag-ON build (the `LuaMetadataProxy` destructor
 # records the entry).
 produce-lua-metadata = []
+
+# Compiles ffi_stub.c (the `luaopen_ffi` link-compat shim — see that file
+# and issue 029k1): mlua's `luajit` feature references the symbol at link
+# time even though the FFI-less VM and the port's safe mode never call it.
+[build-dependencies]
+cc = "1.0"

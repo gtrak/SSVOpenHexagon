@@ -1368,8 +1368,6 @@ dependencies = [
 [[package]]
 name = "luajit-src"
 version = "210.5.12+a4f56a4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3a8e7962a5368d5f264d045a5a255e90f9aa3fc1941ae15a8d2940d42cac671"
 dependencies = [
  "cc",
  "which",
@@ -1969,6 +1967,7 @@ dependencies = [
 name = "oh-lua"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "mlua",
  "oh-data",
  "oh-game",
