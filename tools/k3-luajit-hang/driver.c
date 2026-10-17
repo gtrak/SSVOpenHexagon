@@ -1,36 +1,22 @@
-// issue 029k1 (K3): hot-loop driver for the babysteps `onUpdate` hang.
+// K3 (issue 029k1) host-side driver for the babysteps LuaJIT-hang
+// experiments. Loads the real level script plus its real dependency
+// scripts (Packs/base/Scripts/{utils,common,commonpatterns}.lua) with the
+// game API stubbed, then drives `onUpdate` from C per-frame (exactly what
+// `oh_game::lua_call::call_on_update` does) plus the scripted tutorial
+// `onInput` events, so the full babysteps state machine (steps 0 -> 6,
+// including `e_kill` at levelTime > 45 after the mid-level `l_resetTime`)
+// runs, `onStep` fires and the real pattern-spawn functions execute.
 //
-// Links against a LuaJIT static library (vendored upstream 2.1.0-beta3
-// lineage OR the C++'s pinned 4dc5ffbf — see build.sh), loads the real
-// _RELEASE babysteps.lua with stubbed game API, and hammers `onUpdate`
-// exactly like the game's per-frame `call_on_update`:
+// Usage:
+//   driver <level.lua> [--iters N] [--dt s] [--jit-off] [--report N]
+//         [--watchdog s] [--pack-root DIR]
 //
-//   * `levelTime` advances by --dt (default 1/360 s, the phone's
-//     free-run frame cadence) on every call, so the tutorial state
-//     machine lingers in each step the way real play does (no input is
-//     fed — the 029a1 ANR happened before any input was needed, in the
-//     step0/step1 welcome state);
-//   * each iteration is a fresh C-side `lua_pcall` of `onUpdate` — the
-//     same call shape as `HexagonGame::update` -> `call_on_update`;
-//   * progress (iteration count, elapsed, number of compiled traces) is
-//     printed every --report iterations; a SIGALRM watchdog aborts with
-//     exit 3 if the progress print itself stops coming (the
-//     trace-compile-hang signature: CPU pegged, iteration counter frozen).
-//
-// Exit codes: 0 = loop completed (level killed via e_kill, or N reached);
-// 3 = watchdog fired (HANG — no progress for the alarm window);
-// 4 = Lua runtime error (aborted early, message printed).
-//
-// Usage: driver <babysteps.lua> [--iters N] [--dt s] [--jit-off]
-//        [--report N] [--watchdog s]
-//
-// The --jit-off flag calls `jit.off()` before the loop: this is the cheap
-// K3 experiment ("does the interpreter-only path play babysteps?").
+// Exit codes: 0 ok (completed or tutorial-killed), 2 usage, 3 watchdog
+// (no progress for `--watchdog` seconds — the hang signature), 4 Lua error.
 
-#include <lua.h>
+#include <luajit.h>
 #include <lauxlib.h>
 #include <lualib.h>
-#include <luajit.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -44,6 +30,29 @@ static double g_dt;
 static long g_report_every = 20000;
 static volatile sig_atomic_t g_alarm_armed = 0;
 static double g_start_wall;
+
+// NDK clang emulates TLS by default for static Android executables
+// (`__emutls_v.*`), which would leave Bionic's own 8-byte-aligned static TLS
+// (its `__libc_tls_generation_copy`) as the only executable PT_TLS segment.
+// NDK 27's Bionic aborts static aarch64 executables whose executable TLS
+// segment is not 64-aligned with zero skew. A real local-exec TLS variable
+// with 64-byte alignment (referenced below so it cannot be eliminated)
+// forces the linker to emit a 64-aligned, zero-skew PT_TLS that Bionic
+// accepts (build.sh passes -fno-emulated-tls -ftls-model=local-exec for
+// aarch64). See tls64.py / README for the history of this quirk.
+__attribute__((aligned(64))) static __thread char k3_tls_align_probe[8] = {1};
+static void k3_tls_probe_touch(void) {
+    volatile char v = k3_tls_align_probe[0];
+    (void)v;
+}
+
+// Timeline model (enough for babysteps' onStep cadence): entries are
+// scheduled at `t_wait`-advanced cursor positions; `w_wall` marks an entry
+// at the current cursor; the timeline is "occupied" until levelTime passes
+// the last entry's time (then onStep may fire again, like the game).
+static double g_tl_cursor = 0.0;
+static double g_tl_free_at = 0.0;
+static const char *g_pack_root = ".";
 
 static double now_s(void) {
     struct timespec ts;
@@ -64,17 +73,105 @@ static void on_alarm(int sig) {
     _exit(3);
 }
 
-// Stubs for the C++ game API surface babysteps.lua references. Every
-// function is a no-op (or a counter) — the point is the JIT-visible shape
-// of `onUpdate` (its branches, the HREFs on the "yes!"/"nope" string
-// constants, the per-frame C calls), not game behavior.
+// ---- game API implemented in C (needs driver state) -----------------------
+
+static int cb_t_wait(lua_State *L) {
+    g_tl_cursor += lua_tonumber(L, 1);
+    return 0;
+}
+
+static int cb_tl_entry(lua_State *L) {  // w_wall / w_owall: an entry now
+    (void)L;
+    g_tl_free_at = g_tl_cursor;
+    return 0;
+}
+
+static int cb_num_entries(lua_State *L) {
+    lua_pushnumber(L, g_level_time < g_tl_free_at ? 1 : 0);
+    return 1;
+}
+
+static int cb_next_step(lua_State *L) {
+    // next 30 s step boundary at/after current levelTime
+    lua_pushnumber(L, 30.0 * ((long)(g_level_time / 30.0) + 1));
+    return 1;
+}
+
+static int cb_reset_time(lua_State *L) {
+    g_level_time = 0.0;
+    g_tl_cursor = 0.0;
+    g_tl_free_at = 0.0;
+    lua_pushnumber(L, 0.0);
+    lua_setglobal(L, "levelTime");
+    return 0;
+}
+
+// u_execDependencyScript(disambiguator, name, author, file) /
+// u_execScript(file): load and run <pack-root>/Packs/base/Scripts/<file>.
+// (babysteps' dependencies all resolve into the "base" pack.)
+static int run_pack_script(lua_State *L, const char *file) {
+    char path[1024];
+    snprintf(path, sizeof path, "%s/Packs/base/Scripts/%s", g_pack_root, file);
+    FILE *f = fopen(path, "rb");
+    if (!f) return luaL_error(L, "K3: cannot open %s", path);
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return luaL_error(L, "K3: seek %s", path); }
+    long len = ftell(f);
+    if (len < 0) { fclose(f); return luaL_error(L, "K3: tell %s", path); }
+    rewind(f);
+    char *buf = malloc((size_t)len + 1);
+    if (!buf || fread(buf, 1, (size_t)len, f) != (size_t)len) {
+        fclose(f); free(buf);
+        return luaL_error(L, "K3: read %s", path);
+    }
+    fclose(f);
+    buf[len] = 0;
+    fprintf(stderr, "K3-DRIVER: loaded dependency %s (%ld bytes)\n", path, (long)len);
+    int rc = luaL_loadbuffer(L, buf, (size_t)len, path);
+    if (rc == LUA_OK) rc = lua_pcall(L, 0, 0, 0);
+    free(buf);
+    return rc;  // 0 or an error left on the stack
+}
+
+static int cb_exec_dep_script(lua_State *L) {
+    // args: disambiguator, name, author, file
+    return run_pack_script(L, luaL_checkstring(L, 4));
+}
+
+static int cb_exec_script(lua_State *L) {
+    return run_pack_script(L, luaL_checkstring(L, 1));
+}
+
+static void register_c_api(lua_State *L) {
+    struct { const char *name; lua_CFunction fn; } cbs[] = {
+        {"t_wait", cb_t_wait},
+        {"w_wall", cb_tl_entry},
+        {"w_owall", cb_tl_entry},
+        {"l_getNumTimelineEntries", cb_num_entries},
+        {"l_getNextTimelineStep", cb_next_step},
+        {"l_resetTime", cb_reset_time},
+        {"u_execDependencyScript", cb_exec_dep_script},
+        {"u_execScript", cb_exec_script},
+    };
+    for (size_t i = 0; i < sizeof cbs / sizeof cbs[0]; i++) {
+        lua_pushcfunction(L, cbs[i].fn);
+        lua_setglobal(L, cbs[i].name);
+    }
+}
+
+// ---- Lua-side stubs (pure no-ops / constants) ----------------------------
+
 static const char *STUBS =
-    "u_execDependencyScript = function() return true end\n"
     "u_rndInt = function(a, b) return math.random(a, b) end\n"
+    "u_rndIntUpper = function(upper) return math.random(1, upper) end\n"
+    "u_rndReal = function() return math.random() end\n"
     "u_clearWalls = function() end\n"
     "steam_unlockAchievement = function() end\n"
     "a_playSound = function() end\n"
     "a_playPackSound = function() end\n"
+    "e_messageAdd = function() end\n"
+    "e_messageAddImportant = function() end\n"
+    "e_stopTimeS = function() end\n"
+    "e_kill = function() killed = true end\n"
     "l_setSpeedMult = function() end\n"
     "l_setSpeedInc = function() end\n"
     "l_setRotationSpeed = function() end\n"
@@ -91,19 +188,40 @@ static const char *STUBS =
     "l_setBeatPulseMax = function() end\n"
     "l_setBeatPulseDelayMax = function() end\n"
     "l_setBeatPulseSpeedMult = function() end\n"
-    "l_resetTime = function() levelTime = 0 end\n"
-    "l_getLevelTime = function() return levelTime end\n"
     "l_addTracked = function() end\n"
     "l_clearTracked = function() end\n"
     "l_setIncEnabled = function() end\n"
-    "e_messageAddImportant = function() end\n"
-    "e_stopTimeS = function() end\n"
-    "e_kill = function() killed = true end\n"
+    "l_setSwapEnabled = function() end\n"
+    "l_getSides = function() return 6 end\n"
+    "l_getDelayMult = function() return 1.65 end\n"
+    "l_getRotation = function() return 0 end\n"
+    "l_getSwapEnabled = function() return false end\n"
+    "l_getLevelTime = function() return levelTime end\n"
+    "u_getDifficultyMult = function() return 1 end\n"
+    "u_getSpeedMultDM = function() return 0.65 end\n"
+    "u_getDelayMultDM = function() return 1.65 end\n"
+    "u_getPlayerAngle = function() return 0 end\n"
+    "u_getVersionMajor = function() return 1 end\n"
+    "u_getVersionMinor = function() return 12 end\n"
+    "u_getVersionMicro = function() return 1 end\n"
     "levelTime = 0\n"
     "killed = false\n"
     "function shuffle(t)\n"
     "  for i = #t, 2, -1 do local j = math.random(i) t[i], t[j] = t[j], t[i] end\n"
     "end\n";
+
+// The scripted tutorial input (babysteps steps 0..6). The state machine
+// needs: (a) both rotations while step1, (b) focus+both rotations while
+// step25. After step3 the mid-level l_resetTime restarts levelTime and the
+// level runs unattended to levelTime > 45 where e_kill fires.
+struct input_event { double t; int move; int focus; };
+static const struct input_event INPUT_EVENTS[] = {
+    { 0.30, -1, 0 },
+    { 0.30,  1, 0 },
+    { 0.62, -1, 1 },
+    { 0.62,  1, 1 },
+};
+static size_t g_input_done = 0;
 
 static int run(lua_State *L, const char *what, const char *code, int results) {
     if (luaL_loadbuffer(L, code, strlen(code), what) != LUA_OK ||
@@ -114,11 +232,28 @@ static int run(lua_State *L, const char *what, const char *code, int results) {
     return 0;
 }
 
+static int call_on_input(lua_State *L, double t, int move, int focus) {
+    lua_getglobal(L, "onInput");
+    if (lua_isnil(L, -1)) { lua_pop(L, 1); return 0; }
+    lua_pushnumber(L, t);
+    lua_pushnumber(L, (double)move);
+    lua_pushboolean(L, focus);
+    lua_pushnumber(L, 0);  // mSwap
+    int rc = lua_pcall(L, 4, 0, 0);
+    if (rc != LUA_OK) {
+        fprintf(stderr, "K3-DRIVER: onInput failed at t=%.2f: %s\n",
+                t, lua_tostring(L, -1));
+        lua_pop(L, 1);
+        return 1;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr,
                 "usage: %s <level.lua> [--iters N] [--dt s] [--jit-off] "
-                "[--report N] [--watchdog s]\n",
+                "[--report N] [--watchdog s] [--pack-root DIR]\n",
                 argv[0]);
         return 2;
     }
@@ -139,19 +274,23 @@ int main(int argc, char **argv) {
             g_report_every = atol(argv[++i]);
         else if (strcmp(argv[i], "--watchdog") == 0 && i + 1 < argc)
             watchdog_s = atol(argv[++i]);
+        else if (strcmp(argv[i], "--pack-root") == 0 && i + 1 < argc)
+            g_pack_root = argv[++i];
     }
 
     lua_State *L = luaL_newstate();
     luaL_openlibs(L);
+    k3_tls_probe_touch();
     printf("K3-DRIVER: %s, LUA_VERSION=%s\n", LUAJIT_VERSION, LUA_VERSION);
     if (jit_off) {
         if (run(L, "jit.off", "jit.off()", 0)) return 4;
         printf("K3-DRIVER: JIT OFF (interpreter only)\n");
     }
     if (run(L, "stubs", STUBS, 0)) return 4;
+    register_c_api(L);
 
-    // Load the real level script (u_execDependencyScript is stubbed, so
-    // the three dependency includes are no-ops; everything else resolves).
+    // Load the real level script (u_execDependencyScript loads the real
+    // Packs/base/Scripts/*.lua from --pack-root, default cwd).
     FILE *f = fopen(argv[1], "rb");
     if (!f) {
         perror("open level");
@@ -174,9 +313,16 @@ int main(int argc, char **argv) {
     sigaction(SIGALRM, &sa, NULL);
 
     g_start_wall = now_s();
+    const struct input_event *ev = INPUT_EVENTS;
+    const struct input_event *ev_end =
+        INPUT_EVENTS + sizeof INPUT_EVENTS / sizeof INPUT_EVENTS[0];
 
     for (long i = 1; i <= iters; i++) {
         g_level_time += g_dt;
+        while (ev < ev_end && g_level_time >= ev->t) {
+            if (call_on_input(L, ev->t, ev->move, ev->focus)) return 4;
+            ev++;
+        }
         // The game resolves `onUpdate` from the level environment every
         // frame — do the same (a held C-stack reference is consumed by
         // each pcall).
@@ -218,8 +364,8 @@ int main(int argc, char **argv) {
             g_alarm_armed = 1;
         }
 
-        // The tutorial completes (e_kill) when levelTime passes 45 s —
-        // stop early like the game would.
+        // The tutorial completes (e_kill at levelTime > 45) — stop early
+        // like the game would.
         lua_getglobal(L, "killed");
         int killed = lua_toboolean(L, -1);
         lua_pop(L, 1);

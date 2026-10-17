@@ -92,8 +92,10 @@ itself.
 
 ## Decision requests (D-028 candidates — user call)
 
-1. Luau-instead-of-LuaJIT on web only (behavioral-compat; desktop stays
-   LuaJIT-locked)? — required for any real web game.
+1. ~~Luau-instead-of-LuaJIT on web only (behavioral-compat; desktop stays
+   LuaJIT-locked)?~~ **MOVED to issue 30** (`30-lua-runtime.md`): the LuaJIT
+   version skew + the K3 Android hang make this a cross-platform VM decision,
+   not a web-only one. See that doc's option matrix + go/no-go spike.
 2. miniz_oxide replay deflate on web only (web replays self-consistent,
    cross-platform replay exchange documented best-effort)?
 3. v1 scope: no net/no steam/discord/no audio (silent) — acceptable?

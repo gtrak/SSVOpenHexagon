@@ -76,12 +76,12 @@ case "$ARCH" in
     . "$REPO/tools/android-env.sh"
     CC_FLAG="$CC_aarch64_linux_android"
     LD_FLAG="$CC_aarch64_linux_android"
-    LINKER="$CC_aarch64_linux_android"
+    NDK_BIN="$(dirname "$CC_FLAG")"
     ;;
   x86_64)
     CC_FLAG="cc"
     LD_FLAG="cc"
-    LINKER="cc"
+    NDK_BIN=""
     ;;
   *) echo "unknown arch $ARCH" >&2; exit 2 ;;
 esac
@@ -92,9 +92,18 @@ if [ "$VARIANT" = "cpp" ]; then
   EXTRA_CFLAGS=" -DLUAJIT_DISABLE_FFI=1"
 fi
 
+if [ "$ARCH" = "aarch64" ]; then
+  # The Makefile's default ar/strip are the host's; with `make -e` the
+  # environment wins (the same mechanism luajit-src uses).
+  export TARGET_AR="$NDK_BIN/llvm-ar rcus"
+  export TARGET_STRIP="$NDK_BIN/llvm-strip"
+fi
+
 echo ">> make libluajit.a"
 make -C "$SRC/src" -j"$(nproc)" clean >/dev/null 2>&1 || true
-make -C "$SRC/src" -j"$(nproc)" BUILDMODE=static TARGET_SYS=Linux \
+# Build the `libluajit.a` target directly (not `all`): the static `luajit`
+# binary target needs a working TARGET_STRIP, and we only need the lib.
+make -C "$SRC/src" -e -j"$(nproc)" libluajit.a BUILDMODE=static TARGET_SYS=Linux \
   XCFLAGS="-fPIC${EXTRA_CFLAGS}" \
   STATIC_CC="$CC_FLAG" TARGET_LD="$LD_FLAG" \
   HOST_CC="${HOST_CC:-cc}" >/dev/null
@@ -103,9 +112,14 @@ make -C "$SRC/src" -j"$(nproc)" BUILDMODE=static TARGET_SYS=Linux \
 # --- link the driver ------------------------------------------------------
 echo ">> linking driver"
 if [ "$ARCH" = "aarch64" ]; then
-  # NDK bionic: fully static, math/dl inside libc.
-  $CC_aarch64_linux_android -O2 -static "$HERE/driver.c" -I "$SRC/src" \
-    "$SRC/src/libluajit.a" -o "$DEST/driver"
+  # NDK bionic: fully static; -lm/-ldl after the archive (the FFI C code
+  # references dlopen; the driver never loads C modules, so runtime dlopen
+  # is not exercised). -fno-emulated-tls + the 64-aligned TLS probe in
+  # driver.c make Bionic's executable-TLS alignment check pass (see
+  # driver.c comment / tls64.py).
+  $CC_aarch64_linux_android -O2 -static -fno-emulated-tls -ftls-model=local-exec \
+    "$HERE/driver.c" -I "$SRC/src" \
+    "$SRC/src/libluajit.a" -lm -ldl -o "$DEST/driver"
 else
   # Host glibc: dynamic (static glibc is broken for many libm symbols);
   # -lm must come after the LuaJIT archive that references the symbols.
