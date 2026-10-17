@@ -1603,14 +1603,6 @@ fn attach_web_listeners(
         let Some(ke) = e.dyn_ref::<web_sys::KeyboardEvent>() else {
             return;
         };
-        let code = web_key_to_sfml(ke.code().as_str(), ke.key().as_str());
-        if code == Key::UNKNOWN {
-            return;
-        }
-        q.borrow_mut().push(Event::KeyPressed {
-            code,
-            repeated: ke.repeat(),
-        });
         // SFML dispatches a `TextEntered` ALONGSIDE the `KeyPressed` for a
         // printable character (the C++ `runEvents` polls them as two events —
         // the `MenuGame`'s `onEvent(TextEntered)` handler, MenuGame.cpp:491-498,
@@ -1620,6 +1612,11 @@ fn attach_web_listeners(
         // single-char `key` (this excludes Enter — the `key` "Enter" is a word,
         // not a char — and every functional key whose `key` is a named word).
         // Master's `entered_text_sink` (issue 025d) is fed here on web.
+        //
+        // NOTE: this is deliberately INDEPENDENT of the SFML key-code map
+        // below — text input must not depend on `KeyboardEvent.code` being
+        // mappable (`winit_key_to_sfml`-style tables key off `code`, which some
+        // synthetic/IME paths leave empty). The character comes from `key`.
         if !ke.ctrl_key() && !ke.alt_key() && !ke.meta_key() {
             let key = ke.key();
             if key.chars().count() == 1 {
@@ -1628,6 +1625,14 @@ fn attach_web_listeners(
                 }
             }
         }
+        let code = web_key_to_sfml(ke.code().as_str(), ke.key().as_str());
+        if code == Key::UNKNOWN {
+            return;
+        }
+        q.borrow_mut().push(Event::KeyPressed {
+            code,
+            repeated: ke.repeat(),
+        });
     });
     let q = queue.clone();
     add_dom_listener(&window, "keyup", &mut listeners, move |e| {
