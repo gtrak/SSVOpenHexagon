@@ -133,3 +133,36 @@ vectors, and the first-divergent-frame analysis for every divergence found.
 - If the C++ cannot be built, check whether the **existing** committed parity
   vectors already cover replay scores; if so, say what they do and do not cover,
   and report that the C++ column is blocked rather than faking it.
+
+---
+
+## STATUS: BLOCKED on system packages (2026-10-17)
+
+A lane attempted this and died in dependency archaeology. The measured blocker:
+
+- **No passwordless sudo** on this machine, so packages cannot be installed
+  non-interactively.
+- The SFML the C++ fetches via CPM needs **system** X11/GL dev headers, which are
+  mostly MISSING: `xrandr`, `xcursor`, `xi`, `gl`, `freetype2`, `openal`,
+  `vorbis`, `vorbisfile`, `flac` (only `x11` and `libudev` are present). SFML can
+  vendor freetype/openal/vorbis/flac, but **not** the X11/GL interfaces — those are
+  system APIs, so the build cannot proceed without root. There is no
+  `SFML_USE_SYSTEM_DEPS` setting in the project's `CMakeLists.txt` to flip.
+
+**To unblock**, one command (needs the operator's password):
+
+```
+sudo apt-get install -y libx11-dev libxrandr-dev libxcursor-dev libxi-dev \
+  libxext-dev libxrender-dev libxinerama-dev libgl1-mesa-dev libglvnd-dev \
+  libfreetype6-dev libopenal-dev libvorbis-dev libflac-dev
+```
+
+Then re-dispatch this lane as-is: the design (the `-fingerprint` flag, the
+fingerprint definition, the replay-as-interchange-format interface, the
+`./OpenHexagon -headless <replay>.ohr.z` invocation) is complete and unchanged, and
+`030a`'s harness will already have produced the synthetic-replay corpus to feed it.
+
+**This lane is NOT required for the Luau decision** — `030a` answers
+LuaJIT↔Luau on its own. This one adds the C++ cross-check (and the whole-engine
+oracle). Do not start it before the packages are installed; an empty run just
+repeats the archaeology.
