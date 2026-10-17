@@ -259,3 +259,47 @@ column now exists — meaning the Luau arm can be compared **against the C++ dir
 not only against LuaJIT. That three-way check (C++ ↔ LuaJIT ↔ Luau over the same corpus)
 is the natural next evidence if the default is ever revisited; it is a follow-up, not a
 gap in 030a.
+
+## 12. Operator direction (2026-10-17) — unifying on Luau is the LIKELY endpoint
+
+Operator, verbatim: *"once we have instrumentation and proof of luau luajit parity, we
+will likely unify on luau unless there's a hard blocker."* §8/§11's "keep the LuaJIT
+default" is therefore a **staging position, not the goal** — it is what the default
+should be *until* the proof §12 defines exists. Read the rest of this issue with that
+intent.
+
+**The operator's two conditions, and where they stand:**
+
+1. **Instrumentation — DONE.** 030b landed the frame-level C++ oracle (the flag-gated
+   `-fingerprint` hook, committed per-frame vectors, `gen_corpus`,
+   `parity_cpp_fingerprints`): 3627/3627 frames identical against the port, with the
+   four seeded cases matching the pre-existing `level_runs.json` pins exactly. The C++
+   column is now a *reusable* comparator, not a one-off.
+2. **Proof of Lua parity — half done.** 030a landed the A/B proof (43/43 corpus cases
+   byte-identical LuaJIT vs Luau; 3 processes per backend identical). What is still
+   missing is the **third column**: C++ ↔ LuaJIT ↔ Luau over the same corpus. That is
+   now *possible* precisely because both landings exist, and it is the remaining proof.
+
+**Hard-blocker taxonomy — what could still say no, and each one's mitigation.** The
+point of writing these down is that most of them are *manageable* rather than hard:
+
+| candidate blocker | status / mitigation |
+|---|---|
+| **Removed 5.1-isms in third-party packs** (`setfenv`, `getfenv`, `loadstring`, `unpack`, `newproxy`, `module`, `gcinfo`) | The in-repo census found **zero** occurrences across all 42 shipped pack scripts — but third-party user packs are the genuinely untested surface. **Mitigable**: implement them as a Lua-level 5.1 compat prelude over Luau (`unpack = table.unpack`, `loadstring = load`, emulated `setfenv`/`getfenv`, `module`/`newproxy`/`gcinfo` shims). The residual risk then shrinks to number spellings and error text, which the probes measured and which do not touch gameplay. |
+| **Perf** (interpreter vs JIT) | Measured: ~+8% on a light level ≈ **1.2% of the 200–360 fps budget**; heavy/Lua-bound cases are backend-neutral. **Unmeasured: release mode and on-device.** A blocker only if release/on-device shows a real frame-budget loss — measurable, and `luau-jit` (native-only) exists as a fallback. |
+| **Error text / traceback fidelity** | `%.14g` and number→string are **identical** (probed). Error chunk prefixes and number spellings differ — this affects console/log text, not replays (error text is not fingerprinted). A fidelity note, not a gameplay blocker. |
+| **Replay determinism** | Already answered: 43/43 byte-identical across backends, 3 processes per backend identical. |
+| **wasm / Android embedding** | Luau is statically linked (no `dlopen`), and emscripten cannot take LuaJIT at all — so unification **removes** the per-target split rather than creating one. Android `cargo check` with Luau passes. |
+
+**The upside, which is the argument for doing it:** unification deletes
+`extlibs/luajit-src` (the vendored LuaJIT), the root `[patch.crates-io]`, the
+`ffi_stub.c` link shim, the Android `cshim.c` `__clear_cache` shim, and the per-target
+mlua selection — and, more importantly, it makes **K3** (the arm64 `lj_asm_trace` ANR)
+and **K4** (LuaJIT version skew) **moot by construction**. K3 is a live on-device ANR
+risk, and the operator's own "hangs non-responsive" report is a candidate K3 sighting,
+so unification may retire a real bug class rather than merely simplifying the build.
+
+**Sequence once the proof is green:** add the 5.1 compat prelude (if we want the
+third-party safety net) → flip `default = ["backend-luau"]` → delete the LuaJIT
+machinery → close K3/K4. `tools/lua-parity.sh` re-proves parity on every gate either
+way, so the switch is reversible and evidence-backed rather than a leap.
