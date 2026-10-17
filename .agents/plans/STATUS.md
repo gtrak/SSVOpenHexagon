@@ -133,3 +133,33 @@ and the net wire protocol (`=== net ===`: the REAL `Online/Shared.cpp` +
 encrypted envelopes and the exact `PInvalid.error` strings, pinned in
 oracle-vectors.md "Net wire vectors").
 Adding a probe for a new surface is part of the issue that needs it.
+
+
+## Lane landing plan (three lanes in flight, 2026-10-17)
+
+All three lanes run in persistent worktrees (`tools/lane-worktree.sh`) branched off
+master *before* the 029n1/31 spec commits, which is why a naive `diff master` shows
+them "lacking" `.agents/*` files — those are my own later commits, not lane edits.
+
+| lane | committed on branch | uncommitted | shape |
+|---|---|---|---|
+| 030a | 5 | 0 | the biggest piece: backend feature forwarding, the differential harness (`oh-parity/tests/lua_engine_parity.rs`, 1163 lines) + VM probes (266), per-backend stdlib arms |
+| 029-tail | 3 (29v1, 29g1, 29w1) | 8 | mid-29q1 (the files modified are exactly the drift rows the audits flagged) |
+| 030b | 1 (fingerprint definition + the RNG-state probe) | 15 + 2 untracked | the C++ oracle column, incl. its own `tools/oracle/pcg_state_probe.cpp` |
+
+**The real conflict surface is two files**: `crates/oh-rng/src/lib.rs` and
+`crates/oh-rng/src/pcg.rs` — both lanes expose RNG state for the fingerprint
+(`git merge-tree` dry run conflicts in `pcg.rs`). Everything else is disjoint
+(030a: `oh-lua`, `oh-parity`, `oh-game` manifests; 030b: `oh-game/src`, C++ sources,
+`tools`). Land **030a → 029-tail → 030b**, rebasing 030b over the other two and
+hand-merging those two `oh-rng` files.
+
+**030b's landing gate — the C++ reference tree must stay PRISTINE.** 030b has edited
+the reference sources in its worktree (`src/SSVOpenHexagon/Core/{main,HexagonGame,HGUpdate}.cpp`
+and four `include/...hpp`). The deliverable is the instrumentation as a **patch**
+(`tools/cpp-oracle/fingerprint.patch`, applied by `tools/cpp-oracle/run.sh`); the
+in-tree edits are the development copy. They must NOT land: an instrumented in-tree
+C++ shifts line numbers, and the entire D-014 citation corpus (every `file:line` in
+`.agents/audits/*` and the specs) addresses the pristine text. Verify at landing:
+`git diff master -- src include` is EMPTY, and the patch applies cleanly to the
+pristine tree.
