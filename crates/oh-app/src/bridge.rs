@@ -265,8 +265,10 @@ impl AppDraw {
 /// (a default `sf::Texture` = the 1×1 white pixel) when the file is
 /// missing/unreadable. The C++ logs the failure at asset-load time
 /// (`hg::loadAssetsFromJson`, Assets.cpp:238-244); the port decodes at
-/// `AppDraw` construction and logs the same line there.
-fn load_texture_or_null(assets_dir: &Path, name: &str) -> Texture {
+/// `AppDraw` construction and logs the same line there. `menu_draw`
+/// shares it for the credits-bar PNGs (29w1: the C++'s ctor
+/// `assets.getTexture("creditsBar*.png")`, MenuGame.cpp:170-171).
+pub(crate) fn load_texture_or_null(assets_dir: &Path, name: &str) -> Texture {
     match oh_render::Image::load_png(&assets_dir.join(name)) {
         Ok(image) => Texture::from_image(image),
         Err(_) => {

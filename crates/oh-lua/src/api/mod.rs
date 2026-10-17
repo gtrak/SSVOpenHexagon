@@ -96,8 +96,28 @@ pub fn init_lua_api(ctx: &LuaContext, state: &State) -> Result<(), LuaError> {
     let shared = SharedLua::new(ctx);
 
     random::register(ctx, state)?;
-    redefine_io_open(ctx)?;
-    redefine_random(ctx)?;
+    // C++ `redefineIoOpen`/`redefineRandom`'s `catch(...)`
+    // (LuaScripting.cpp:148-154 / :170-176): log the diagnostic line,
+    // then rethrow (the port: log, then propagate — the caller's
+    // `.expect("init_lua_api failed")` is the C++'s uncaught-exception
+    // abort; 29g1 adds the missing diagnostic). The C++ logs inside the
+    // sandbox functions themselves; the port logs here — the single
+    // production call site with the `ssvu::lo` sink (the `GameApi`
+    // backend) in reach.
+    if let Err(err) = redefine_io_open(ctx) {
+        lock(state).backend.log(
+            "hg::LuaScripting::redefineIoOpen",
+            "Failure to redefine Lua's `io.open` function\n",
+        );
+        return Err(err);
+    }
+    if let Err(err) = redefine_random(ctx) {
+        lock(state).backend.log(
+            "hg::LuaScripting::redefineRandom",
+            "Failure to redefine Lua's `math.random` function\n",
+        );
+        return Err(err);
+    }
     destroy_malicious_functions(ctx)?;
     utils::register(ctx, state)?;
     custom_walls::register(ctx, state)?;

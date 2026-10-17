@@ -1,7 +1,7 @@
 //! issue 013b — the `MenuGame::draw()` render bridge (the menu's draw
 //! surface).
 //!
-//! C++ `MenuGame::draw()` (`src/SSVOpenHexagon/Core/MenuGame.cpp:5751-5986`)
+//! C++ `MenuGame::draw()` (`src/SSVOpenHexagon/Core/MenuGame.cpp:5751-5978`)
 //! dispatches on `state` to the helper renders (`:3568-:6161`): the
 //! hexagon-menu background (`styleData.drawBackgroundMenu`), the "CURRENT
 //! PROFILE:" line, the state-specific menu panels, `drawGraphics` /
@@ -72,7 +72,7 @@
 //! `window.run` loop); `getFPSMult()` is `200.f / fps`
 //! (MenuGame.cpp:5985-5989, ported as `oh_menu::layout::fps_mult`).
 //!
-//! **`mustTakeScreenshot`** (MenuGame.cpp:5974-5978) is always `false`:
+//! **`mustTakeScreenshot`** (MenuGame.cpp:5962-5966) is always `false`:
 //! the screenshot key binding lives in the unwired SSVStart input
 //! manager.
 //!
@@ -94,18 +94,28 @@
 //! `setIndex`/`refreshCamera` call `formatLevelDescription`, :2950,
 //! :3253).
 //!
-//! **The sprite textures are 1×1 placeholders.** The C++ textures
-//! (`titleBar.png`, `creditsBar1.png`, `creditsBar2.png`,
-//! `onlineIcon*.png`, `epilepsyWarning.png`) are not loaded by the port
-//! yet (the `oh-assets` texture table is the 15c gap); the bridge emits
-//! the full C++ layout either way, and issue-025c's GL sprite pass
-//! renders them (the 1×1 placeholder texture uploads as-is — the
-//! placeholder *size* still shifts the `getGlobalBottom`-relative
-//! transforms (the "CURRENT PROFILE" line, the credits bars) by the
-//! real-texture-size delta until the texture table lands).
+//! **The credits-bar textures are the real `Assets/` PNGs (29w1).**
+//! `MenuDraw::new` loads `creditsBar1.png` / `creditsBar2.png` /
+//! `creditsBar2b.png` / `creditsBar2c.png` through the same asset decode
+//! path as 29e1's HUD/particle textures (`crate::bridge::
+//! load_texture_or_null` — the C++ ctor's `getTexture`, MenuGame.cpp:
+//! 170-171) and applies the C++ `initAssets` `setSmooth(true)`
+//! (MenuGame.cpp:821-828); `draw` then applies the C++'s per-frame
+//! `creditsBar2` cycle (MenuGame.cpp:2848-2850, the ids at
+//! MenuGame.hpp:135-137 = `oh_menu::menu_game::CREDITS_BAR_IDS`) from the
+//! frame id it borrows before the refresh (29w1). The remaining sprite
+//! textures (`titleBar.png`, `onlineIcon*.png`, `epilepsyWarning.png`) are
+//! still the 1×1 placeholders (the `oh-assets` texture table is the 15c
+//! gap); the bridge emits the full C++ layout either way, and issue-025c's
+//! GL sprite pass renders them (the 1×1 placeholder texture uploads as-is —
+//! the placeholder *size* still shifts the `getGlobalBottom`-relative
+//! transforms (the "CURRENT PROFILE" line) by the real-texture-size
+//! delta until the texture table lands).
 
+use std::path::Path;
 use std::rc::Rc;
 
+use crate::bridge::load_texture_or_null;
 use oh_math::hg::color::Color;
 use oh_math::hg::concat::format_ostream_f64;
 use oh_math::hg::string::uppercasify;
@@ -113,7 +123,7 @@ use oh_math::hg::timestamp::{format_timepoint, to_timepoint};
 use oh_math::ssvs::vector2::{get_orbit_rad, Vec2};
 use oh_menu::dialog_box::{DBoxDraw, DialogQuad, HexagonDialogBox};
 use oh_menu::layout::{self, DIFFICULTY_BUMP_EFFECT_MAX};
-use oh_menu::menu_game::{LevelDrawer, MenuGame};
+use oh_menu::menu_game::{LevelDrawer, MenuGame, CREDITS_BAR_IDS};
 use oh_menu::seams::{
     ConnectionState, LevelInfo, LoadResults, MenuAssets, NetworkClient, ScoreEntry,
 };
@@ -127,7 +137,7 @@ use oh_render::types::RectangleShape;
 use oh_render::view::{Camera, View};
 use oh_render::VertexBatch;
 
-/// C++ file-level `fontHeightDifferential` (HexagonDialogBox.cpp:158).
+/// C++ file-level `fontHeightDifferential` (HexagonDialogBox.cpp:164).
 const FONT_HEIGHT_DIFFERENTIAL: f32 = 0.9;
 
 /// The C++ `MenuGame` render state that `draw` owns (everything except the
@@ -153,7 +163,7 @@ pub struct MenuDraw {
     /// C++ `menuQuads`.
     menu_quads: VertexBatch,
 
-    // ---- C++ `MenuFont` members (MenuGame.cpp:199-224) ------------------
+    // ---- C++ `MenuFont` members (MenuGame.cpp:204-225) ------------------
     // The fixed-constructor-size fonts; the aspect-dependent ones are
     // re-sized on refresh from `oh_menu::layout::char_sizes`.
     txt_version: Text,
@@ -186,7 +196,7 @@ pub struct MenuDraw {
     txt_selection_medium: Text,
     /// C++ `txtSelectionSmall` (`openSquare`, `selectionSmall` char size
     /// 14 — the C++ constructor leaves the SFML default 30, but
-    /// `refreshCamera` sets 14 for BOTH aspects, MenuGame.cpp:3229/:3237 —
+    /// `refreshCamera` sets 14 for BOTH aspects, MenuGame.cpp:3212/:3227 —
     /// the port's refresh mirrors that on the first draw, as the C++'s
     /// constructor ends with `refreshCamera()`). The level author lines,
     /// the difficulty / pack / music detail lines, the loading labels.
@@ -204,7 +214,7 @@ pub struct MenuDraw {
     /// bridge applies `dialog.char_size()` before the text pass).
     txt_dialog: Text,
 
-    // ---- (c) the profile / entering-text fonts (MenuGame.cpp:196-207) ----
+    // ---- (c) the profile / entering-text fonts (MenuGame.cpp:214-219) ----
     /// C++ `txtProfile` (`openSquare`, fixed char size 32 — the boot-time
     /// name width probes; the rows render at `profCharSize` 30 / 42).
     txt_profile: Text,
@@ -222,13 +232,19 @@ pub struct MenuDraw {
     /// entered-name text).
     txt_entering_text: Text,
 
-    // ---- C++ sprite / shape members (MenuGame.cpp:175-181) --------------
+    // ---- C++ sprite / shape members (MenuGame.cpp:169-174) --------------
     /// C++ `titleBar` (`titleBar.png`).
     title_bar: Sprite,
-    /// C++ `creditsBar1` (`creditsBar1.png`).
+    /// C++ `creditsBar1` (`creditsBar1.png`, MenuGame.cpp:170 — the real
+    /// asset texture since 29w1).
     credits_bar1: Sprite,
-    /// C++ `creditsBar2` (`creditsBar2.png`).
+    /// C++ `creditsBar2` (cycles the three `creditsIds` frames —
+    /// MenuGame.hpp:135-137; the frame is set every draw, 29w1).
     credits_bar2: Sprite,
+    /// C++ `creditsIds` (MenuGame.hpp:135-137): the `creditsBar2` cycling
+    /// frames in `CREDITS_BAR_IDS` order (`creditsBar2.png` /
+    /// `creditsBar2b.png` / `creditsBar2c.png`) — 29w1.
+    credits_bar2_frames: [Texture; 3],
     /// C++ `sOnline` (starts on `onlineIconFail.png`; the online-status
     /// pass re-points it to `onlineIcon.png` when connected — in the port
     /// both are the 1×1 placeholder, see the module docs).
@@ -287,7 +303,7 @@ pub struct MenuDraw {
     /// C++ `levelLabelHeight`.
     level_label_height: f32,
 
-    // ---- C++ `namesScroll` (MenuGame.hpp:409) — draw-mutated ------------
+    // ---- C++ `namesScroll` (MenuGame.hpp:414) — draw-mutated ------------
     /// C++ `namesScroll[Label::ScrollsSize]` — the level-selection left
     /// panel's per-label marquee scroll (LevelName, PackName, PackAuthor,
     /// MusicName, MusicAuthor, MusicAlbum).
@@ -295,10 +311,10 @@ pub struct MenuDraw {
     #[allow(dead_code)] // lands with the 13b(b) level selection
     names_scroll: [f32; 6],
 
-    // ---- C++ `levelDescription` (MenuGame.hpp:408) — draw-cached --------
+    // ---- C++ `levelDescription` (MenuGame.hpp:415) — draw-cached --------
     /// The `formatLevelDescription` output (MenuGame.cpp:4678-4775), keyed
     /// by `(level id, w)` — the C++ recomputes on `setIndex` (:2950) and on
-    /// `refreshCamera` (:3252-3255, `w`-dependent via
+    /// `refreshCamera` (:3251-3254, `w`-dependent via
     /// `getMaximumTextWidth` :4673-4675); the bridge recomputes lazily when
     /// the key changes (a level change or a resize).
     desc_key: Option<(String, f32)>,
@@ -324,13 +340,32 @@ pub struct MenuDraw {
 
 impl MenuDraw {
     /// Build the render state for `MenuGame::draw`. `font` is the C++
-    /// `openSquare` (`OpenSquare-Regular.ttf`, MenuGame.cpp:162); the bold
+    /// `openSquare` (`OpenSquare-Regular.ttf`, MenuGame.cpp:159-160); the bold
     /// variant is the C++ `openSquareBold` (the bold-only fonts
     /// `txtLoadSmall` / `txtSelectionBig` / `txtSelectionMedium` /
     /// `txtSelectionRanked`, :206-:224).
+    ///
+    /// `assets_dir` is the C++ `Assets/` folder: the credits-bar PNGs
+    /// load through the same asset decode path as 29e1's HUD/particle
+    /// textures — the C++ ctor's `creditsBar1` / `creditsBar2`
+    /// `assets.getTexture` (MenuGame.cpp:170-171) + `initAssets`'
+    /// `setSmooth(true)` (MenuGame.cpp:821-828); the 1×1 `nullTexture`
+    /// fallback on a missing file (the pre-29w1 look, now only on a
+    /// broken install).
     #[must_use]
-    pub fn new(font: &Font, font_bold: &Font) -> Self {
+    pub fn new(assets_dir: &Path, font: &Font, font_bold: &Font) -> Self {
         let placeholder = Texture::create(1, 1);
+        // C++ ctor (MenuGame.cpp:170-171) + `initAssets` (MenuGame.cpp:
+        // 821-828 — the `setSmooth(true)` set; the credits textures only
+        // load here — `titleBar` / `epilepsyWarning` / the online icons
+        // stay the 1×1 placeholders, module docs).
+        let mut credits_bar1 = load_texture_or_null(assets_dir, "creditsBar1.png");
+        credits_bar1.set_smooth(true);
+        let mut credits_bar2_frames: [Texture; 3] =
+            CREDITS_BAR_IDS.map(|id| load_texture_or_null(assets_dir, id));
+        for frame in &mut credits_bar2_frames {
+            frame.set_smooth(true);
+        }
         let char_sizes = layout::char_sizes(false); // refined on refresh
         let mut rs = RectangleShape::default();
         rs.set_size(Vec2::new(128.0, 32.0)); // C++ `rsOnlineStatus{128, 32}`
@@ -349,7 +384,7 @@ impl MenuDraw {
             // `batch_unsafe_emplace_back_quad` (6 triangle vertices per
             // quad), so the port uses the triangles batch too.
             menu_quads: VertexBatch::new_tris(),
-            // C++ constructor char sizes (MenuGame.cpp:199-224):
+            // C++ constructor char sizes (MenuGame.cpp:204-225):
             // `txtVersion` 40, `txtProf` 18, `txtOnlineStatus` 24, the (b)
             // fixed sizes `txtSelectionMedium` 19 / `txtSelectionScore` 28;
             // `txtSelectionSmall` keeps the SFML default (30).
@@ -389,8 +424,9 @@ impl MenuDraw {
             txt_instructions_small: Text::new(font.clone(), String::new(), 20),
             txt_entering_text: Text::new(font.clone(), String::new(), 54),
             title_bar: Sprite::new(placeholder.clone()),
-            credits_bar1: Sprite::new(placeholder.clone()),
-            credits_bar2: Sprite::new(placeholder.clone()),
+            credits_bar1: Sprite::new(credits_bar1),
+            credits_bar2: Sprite::new(credits_bar2_frames[0].clone()),
+            credits_bar2_frames,
             s_online: Sprite::new(placeholder.clone()),
             epilepsy_warning: Sprite::new(placeholder),
             rs_online_status: rs,
@@ -529,7 +565,7 @@ impl MenuDraw {
         self.txt_selection_big
             .set_character_size(sizes.selection_big as u32);
         self.h_selection_big = font_height(&self.font_bold, sizes.selection_big as u32);
-        // C++ :3229/:3237 — 14 for BOTH aspects (the constructor's SFML
+        // C++ :3212/:3227 — 14 for BOTH aspects (the constructor's SFML
         // default 30 is replaced by the time the C++ ctor finishes, since
         // it ends with `refreshCamera()`).
         self.txt_selection_small
@@ -577,7 +613,7 @@ impl MenuDraw {
             + self.text_to_quad_border
             + 2.0 * self.text_to_quad_border
             - self.slct_frame_size;
-        // C++ `refreshCamera` → `formatLevelDescription` (:3252-3255) —
+        // C++ `refreshCamera` → `formatLevelDescription` (:3251-3254) —
         // invalidate the cached lines (the left panel recomputes lazily).
         self.desc_key = None;
 
@@ -613,10 +649,9 @@ impl MenuDraw {
         // setScale({0.373, 0.373}); setPosition({w - 20, 17 +
         // getGlobalBottom(creditsBar1)});` The C++'s per-frame
         // `setTexture(creditsIds[getByModIdx(...)])` cycle (MenuGame.cpp:
-        // 2848-2850, 29b8b) is state-only here: the frame id
-        // (`s.credits_bar2_id`) selects one of the three `CREDITS_BAR_IDS`
-        // textures, but they are the same 1×1 placeholder until the 15c
-        // texture table lands (module docs).
+        // 2848-2850) is applied at the top of `draw` (29w1) — the
+        // local-width origin above reads the current frame's real
+        // texture (all three frames are 1024×116).
         self.credits_bar2.set_origin(Vec2::new(
             self.credits_bar2.get_local_bounds().get_width(),
             0.0,
@@ -661,7 +696,7 @@ impl MenuDraw {
 /// while `ascent − descent` is exactly 1.0×. The port's stale line-height
 /// probe (`Text::measure()`'s `h = ascent - descent`) ran the C++ layout
 /// math (e.g. `numbersHeight = bottomHeight − 2·txtLoadBig.height`,
-/// MenuGame.cpp:4212) on the 1.0× height and pulled the load-results
+/// MenuGame.cpp:4216) on the 1.0× height and pulled the load-results
 /// values up onto their labels — the phone's "PACKS 8OADED" overlap
 /// 025g's wide-aspect char sizes (loadBig 70) exposed.
 fn font_height(font: &Font, char_size: u32) -> f32 {
@@ -820,7 +855,7 @@ fn create_quad_trapezoid(
 }
 
 // ---------------------------------------------------------------------------
-// `MenuGame::draw` (MenuGame.cpp:5751-5986)
+// `MenuGame::draw` (MenuGame.cpp:5751-5978)
 // ---------------------------------------------------------------------------
 
 /// C++ `MenuGame::draw()` — the full menu draw dispatch.
@@ -834,6 +869,15 @@ fn create_quad_trapezoid(
 pub fn draw(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn DrawTarget) {
     // C++ :5753-5756 — the mouse state (module docs: always the no-hover
     // path in the port).
+
+    // C++ `update()` :2848-2850 — `creditsBar2.setTexture(assets
+    // .getTexture(ssvu::getByModIdx(creditsIds, toInt(currentCreditsId /
+    // 100))))`: the C++ sets the frame every frame BEFORE `draw()` (so
+    // `refreshCamera`'s `getLocalWidth(creditsBar2)` origin, :3157, reads
+    // the current frame); the id is already mod'd (`credits_bar2_id`).
+    let credits_frame = menu.shared().borrow().credits_bar2_id();
+    app.credits_bar2
+        .set_texture(app.credits_bar2_frames[credits_frame].clone());
 
     // C++ :5758-5765 — the `mustRefresh` block (size-driven in the port).
     app.refresh_if_stale(menu);
@@ -1292,11 +1336,11 @@ pub fn draw(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn DrawTarget) {
         }
     }
 
-    // C++ :5974-5978 — `mustTakeScreenshot` (module docs: always false in
+    // C++ :5962-5966 — `mustTakeScreenshot` (module docs: always false in
     // the port).
 
-    // C++ :5980-5984 — the dialog box pass. The C++ `return`s out of the
-    // `LoadingScreen` / `EpilepsyWarning` arms (:5833, :5840) — the
+    // C++ :5968-5972 — the dialog box pass. The C++ `return`s out of the
+    // `LoadingScreen` / `EpilepsyWarning` arms (:5832, :5838) — the
     // screenshot / dialog passes are skipped for those states.
     let backdrop = style_bg
         .as_ref()
@@ -1355,15 +1399,6 @@ struct SharedSnapshot {
     random_tip: [String; 2],
     hexagon_rotation: f32,
     scrollbar_offset: i32,
-    /// C++ `currentCreditsId`'s texture selection (MenuGame.cpp:2848-2850,
-    /// 29b8b): the `creditsBar2` sprite's frame id (into
-    /// `oh_menu::menu_game::CREDITS_BAR_IDS`). State-only until the 15c
-    /// texture table lands — all three textures are the same 1×1
-    /// placeholder (module docs), so the cycle is not visible yet (the
-    /// 13b `names_scroll` allow pattern: written, unread until the draw
-    /// consumes the real textures).
-    #[allow(dead_code)]
-    credits_bar2_id: usize,
 }
 
 impl SharedSnapshot {
@@ -1387,7 +1422,6 @@ impl SharedSnapshot {
             random_tip: s.random_tip.clone(),
             hexagon_rotation: s.hexagon_rotation,
             scrollbar_offset: s.scrollbar_offset,
-            credits_bar2_id: s.credits_bar2_id(),
         }
     }
 }
@@ -1430,10 +1464,10 @@ fn draw_scrollbar(
 }
 
 // ---------------------------------------------------------------------------
-// `scrollName` / `scrollNameRightBorder` (MenuGame.cpp:4320-4378)
+// `scrollName` / `scrollNameRightBorder` (MenuGame.cpp:4326-4387)
 // ---------------------------------------------------------------------------
 
-/// C++ `MenuGame::scrollName(text, scroller)` (MenuGame.cpp:4320-4332):
+/// C++ `MenuGame::scrollName(text, scroller)` (MenuGame.cpp:4326-4338):
 /// FPS-consistent marquee — `scroller += getFPSMult(); text += "  "`, then
 /// rotate left by `getMod(int(scroller / 100), text.length())` chars
 /// (`ssvu::toInt` = truncation; the scroller is always ≥ 0 here, so the
@@ -1456,7 +1490,7 @@ fn scroll_name(text: &mut String, scroller: &mut f32, fps_mult: f32) {
 }
 
 /// C++ `MenuGame::scrollNameRightBorder(text, key, font, scroller, border)`
-/// (MenuGame.cpp:4334-4358): the labelled marquee — measure `key`,
+/// (MenuGame.cpp:4340-4367): the labelled marquee — measure `key`,
 /// uppercasify, and if `key + text` fits the border keep it; else scroll
 /// the (keyless, uppercased) text, truncate it to the border, then
 /// re-prepend the key.
@@ -1487,7 +1521,7 @@ fn scroll_name_right_border(
 }
 
 /// C++ `MenuGame::scrollNameRightBorder(text, font, scroller, border)`
-/// (the keyless overload, MenuGame.cpp:4360-4378).
+/// (the keyless overload, MenuGame.cpp:4369-4387).
 fn scroll_name_right_border_no_key(
     text: &mut String,
     txt: &mut Text,
@@ -1767,8 +1801,7 @@ fn draw_options_submenus(
     let interline = 2.1 * h_menu_small;
     let total_height = interline * (size as f32 - 1.0) + 2.0 * double_border + h_menu_small;
     // C++ `std::max(menuHalfHeight - totalHeight / 2.f, ssvs::getGlobalBottom
-    // (creditsBar2) + 10.f)` (the placeholder texture shifts the value by
-    // the real-texture-size delta — the module docs note).
+    // (creditsBar2) + 10.f)`.
     let credits_bottom = app.credits_bar2.get_global_bounds().get_bottom();
     let quad_height = (menu_half_height - total_height / 2.0).max(credits_bottom + 10.0);
 
@@ -3222,7 +3255,7 @@ fn draw_leaderboard_entry(
 /// the uppercase word wrap of the current level's description into at most
 /// `descLines` (5) lines, measured against `getMaximumTextWidth()` with the
 /// `txtSelectionSmall` font. The C++ runs this in `setIndex` (:2950) and
-/// `refreshCamera` (:3252-3255); the bridge runs it lazily in
+/// `refreshCamera` (:3251-3254); the bridge runs it lazily in
 /// `draw_level_selection_left_side` when the `(level id, w)` key changes
 /// (the description is only ever read there — same visible result, no
 /// menu-side font access needed).
@@ -3889,7 +3922,7 @@ fn draw_online_status(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn Draw
     target.draw_text(&app.txt_online_status, RenderStates::default());
 
     // The C++ `LoggedIn` / `LoggedIn_Ready` branch also persists the
-    // login name (`Config::setLastLoginUsername`, MenuGame.cpp:6035-6045)
+    // login name (`Config::setLastLoginUsername`, MenuGame.cpp:6049-6064)
     // when `Config::getSaveLastUsername()` — the port mirrors the side
     // effect.
     let state = net.state();
@@ -4119,6 +4152,16 @@ mod tests {
         Font::load(p).expect("OpenSquare-Regular.ttf must load")
     }
 
+    /// The `Assets/` folder (the `_RELEASE` root — the same idiom as
+    /// `font()`; 29w1's credits textures live there).
+    fn credits_assets_dir() -> std::path::PathBuf {
+        Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../_RELEASE/Assets"
+        ))
+        .to_path_buf()
+    }
+
     fn menu_and_app() -> (Rc<MenuGame>, MenuDraw) {
         let assets = FakeAssets::new();
         let config = FakeConfig::new();
@@ -4140,8 +4183,97 @@ mod tests {
             Rc::new(oh_menu::layout::LinearFontHeight),
         ));
         let f = font();
-        let app = MenuDraw::new(&f, &f);
+        let app = MenuDraw::new(&credits_assets_dir(), &f, &f);
         (menu, app)
+    }
+
+    // -----------------------------------------------------------------
+    // 29w1: the credits-bar textures are the real `Assets/` PNGs (the
+    // 29e1 class, the menu's half) — the dimension guard: a 1×1
+    // placeholder regression fails here. The C++: ctor `creditsBar1` /
+    // `creditsBar2` getTexture (MenuGame.cpp:170-171) + `initAssets`
+    // `setSmooth(true)` (MenuGame.cpp:821-828) + the per-frame
+    // `creditsBar2` cycle (MenuGame.cpp:2848-2850, the ids at
+    // MenuGame.hpp:135-137).
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn credits_bar_textures_are_the_real_assets_pngs_not_placeholders() {
+        let f = font();
+        let app = MenuDraw::new(&credits_assets_dir(), &f, &f);
+        let bar1 = app.credits_bar1.get_texture();
+        assert_ne!(
+            bar1.get_size(),
+            (1, 1),
+            "creditsBar1 regressed to the 1×1 placeholder"
+        );
+        assert_eq!(bar1.get_size(), (1024, 213), "creditsBar1.png is 1024×213");
+        assert!(
+            bar1.is_smooth(),
+            "C++ initAssets setSmooth (MenuGame.cpp:821-828)"
+        );
+        for (i, frame) in app.credits_bar2_frames.iter().enumerate() {
+            assert_ne!(
+                frame.get_size(),
+                (1, 1),
+                "credits frame {i} regressed to the 1×1 placeholder"
+            );
+            assert_eq!(frame.get_size(), (1024, 116), "credits frame {i}");
+            assert!(frame.is_smooth(), "C++ initAssets setSmooth");
+        }
+        // The ctor's initial frame is `creditsBar2.png` (MenuGame.cpp:171
+        // = `CREDITS_BAR_IDS[0]`), so the sprite starts on frame 0.
+        assert_eq!(
+            app.credits_bar2.get_texture().pixels().get_pixels(),
+            app.credits_bar2_frames[0].pixels().get_pixels(),
+        );
+    }
+
+    #[test]
+    fn credits_bar_missing_assets_fall_back_to_the_placeholders() {
+        // The C++'s `nullTexture` half: a broken install still runs, on
+        // the 1×1 white pixel (the pre-29w1 look).
+        let f = font();
+        let app = MenuDraw::new(Path::new("/nonexistent-oh-029w1/assets"), &f, &f);
+        assert_eq!(app.credits_bar1.get_texture().get_size(), (1, 1));
+        assert_eq!(app.credits_bar2.get_texture().get_size(), (1, 1));
+        for frame in app.credits_bar2_frames.iter() {
+            assert_eq!(frame.get_size(), (1, 1));
+        }
+    }
+
+    #[test]
+    fn draw_applies_the_credits_bar2_cycle_to_the_sprite() {
+        let (menu, mut app) = menu_and_app();
+        // Self-check: the three frames are genuinely distinct decodes
+        // (the pixel comparisons below are only meaningful if so).
+        assert_ne!(
+            app.credits_bar2_frames[0].pixels().get_pixels(),
+            app.credits_bar2_frames[1].pixels().get_pixels(),
+            "creditsBar2.png and creditsBar2b.png must differ"
+        );
+        assert_ne!(
+            app.credits_bar2_frames[1].pixels().get_pixels(),
+            app.credits_bar2_frames[2].pixels().get_pixels(),
+            "creditsBar2b.png and creditsBar2c.png must differ"
+        );
+        let mut rec = Recording::default();
+        // C++ `toInt(currentCreditsId / 100)` mod 3: 0/150/250/350 →
+        // frames 0/1/2/0.
+        for (credits_id, expected_frame) in [(0.0, 0usize), (150.0, 1), (250.0, 2), (350.0, 0)] {
+            let mut s = menu.shared().borrow_mut();
+            s.state = States::SMain;
+            s.current_credits_id = credits_id;
+            drop(s);
+            draw(&menu, &mut app, &mut rec);
+            assert_eq!(
+                app.credits_bar2.get_texture().pixels().get_pixels(),
+                app.credits_bar2_frames[expected_frame]
+                    .pixels()
+                    .get_pixels(),
+                "currentCreditsId {credits_id} -> frame {expected_frame}"
+            );
+        }
     }
 
     #[test]
@@ -4258,7 +4390,7 @@ mod tests {
             Rc::new(oh_menu::layout::LinearFontHeight),
         ));
         let f = font();
-        let app = MenuDraw::new(&f, &f);
+        let app = MenuDraw::new(&credits_assets_dir(), &f, &f);
         (menu, app)
     }
 
@@ -4904,7 +5036,7 @@ mod tests {
                 let mut s = menu.shared().borrow_mut();
                 s.state = States::LoadingScreen;
             }
-            let mut app = MenuDraw::new(&f, &f);
+            let mut app = MenuDraw::new(&credits_assets_dir(), &f, &f);
             let mut rec = Recording::default();
             draw(&menu, &mut app, &mut rec);
 

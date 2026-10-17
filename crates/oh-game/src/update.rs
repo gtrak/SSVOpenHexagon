@@ -734,7 +734,7 @@ impl<S: SharedStore> HexagonGame<S> {
                 self.perform_player_kill();
 
                 // C++ `steamManager->unlock_achievement("a22_swapdeath")`
-                // (HGUpdate.cpp:449-452).
+                // (HGUpdate.cpp:448-451).
                 self.0.steam_manager.unlock_achievement("a22_swapdeath");
             } else if pushed_out {
                 self.perform_player_kill();
@@ -760,7 +760,7 @@ impl<S: SharedStore> HexagonGame<S> {
 
             if self.est().player.get_just_swapped() {
                 // C++ `steamManager->unlock_achievement("a22_swapdeath")`
-                // (HGUpdate.cpp:479-483).
+                // (HGUpdate.cpp:478-481).
                 self.0.steam_manager.unlock_achievement("a22_swapdeath");
             }
 
@@ -785,7 +785,7 @@ impl<S: SharedStore> HexagonGame<S> {
 
             if self.est().player.get_just_swapped() {
                 // C++ `steamManager->unlock_achievement("a22_swapdeath")`
-                // (HGUpdate.cpp:497-500).
+                // (HGUpdate.cpp:496-499).
                 self.0.steam_manager.unlock_achievement("a22_swapdeath");
             }
         }
@@ -1662,15 +1662,9 @@ impl<S: SharedStore> HexagonGame<S> {
         self.est().status_text = os;
     }
 
-    /// C++ `updateRichPresenceCallbacks()` (HexagonGame.cpp:477-506) — the
-    /// Steam half (the C++'s `steamManager->run_callbacks()` + the
-    /// `steamAttempt`/`steamHung` hung counter, HexagonGame.hpp:90-92)
-    /// is the engine's `steam_manager` seam (the counter lives in the
-    /// `oh_steam::SteamManager` in the port — issue 020); the Discord half
-    /// is issue 21 (absent).
-    /// C++ `updateRichPresenceCallbacks()` (HexagonGame.cpp:477-507) — the
+    /// C++ `updateRichPresenceCallbacks()` (HexagonGame.cpp:477-508) — the
     /// Steam arm (the `steamAttempt`/`steamHung` hung counter,
-    /// HexagonGame.hpp:90-92 — delegated to the engine's `steam_manager`
+    /// HexagonGame.hpp:90,92 — delegated to the engine's `steam_manager`
     /// seam, which owns the counter in the port — issue 020) + the Discord
     /// `run_callbacks` + the `discordAttempt` / `discordHung` retry.
     /// Driven every frame

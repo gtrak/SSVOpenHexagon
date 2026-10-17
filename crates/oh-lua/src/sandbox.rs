@@ -1,7 +1,7 @@
 //! The sandbox, ported from the non-API parts of
 //! `src/SSVOpenHexagon/Core/LuaScripting.cpp`: `redefineIoOpen`
-//! (lines 141-154), `redefineRandom` (156-175) and
-//! `destroyMaliciousFunctions` (178-218).
+//! (lines 141-154), `redefineRandom` (156-176) and
+//! `destroyMaliciousFunctions` (178-219).
 //!
 //! The C++ `init` (LuaScripting.cpp:1585) applies them in this order, after
 //! the RNG shims (`u_rndReal`, `u_rndIntUpper`, `u_rndInt`, `u_rndSwitch`,
@@ -18,40 +18,31 @@
 
 use crate::context::LuaContext;
 use crate::error::LuaError;
+use crate::snippets::{REDEFINE_IO_OPEN, REDEFINE_RANDOM};
 
-/// `redefineIoOpen` — the Lua snippet verbatim from LuaScripting.cpp:145-148.
-/// Wraps `io.open` so that any mode other than `"rb"` is coerced to `"r"`:
-/// all file opens become read-only text, except true binary-read.
+/// `redefineIoOpen` — the Lua snippet verbatim from LuaScripting.cpp:145-148
+/// (the single source of truth: [`crate::snippets::REDEFINE_IO_OPEN`],
+/// compile-tested by 29v1's table in `snippets.rs`). Wraps `io.open` so
+/// that any mode other than `"rb"` is coerced to `"r"`: all file opens
+/// become read-only text, except true binary-read.
 pub fn redefine_io_open(lua: &LuaContext) -> Result<(), LuaError> {
-    lua.execute_code(concat!(
-        "local open = io.open; io.open = function(filename, mode) return ",
-        "open(filename, mode == \"rb\" and mode or \"r\"); end",
-    ))
+    lua.execute_code(REDEFINE_IO_OPEN)
 }
 
-/// `redefineRandom` — the Lua snippet verbatim (C++ raw string,
-/// LuaScripting.cpp:160-169). Routes `math.random` through `u_rndSwitch` so
+/// `redefineRandom` — the Lua snippet verbatim (the C++ raw string,
+/// LuaScripting.cpp:159-168; the single source of truth:
+/// [`crate::snippets::REDEFINE_RANDOM`], compile-tested by 29v1's table in
+/// `snippets.rs`). Routes `math.random` through `u_rndSwitch` so
 /// pack scripts consume the same engine RNG the C++ game logic uses:
 /// `math.random()` -> `u_rndSwitch(0, 0, 0)` (`u_rndReal`),
 /// `math.random(n)` -> `u_rndSwitch(1, 0, n)` (`u_rndIntUpper`),
 /// `math.random(a, b)` -> `u_rndSwitch(2, a, b)` (`u_rndInt`).
 pub fn redefine_random(lua: &LuaContext) -> Result<(), LuaError> {
-    lua.execute_code(
-        "math.random = function(a, b)
-    if a == nil and b == nil then
-        return u_rndSwitch(0, 0, 0)
-    elseif b == nil then
-        return u_rndSwitch(1, 0, a)
-    else
-        return u_rndSwitch(2, a, b)
-    end
-end
-",
-    )
+    lua.execute_code(REDEFINE_RANDOM)
 }
 
 /// `destroyMaliciousFunctions` — the exact teardown, in the exact C++ order
-/// (LuaScripting.cpp:178-218), including the double `package.loadlib` clear
+/// (LuaScripting.cpp:178-219), including the double `package.loadlib` clear
 /// (lines 207 and 217). After this: `os` and `debug` are gone, `io` is
 /// read-only (`io.popen`/`io.flush`/`io.write`/`io.setvbuf` removed;
 /// `io.open` is the read-only wrapper from `redefine_io_open`),

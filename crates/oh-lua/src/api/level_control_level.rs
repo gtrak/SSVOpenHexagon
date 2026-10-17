@@ -7,6 +7,7 @@ use crate::api::state::SharedLua;
 use crate::context::LuaContext;
 use crate::error::LuaError;
 use crate::metadata::FnMeta;
+use crate::snippets::OVERRIDE_SCORE_VALIDATION;
 
 use crate::add_lua_fn;
 pub(crate) fn register(ctx: &LuaContext, state: &State, shared: SharedLua) -> Result<(), LuaError> {
@@ -26,15 +27,14 @@ pub(crate) fn register(ctx: &LuaContext, state: &State, shared: SharedLua) -> Re
                 s.level_status.score_override = variable.clone();
                 s.level_status.score_overridden = true;
             }
-            // C++ raw string, verbatim: `"if (type(" + mVar + R"( ) ~=
-            // "number") then\n<8 tabs>error("Score override must be a number
-            // value")\n<9 tabs>end\n)"`. (The lone `)` right after the
-            // variable closes `type(`; the `if (` paren closes after
-            // "number" — a second `)` there was a Lua syntax error on
-            // every call, diverging from the C++ splice.)
-            let code = format!(
-                "if (type({variable} ) ~= \"number\") then\n\t\t\t\t\t\t\t\t\terror(\"Score override must be a number value\")\n\t\t\t\t\t\t\t\t\tend\n"
-            );
+            // The validation snippet is the verbatim C++ splice
+            // ("if (type(" + mVar + R"( ) ~= \"number\") then...";
+            // HGScripting.cpp:635-638), the single source of truth in
+            // `crate::snippets` (29v1's table compiles every embedded
+            // snippet — the 29s1 extra-`)` regression guard).
+            // `{variable}` is the C++'s `mVar` splice point.
+            let code =
+                OVERRIDE_SCORE_VALIDATION.replace("{variable}", &variable);
             // C++: on `runtime_error`, print + `goToMenu(false, true)` unless
             // debug mode.
             if let Err(err) = shared.execute_code(&code) {

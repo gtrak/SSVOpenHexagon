@@ -64,7 +64,7 @@ impl MenuAssets for RealMenuAssets {
     fn level(&self, level_id: &str) -> Option<LevelInfo> {
         let l = self.assets.get_level_data(level_id)?;
         // C++ `assets.getMusicData(levelData.packId, levelData.musicId)`
-        // (MenuGame.cpp:5545-5556): missing music → the C++ default-
+        // (MenuGame.cpp:5469-5470): missing music → the C++ default-
         // constructed `MusicData` (empty name/author/album).
         let (music_name, music_author, music_album) =
             match self.assets.get_music_data(&l.pack_id, &l.music_id) {
@@ -151,7 +151,7 @@ impl MenuAssets for RealMenuAssets {
     // The profile surface is the shared `oh-assets` store (issue 029c1 —
     // the C++'s single `HGAssets`; the struct docs above).
     fn profile_names(&self) -> Vec<String> {
-        // C++ `getLocalProfileNames` (Assets.cpp:1500-1511) — name-keyed
+        // C++ `getLocalProfileNames` (Assets.cpp:1502-1514) — name-keyed
         // store in `std::map` (byte-sorted) order.
         self.assets.get_profile_names()
     }
@@ -189,12 +189,12 @@ impl MenuAssets for RealMenuAssets {
         self.assets.profile_remove(name)
     }
     fn profile_save_current(&self) {
-        // C++ `playLocally`'s `assets.pSaveCurrent()` (MenuGame.cpp:2427).
+        // C++ `playLocally`'s `assets.pSaveCurrent()` (MenuGame.cpp:1785).
         self.assets.profile_save_current();
     }
     fn profile_remove_file(&self, name: &str) -> bool {
         // C++ `std::remove("Profiles/" + name + ".json")` (MenuGame.cpp:
-        // 2421-2431) — the CWD-relative path rooted at the `Assets` root.
+        // 2420-2426) — the CWD-relative path rooted at the `Assets` root.
         std::fs::remove_file(
             self.assets
                 .root()
@@ -205,7 +205,7 @@ impl MenuAssets for RealMenuAssets {
     }
     fn reload_all_shaders(&self) {
         // C++ `assets.reloadAllShaders()` (Assets.cpp:1159-1171) — the F3/F4
-        // handler's first call (MenuGame.cpp:3101).
+        // handler's first call (MenuGame.cpp:3100).
         self.assets.reload_all_shaders();
     }
     fn reload_assets(&self, entire_pack: bool, current_level_id: &str) -> String {
@@ -258,7 +258,7 @@ impl MenuAssets for RealMenuAssets {
     }
     fn local_profile_score(&self, validator: &str) -> f32 {
         // C++ `assets.getCurrentLocalProfile().getScore(validator)`
-        // (MenuGame.cpp:5494): 0 when no current profile / unset score.
+        // (MenuGame.cpp:5570): 0 when no current profile / unset score.
         self.assets.get_local_score(validator)
     }
 }

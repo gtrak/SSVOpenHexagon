@@ -22,7 +22,12 @@
 //! * [`docs`] — the `LuaScripting.cpp:1613-1688` docs readers
 //!   (`print_docs`, `get_all_function_names`, `get_docs_for_function`)
 //! * [`sandbox`] — `redefine_io_open`, `redefine_random`,
-//!   `destroy_malicious_functions` (verbatim C++ Lua snippets)
+//!   `destroy_malicious_functions` (the verbatim C++ Lua snippets — the
+//!   single source of truth lives in [`snippets`], compile-tested by
+//!   29v1's table)
+//! * [`snippets`] — every embedded/spliced Lua string the crate loads
+//!   (29v1: the per-snippet compile test is the mechanical guard against
+//!   the 29s1 bug class — a hand-transcribed Lua typo inside a snippet)
 //! * [`api`] — the complete game API (issue 007): all 285 registered global
 //!   function names + the 12-callback dispatch + the `GameApiState` /
 //!   `GameApi` / `AssetsApi` state interface (issue 009 implements the real
@@ -41,6 +46,7 @@ pub mod docs;
 mod error;
 mod metadata;
 mod sandbox;
+pub mod snippets;
 
 pub use context::LuaContext;
 pub use convert::{FnReturn, FromLuaValue, IntoLuaValue, PushValue};

@@ -349,9 +349,10 @@ pub struct FrameInput<'a> {
     /// C++ `getColorPlayer()`.
     pub player_color: Color,
 
-    // ---- menu background (HGGraphics.cpp lines 122–141) ----
-    /// C++ `state >= States::SMain` — the menu-hexagon background is only
-    /// rendered from the main state up (in-menu screens use the plain
+    // ---- menu background (MenuGame.cpp:5772-5785) ----
+    /// C++ `mainOrAbove` = `state >= States::SMain` (MenuGame.cpp:5772) —
+    /// the menu-hexagon background is only rendered from the main state
+    /// up (the pre-main screens — loading / boot — draw the plain
     /// background only).
     pub menu_background_enabled: bool,
     /// C++ `fourByThree` (the menu hexagon radius: 75 vs 100).

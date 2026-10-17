@@ -55,13 +55,30 @@ pub(crate) fn register(ctx: &LuaContext, state: &State, shared: SharedLua) -> Re
         },
         move |pack_disambiguator: String, pack_name: String, pack_author: String, script_name: String| {
             // C++ `withDependencyScriptFilename` (scope-guarded):
-            let dependency = {
+            // `withDependencyAssetFilename` (Utils.cpp:176-207) — a
+            // validation failure logs the "Fatal error while looking
+            // for Lua dependency" line and rethrows: the script ABORTS
+            // (the port returns the error to the Lua call frame — the
+            // propagation was already faithful; 29g1 adds the missing
+            // diagnostic line). Note: a dependency SCRIPT's own failure
+            // never reaches that catch in the C++ either — the
+            // `HexagonGame::runLuaFile` catch (HGScripting.cpp:1127-1147)
+            // swallows it (`goToMenu` unless debug) before it could
+            // rethrow, exactly like the port's `run_lua_file` closure.
+            let dependency_result = {
                 let s = lock(&st);
                 s.find_dependency_pack_data_or_throw(
                     &pack_disambiguator,
                     &pack_name,
                     &pack_author,
-                )?
+                )
+            };
+            let dependency = match dependency_result {
+                Ok(d) => d,
+                Err(err) => {
+                    lock(&st).log_dependency_lookup_failure(&err);
+                    return Err(err);
+                }
             };
             let run = {
                 let mut s = lock(&st);

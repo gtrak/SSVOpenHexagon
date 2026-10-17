@@ -134,16 +134,10 @@ pub(crate) fn register(ctx: &LuaContext, state: &State) -> Result<(), LuaError> 
         },
         move |handle: i32, vertex_index: i32, r: i32, g: i32, b: i32, a: i32| {
             let mut s = lock(&st);
-            s.cw_manager.set_vertex_color(
-                handle,
-                vertex_index,
-                Color::new(
-                    u8::try_from(r).unwrap_or(255),
-                    u8::try_from(g).unwrap_or(255),
-                    u8::try_from(b).unwrap_or(255),
-                    u8::try_from(a).unwrap_or(255),
-                ),
-            );
+            // C++ `sf::Color(r, g, b, a)` (LuaScripting.cpp:326) — the
+            // mod-256 channel wrap, exactly like the `4`/`4Same` variants
+            // (the shared `color` helper below — 29g1).
+            s.cw_manager.set_vertex_color(handle, vertex_index, color(r, g, b, a));
         },
     )?
     .arg("cwHandle")
@@ -385,10 +379,14 @@ pub(crate) fn register(ctx: &LuaContext, state: &State) -> Result<(), LuaError> 
     Ok(())
 }
 
-/// C++ `sf::Color(r, g, b, a)` — the C++ ctor takes `unsigned char` per
-/// channel (values outside 0..=255 wrap); `i32::try_from` + saturating
-/// clamp matches for the corpus's in-range usage.
+/// C++ `sf::Color(r, g, b, a)` (LuaScripting.cpp:326 / :374 / :405) —
+/// the C++ ctor's `int` channels narrow (`int` -> `int16_t` ->
+/// `uint8_t`), which wraps mod 256 (e.g. 300 -> 44, 256 -> 0, -1 -> 255).
+/// `rem_euclid(256)` is that exact two's-complement mod-256 for every
+/// `i32`. (29g1: the single setter's `try_from(...).unwrap_or(255)` and
+/// this helper's `clamp(0, 255)` were each wrong AND mutually
+/// inconsistent — all three setters now share this C++ wrap.)
 fn color(r: i32, g: i32, b: i32, a: i32) -> Color {
-    let clamp = |v: i32| v.clamp(0, 255) as u8;
-    Color::new(clamp(r), clamp(g), clamp(b), clamp(a))
+    let wrap = |v: i32| v.rem_euclid(256) as u8;
+    Color::new(wrap(r), wrap(g), wrap(b), wrap(a))
 }

@@ -70,8 +70,15 @@ impl AssetsApi for MockAssets {
     }
 }
 
+/// The `ssvu::lo` recorder's (channel, message) pairs.
+type LogPair = (String, String);
+
+/// A `GameApi` that records the `ssvu::lo` (channel, message) pairs —
+/// `logs: None` (the derive `Default`) is the silent original.
 #[derive(Default)]
-struct MockGame;
+struct MockGame {
+    logs: Option<std::sync::Arc<std::sync::Mutex<Vec<LogPair>>>>,
+}
 
 impl GameApi for MockGame {
     fn get_width(&self) -> u32 {
@@ -92,7 +99,13 @@ impl GameApi for MockGame {
     fn is_mouse_button_pressed(&self, _button_code: i32) -> bool {
         false
     }
-    fn log(&self, _channel: &str, _message: &str) {}
+    fn log(&self, channel: &str, message: &str) {
+        if let Some(logs) = &self.logs {
+            logs.lock()
+                .expect("log recorder poisoned")
+                .push((channel.to_string(), message.to_string()));
+        }
+    }
     fn init_flash_effect(&self, _r: i32, _g: i32, _b: i32) {}
     fn get_player_angle(&self) -> f32 {
         0.0
@@ -146,6 +159,12 @@ const GAME_ONLY: [&str; 4] = [
 /// A fresh game context (C++ `HexagonGame` state, `in_menu == false`,
 /// headless so no window reads happen).
 fn game_state(in_menu: bool) -> State {
+    game_state_with(in_menu, Arc::new(MockGame::default()))
+}
+
+/// `game_state` with a chosen backend (the 29g1 tests pass a recording
+/// `MockGame` to pin the `ssvu::lo` lines).
+fn game_state_with(in_menu: bool, backend: std::sync::Arc<dyn GameApi>) -> State {
     Arc::new(ReentrantMutex::new(GameApiState::new(
         RandomNumberGenerator::new(42),
         LevelStatus::new(true, 800.0),
@@ -170,7 +189,7 @@ fn game_state(in_menu: bool) -> State {
         },
         Arc::new(|_pack_path, _shared| Ok(())),
         Arc::new(MockAssets),
-        Arc::new(MockGame),
+        backend,
     )))
 }
 

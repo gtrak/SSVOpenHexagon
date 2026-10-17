@@ -395,9 +395,12 @@ pub(crate) fn register(ctx: &LuaContext, state: &State) -> Result<(), LuaError> 
                 // C++: `colorToTuple(sf::Color{0, 0, 0, 0})`.
                 Ok((0, 0, 0, 0))
             } else {
-                // C++ `StyleData::getColor(index)` uses `std::vector::at`
-                // (throws out-of-range); the port surfaces the same failure
-                // as a Lua runtime error.
+                // C++ `StyleData::getColor` (StyleData.cpp:320-325) uses
+                // `ssvu::getByModIdx` (the mod-wrap — for a non-empty
+                // vector the C++ never throws), so this `ok_or` branch is
+                // unreachable: the port's `get_color` returns `None` only
+                // for the empty vector (the branch above) — the `?` exists
+                // to satisfy the `Option` API (defensive dead code).
                 Ok(color_to_tuple(s.style_data.get_color(index as u32).ok_or(
                     LuaError::ExecutionError {
                         message: format!("style color index {index} out of range"),

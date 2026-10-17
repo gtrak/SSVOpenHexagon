@@ -9,6 +9,7 @@
 //! (`[Option<u64>; 9]` — the 9 C++ `RenderStage` values).
 
 use super::{lock, State};
+use crate::add_lua_fn_try;
 use crate::api::state::SharedLua;
 use crate::context::LuaContext;
 use crate::error::LuaError;
@@ -63,54 +64,72 @@ pub(crate) fn register(
     .doc("Retrieve the id of the shader with name `$0` from the current pack. The shader will be searched for in the `Shaders/` subfolder. The extension of the shader should be included in `$0` and it will determine its type (i.e. `.frag`, `.vert`, and `.geom`).");
 
     let st = state.clone();
-    add_lua_fn!(ctx,
+    add_lua_fn_try!(ctx,
         "shdr_getDependencyShaderId",
         FnMeta {
             ret: "size_t",
             arg_types: &["std::string", "std::string", "std::string", "std::string"],
         },
         move |pack_disambiguator: String, pack_name: String, pack_author: String,
-              shader_filename: String| {
+              shader_filename: String| -> Result<u64, LuaError> {
             if headless {
-                return NO_SHADER_ID;
+                // C++: always return early in headless mode.
+                return Ok(NO_SHADER_ID);
             }
-            let mut result = NO_SHADER_ID;
-            if let Ok(dependency) = {
+            // C++ `Utils::withDependencyShaderFilename` →
+            // `withDependencyAssetFilename` (Utils.cpp:176-207): a
+            // validation failure (the (disambiguator, name, author)
+            // triple is not a dependency of the level's pack / the
+            // pack is missing / the version is too low) logs the
+            // "Fatal error while looking for Lua dependency" line and
+            // RETHROWS — the running script ABORTS (the port returns
+            // the error to the Lua call frame, exactly the
+            // `u_execDependencyScript` sibling's pattern — LuaScripting.cpp:1267-1311).
+            let dependency_result = {
                 let s = lock(&st);
                 s.find_dependency_pack_data_or_throw(
                     &pack_disambiguator,
                     &pack_name,
                     &pack_author,
                 )
-            } {
-                // C++ `withDependencyShaderFilename` (scope-guarded context
-                // push/pop around the resolution).
-                let id = {
-                    let mut s = lock(&st);
-                    s.exec_script_pack_path_context
-                        .push(dependency.folder_path.clone());
-                    let path =
-                        format!("{}/Shaders/{shader_filename}", dependency.folder_path);
-                    let id = s.assets.get_shader_id_by_path(&path);
-                    s.exec_script_pack_path_context.pop();
-                    id
-                };
-                match id {
-                    Some(v) => result = v,
-                    None => {
-                        let path =
-                            format!("{}/Shaders/{shader_filename}", dependency.folder_path);
-                        lock(&st).backend.log(
-                            "hg::LuaScripting::initShaders",
-                            &format!(
-                                "`u_getDependencyShaderId` failed, no id found for '{path}'\n"
-                            ),
-                        );
-                        result = NO_SHADER_ID;
-                    }
+            };
+            let dependency = match dependency_result {
+                Ok(d) => d,
+                Err(err) => {
+                    lock(&st).log_dependency_lookup_failure(&err);
+                    return Err(err);
+                }
+            };
+            // C++ `withDependencyShaderFilename` (scope-guarded context
+            // push/pop around the resolution).
+            let id = {
+                let mut s = lock(&st);
+                s.exec_script_pack_path_context
+                    .push(dependency.folder_path.clone());
+                let path =
+                    format!("{}/Shaders/{shader_filename}", dependency.folder_path);
+                let id = s.assets.get_shader_id_by_path(&path);
+                s.exec_script_pack_path_context.pop();
+                id
+            };
+            match id {
+                Some(v) => Ok(v),
+                None => {
+                    let path = format!(
+                        "{}/Shaders/{shader_filename}",
+                        dependency.folder_path
+                    );
+                    lock(&st).backend.log(
+                        "hg::LuaScripting::initShaders",
+                        &format!(
+                            "`u_getDependencyShaderId` failed, no id found for '{path}'\n"
+                        ),
+                    );
+                    // C++: the not-found arm does NOT abort — it logs
+                    // and returns `size_t(-1)`, the script continues.
+                    Ok(NO_SHADER_ID)
                 }
             }
-            result
         },
     )?
     .arg("packDisambiguator")

@@ -333,7 +333,7 @@ impl RenderWindowSize {
 struct MenuWindowSource {
     size: std::sync::Arc<RenderWindowSize>,
     /// 29u1 — the menu's cursor-visibility flag (the C++
-    /// `MenuGame::mouseCursorVisible`, MenuGame.cpp:197): the single
+    /// `MenuGame::mouseCursorVisible`, MenuGame.hpp:273): the single
     /// source of truth the menu's `play_selected_level` (hide) /
     /// `handle_mouse_wheel` (show) seam writes and the frame loop's
     /// key-press-hide / mouse-move-show (the C++'s other two cursor
@@ -568,7 +568,7 @@ impl MenuConfig for ConfigMenuAdapter {
             .get_fullscreen()
     }
     fn set_fullscreen(&self, value: bool) {
-        // C++ `Config::setFullscreen(window, value)` (MenuGame.cpp:1374-1379)
+        // C++ `Config::setFullscreen(window, value)` (MenuGame.cpp:1370-1373)
         // also recreates the window; the port's winit window is not
         // recreated at runtime (module docs: `set_pixel_mult` note) — the
         // config value is set, the recreation is the documented gap.
@@ -1417,12 +1417,12 @@ impl GameState for MenuSlotAdapter {
 
     fn refresh_input(&self, input: &InputState) {
         // C++ `checkCloseBootScreens` (MenuGame.cpp:360-380) via the
-        // `onEvent` handlers (MenuGame.cpp:518-537 `KeyReleased`,
-        // :617-637 `MouseButtonReleased`, :674-694
+        // `onEvent` handlers (MenuGame.cpp:519-535 `KeyReleased`,
+        // :616-629 `MouseButtonReleased`, :673-686
         // `JoystickButtonReleased`): any key / mouse / joypad RELEASE
         // advances the boot screen — gated on `ignoreInputs != 0` (the
         // boot screens hold it, `setIgnoreAllInputs(1)` at
-        // MenuGame.cpp:357) + the `LoadingScreen` / `EpilepsyWarning`
+        // MenuGame.cpp:358) + the `LoadingScreen` / `EpilepsyWarning`
         // state. The C++ fires it PER RELEASE EVENT during `runEvents`
         // (before the frame's update); the port's equivalent fires here —
         // `refresh_input` is the once-per-frame hook the frame body runs
@@ -1456,7 +1456,7 @@ impl GameState for MenuSlotAdapter {
         // per `TextEntered` the fold applied (the winit `KeyboardInput`
         // `text` field — the C++'s SFML `TextEntered` analogue). The
         // `MenuGame::handle_text_entered` handler runs the C++'s
-        // `unicode < 128` filter (MenuGame.cpp:491-498); the
+        // `unicode < 128` filter (MenuGame.cpp:265-272); the
         // `update()`'s `enteredChars` → `enteredStr` accumulation
         // (`process_entered_chars`) then consumes them per frame.
         {
@@ -1478,7 +1478,7 @@ impl GameState for MenuSlotAdapter {
         {
             // C++ `KeyReleased` / `MouseButtonReleased` /
             // `JoystickButtonReleased` per-release dispatch
-            // (MenuGame.cpp:495-700): each release event runs the
+            // (MenuGame.cpp:519-728): each release event runs the
             // handler — scenario 1 (a boot screen, the C++
             // `checkCloseBootScreens`), then the shared tail (the dialog
             // delay / box scenarios + the generic `--ignoreInputs`
@@ -1514,7 +1514,7 @@ impl GameState for MenuSlotAdapter {
                 run_edge(Some(*key));
             }
             // The C++ `MouseButtonReleased` / `JoystickButtonReleased`
-            // handlers (MenuGame.cpp:616-643 / :673-700) — no key
+            // handlers (MenuGame.cpp:616-645 / :673-702) — no key
             // identity (the dialog halves consult `keyToClose` only).
             for _ in edges.buttons.iter() {
                 run_edge(None);
@@ -1536,8 +1536,8 @@ impl GameState for MenuSlotAdapter {
                 self.menu.handle_mouse_wheel(delta);
             }
         }
-        // C++ `leftRightActionImpl`'s Shift modifier (MenuGame.cpp:1860-
-        // 1862) — `isKeyPressed(LShift) || isKeyPressed(RShift)` (29b8c):
+        // C++ `leftRightActionImpl`'s Shift modifier (MenuGame.cpp:1877-
+        // 1878) — `isKeyPressed(LShift) || isKeyPressed(RShift)` (29b8c):
         // the C++ reads the keyboard live in the action; the port's
         // equivalent is this per-frame snapshot feed (the menu has no
         // window access in oh-menu — the `set_shift_held` hook).
@@ -1583,7 +1583,7 @@ impl GameState for MenuSlotAdapter {
     // `onDraw`, MenuGame.cpp:257-259) — the trait default (empty delegate).
 }
 
-/// The inverse of the C++ `static_cast<int>(Tid)` (HexagonGame.cpp:355,
+/// The inverse of the C++ `static_cast<int>(Tid)` (HexagonGame.cpp:353,
 /// MenuGame.cpp:919) — the 16 keyboard bind ids 0..=15 (`Tid` is
 /// `#[repr(i32)]`, `TriggersCount = 16` excluded).
 fn tid_from_i32(v: i32) -> Option<Tid> {
@@ -1659,7 +1659,7 @@ fn register_engine_binds(
         }
     };
 
-    // Hardcoded Escape (HexagonGame.cpp:377-381): `goToMenu()` — the
+    // Hardcoded Escape (HexagonGame.cpp:378-380): `goToMenu()` — the
     // default-argument call `goToMenu(true, false)`
     // (HexagonGame.hpp:417). C++ default `mTriggerID = -1`
     // (GameState.hpp:70).
@@ -1911,7 +1911,7 @@ fn register_menu_binds(mgr: &mut Manager, menu: &Rc<MenuGame>, config: &Arc<RwLo
             Mode::Overlap,
         );
     }
-    // Editable Tid::Exit (MenuGame.cpp:989-997): the `isEnteringText()`
+    // Editable Tid::Exit (MenuGame.cpp:975-983): the `isEnteringText()`
     // guard + `exitAction()`.
     {
         let m = menu.clone();
@@ -1928,14 +1928,14 @@ fn register_menu_binds(mgr: &mut Manager, menu: &Rc<MenuGame>, config: &Arc<RwLo
             Mode::Overlap,
         );
     }
-    // Editable Tid::Screenshot (MenuGame.cpp:999-1001):
+    // Editable Tid::Screenshot (MenuGame.cpp:987-988):
     // `mustTakeScreenshot = true` — the C++ consumer is `MenuGame::draw`
     // (issue 13b, unported).
     mgr.add_input(
         trigger_of(Tid::Screenshot),
         move |_ft| {
             // TODO(010b-menu-screenshot): C++ `mustTakeScreenshot = true`
-            // (MenuGame.cpp:1000) — the menu's screenshot consumer is the
+            // (MenuGame.cpp:988) — the menu's screenshot consumer is the
             // unported `MenuGame::draw` (issue 13b).
         },
         |_| {},
@@ -1943,7 +1943,7 @@ fn register_menu_binds(mgr: &mut Manager, menu: &Rc<MenuGame>, config: &Arc<RwLo
         Tid::Screenshot as i32,
         Mode::Overlap,
     );
-    // Hardcoded LAlt+Enter (MenuGame.cpp:1003-1013): the fullscreen toggle
+    // Hardcoded LAlt+Enter (MenuGame.cpp:989-997): the fullscreen toggle
     // (`Config::setFullscreen(window, !getFullscreen())` — the port's
     // `MenuConfig::set_fullscreen` seam) + `game.ignoreNextInputs()` +
     // `.setPriorityUser(-1000)`.
@@ -1957,15 +1957,15 @@ fn register_menu_binds(mgr: &mut Manager, menu: &Rc<MenuGame>, config: &Arc<RwLo
             -1,
             Mode::Overlap,
         );
-        // C++ `.setPriorityUser(-1000)` (MenuGame.cpp:1012): an `int` into
+        // C++ `.setPriorityUser(-1000)` (MenuGame.cpp:997): an `int` into
         // a `std::size_t` wraps to `usize::MAX - 999`.
         mgr.set_priority_user(idx, (usize::MAX - 999) as u64);
-        // C++ `game.ignoreNextInputs()` (MenuGame.cpp:1008): after this
+        // C++ `game.ignoreNextInputs()` (MenuGame.cpp:994): after this
         // action, the rest of the frame's binds are skipped
         // (Manager.hpp:40-43).
         mgr.set_ignore_next_on_fire(idx);
     }
-    // Hardcoded Backspace (MenuGame.cpp:1015-1017).
+    // Hardcoded Backspace (MenuGame.cpp:999-1001).
     {
         let m = menu.clone();
         mgr.add_input(
@@ -2004,7 +2004,7 @@ fn register_menu_binds(mgr: &mut Manager, menu: &Rc<MenuGame>, config: &Arc<RwLo
             Mode::Overlap,
         );
     }
-    // Hardcoded F3 (MenuGame.cpp:1012-1014): `reloadAssets(false)` —
+    // Hardcoded F3 (MenuGame.cpp:1011-1013): `reloadAssets(false)` —
     // reload the LEVEL's assets (the handler's guard — LevelSelection +
     // no dialog + debug mode — is inside `MenuGame::reloadAssets`,
     // MenuGame.cpp:3092-3127).
@@ -2019,7 +2019,7 @@ fn register_menu_binds(mgr: &mut Manager, menu: &Rc<MenuGame>, config: &Arc<RwLo
             Mode::Overlap,
         );
     }
-    // Hardcoded F4 (MenuGame.cpp:1016-1018): `reloadAssets(true)` — reload
+    // Hardcoded F4 (MenuGame.cpp:1015-1017): `reloadAssets(true)` — reload
     // the PACK's assets.
     {
         let m = menu.clone();
@@ -2055,7 +2055,7 @@ pub struct WindowedClient {
     /// frame from the window's current size).
     render_size: std::sync::Arc<RenderWindowSize>,
     /// 29u1 — the menu's cursor-visibility flag (the C++
-    /// `MenuGame::mouseCursorVisible`, MenuGame.cpp:197): the single
+    /// `MenuGame::mouseCursorVisible`, MenuGame.hpp:273): the single
     /// source of truth the menu's `play_selected_level` (hide, the seam
     /// `MenuWindowSource` writes) / `handle_mouse_wheel` (show) and the
     /// frame loop's key-press-hide / mouse-move-show (the C++'s other two
@@ -2211,7 +2211,7 @@ impl WindowedClient {
         // `TextEntered` dispatch's data path — the window's fold records
         // one char per `TextEntered`; the menu state's `refresh_input`
         // drain runs the C++ `MenuGame`'s `onEvent(TextEntered)` handler
-        // (MenuGame.cpp:491-498) over it). Desktop and Android: the fold
+        // (MenuGame.cpp:265-272) over it). Desktop and Android: the fold
         // records identically (the winit `KeyboardInput` `text` field).
         let entered_text_sink: std::sync::Arc<std::sync::RwLock<Vec<char>>> =
             std::sync::Arc::new(std::sync::RwLock::new(Vec::new()));
@@ -2332,8 +2332,13 @@ impl WindowedClient {
             font_bold.clone(),
         )));
         // The menu draw bridge's fonts (issue-013b) — the C++ shares the
-        // `initText` fonts with the game (HexagonGame.cpp:289-290).
-        let menu_draw = RefCell::new(crate::menu_draw::MenuDraw::new(&font, &font_bold));
+        // `initText` fonts with the game (HexagonGame.cpp:289-290). The
+        // credits-bar PNGs load from the same `Assets/` folder (29w1).
+        let menu_draw = RefCell::new(crate::menu_draw::MenuDraw::new(
+            &assets_dir,
+            &font,
+            &font_bold,
+        ));
 
         // ------------------------------------------------------------------
         // C++ main.cpp:427-434 — the MenuGame (the Discord / HexagonClient
@@ -2385,9 +2390,9 @@ impl WindowedClient {
         };
 
         // C++ main.cpp:436-440 — `fnHGTriggerRefresh` (`hg.refreshTrigger`
-        // → `HexagonGame::refreshTrigger`, HexagonGame.cpp:467-470) + the
+        // → `HexagonGame::refreshTrigger`, HexagonGame.cpp:461-465) + the
         // menu-side `game.refreshTrigger` half of the rebind callback
-        // (MenuGame.cpp:1233-1240). The ported seam passes (name, id) in
+        // (MenuGame.cpp:1233-1242). The ported seam passes (name, id) in
         // place of the trigger value (menu.rs:263) — the value is re-read
         // from the shared `Config` (the same object the menu's
         // `KeyboardBindControl` rebinds, oh-config `rebind_trigger`).
@@ -2530,9 +2535,11 @@ impl WindowedClient {
 
         // ------------------------------------------------------------------
         // The two `GameState` adapters + the `GameEngine` switcher
-        // (main.cpp:448/461/479/502: `window->setGameState` — the
-        // `-p -l` path sets NO state in the C++; the port's documented
-        // deviation, module docs).
+        // (main.cpp:448/461/479/502: the four `window->setGameState`
+        // call sites — the `-p -l` SUCCESS path sets the game state via
+        // the `fnHGNewGame` at :448, main.cpp:442-449; only the FAILURE
+        // path never does — the port's documented deviation, module
+        // docs).
         let return_to_menu = Arc::new(AtomicU8::new(0));
         let menu_adapter: Rc<dyn GameState> = Rc::new(MenuSlotAdapter {
             menu: menu.clone(),
@@ -2735,7 +2742,7 @@ impl WindowedClient {
     /// the window close that ends the port's winit loop (the C++'s loop
     /// condition is the engine's `isRunning()`; the port's winit loop ends
     /// on the window's close — module docs: the loop-exit translation).
-    /// `sig` is the C++ handler's `int s` (main.cpp:343-344, SIGINT);
+    /// `sig` is the C++ handler's `int s` (main.cpp:341-344, SIGINT);
     /// `log` is the injected sink (production: stdout; tests assert the
     /// exact C++ lines).
     pub fn sigint_stop(
@@ -3271,16 +3278,15 @@ mod tests {
             None,
             Rc::new(oh_menu::layout::LinearFontHeight),
         ));
-        let f = oh_render::font::Font::load(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../_RELEASE/Assets/OpenSquare-Regular.ttf"),
-        )
-        .expect("OpenSquare-Regular.ttf must load");
+        let assets_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_RELEASE/Assets");
+        let f = oh_render::font::Font::load(&assets_dir.join("OpenSquare-Regular.ttf"))
+            .expect("OpenSquare-Regular.ttf must load");
         let released_edges = Arc::new(RwLock::new(ReleasedEdges::default()));
         let adapter = MenuSlotAdapter {
             menu: menu.clone(),
             input_manager: Rc::new(RefCell::new(Manager::new())),
-            menu_draw: RefCell::new(crate::menu_draw::MenuDraw::new(&f, &f)),
+            menu_draw: RefCell::new(crate::menu_draw::MenuDraw::new(&assets_dir, &f, &f)),
             released_edges: released_edges.clone(),
             wheel_events: Arc::new(RwLock::new(Vec::new())),
             entered_text: Arc::new(RwLock::new(Vec::new())),
@@ -3289,7 +3295,7 @@ mod tests {
             was_entering_text: Cell::new(false),
         };
 
-        // The C++ ctor body holds the boot gate (MenuGame.cpp:357).
+        // The C++ ctor body holds the boot gate (MenuGame.cpp:358).
         assert_eq!(adapter.menu.state(), States::LoadingScreen);
         assert_eq!(adapter.menu.shared().borrow().ignore_inputs, 1);
 
@@ -3368,16 +3374,15 @@ mod tests {
             None,
             Rc::new(oh_menu::layout::LinearFontHeight),
         ));
-        let f = oh_render::font::Font::load(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../_RELEASE/Assets/OpenSquare-Regular.ttf"),
-        )
-        .expect("OpenSquare-Regular.ttf must load");
+        let assets_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_RELEASE/Assets");
+        let f = oh_render::font::Font::load(&assets_dir.join("OpenSquare-Regular.ttf"))
+            .expect("OpenSquare-Regular.ttf must load");
         let released_edges = Arc::new(RwLock::new(ReleasedEdges::default()));
         let adapter = MenuSlotAdapter {
             menu: menu.clone(),
             input_manager: Rc::new(RefCell::new(Manager::new())),
-            menu_draw: RefCell::new(crate::menu_draw::MenuDraw::new(&f, &f)),
+            menu_draw: RefCell::new(crate::menu_draw::MenuDraw::new(&assets_dir, &f, &f)),
             released_edges: released_edges.clone(),
             wheel_events: Arc::new(RwLock::new(Vec::new())),
             entered_text: Arc::new(RwLock::new(Vec::new())),
@@ -3435,7 +3440,7 @@ mod tests {
     /// issue-025d logcat evidence: `text: Some("\n")` on the Enter
     /// press) → the shared entered-text sink → the REAL
     /// `MenuSlotAdapter::refresh_input` drain → the C++ `MenuGame`
-    /// `onEvent(TextEntered)` handler (MenuGame.cpp:491-498 — the
+    /// `onEvent(TextEntered)` handler (MenuGame.cpp:265-272 — the
     /// `unicode < 128` filter) → `enteredChars` → `update()`'s
     /// `isEnteringText`-gated accumulation (`process_entered_chars`,
     /// MenuGame.cpp:2862-2878) → `enteredStr`. This is what makes the
@@ -3463,17 +3468,16 @@ mod tests {
             None,
             Rc::new(oh_menu::layout::LinearFontHeight),
         ));
-        let f = oh_render::font::Font::load(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../_RELEASE/Assets/OpenSquare-Regular.ttf"),
-        )
-        .expect("OpenSquare-Regular.ttf must load");
+        let assets_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_RELEASE/Assets");
+        let f = oh_render::font::Font::load(&assets_dir.join("OpenSquare-Regular.ttf"))
+            .expect("OpenSquare-Regular.ttf must load");
         let entered_text = Arc::new(RwLock::new(Vec::new()));
         let released_edges = Arc::new(RwLock::new(ReleasedEdges::default()));
         let adapter = MenuSlotAdapter {
             menu: menu.clone(),
             input_manager: Rc::new(RefCell::new(Manager::new())),
-            menu_draw: RefCell::new(crate::menu_draw::MenuDraw::new(&f, &f)),
+            menu_draw: RefCell::new(crate::menu_draw::MenuDraw::new(&assets_dir, &f, &f)),
             released_edges: released_edges.clone(),
             wheel_events: Arc::new(RwLock::new(Vec::new())),
             entered_text: entered_text.clone(),
@@ -3499,7 +3503,7 @@ mod tests {
         // The phone's character keys (the winit `KeyboardInput` `text`
         // field — `adb shell input keyevent 32/29/34` = "D" / "A" /
         // "F"): the fold's `TextEntered` recording, then the
-        // once-per-frame drain (the C++ handler, MenuGame.cpp:491-498).
+        // once-per-frame drain (the C++ handler, MenuGame.cpp:265-272).
         for c in ['D', 'A', 'F'] {
             Window::apply_event(&mut window, Event::TextEntered { character: c });
         }
@@ -3511,13 +3515,13 @@ mod tests {
         assert_eq!(menu.shared().borrow().entered_str, "DAF");
         assert!(menu.shared().borrow().entered_chars.is_empty());
 
-        // The handler's `unicode < 128` filter (MenuGame.cpp:492): the
+        // The handler's `unicode < 128` filter (MenuGame.cpp:268): the
         // non-ASCII char never reaches `enteredChars`.
         Window::apply_event(&mut window, Event::TextEntered { character: 'é' });
         adapter.refresh_input(&InputState::new());
         assert!(menu.shared().borrow().entered_chars.is_empty());
 
-        // The C++ gate (MenuGame.cpp:2862): outside the entering-text
+        // The C++ gate (MenuGame.cpp:2860): outside the entering-text
         // states the accumulation is suppressed (the `enteredChars.
         // clear()` at :2878 is UNCONDITIONAL).
         menu.shared().borrow_mut().state = States::SMain;
@@ -3564,16 +3568,15 @@ mod tests {
             None,
             Rc::new(oh_menu::layout::LinearFontHeight),
         ));
-        let f = oh_render::font::Font::load(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../_RELEASE/Assets/OpenSquare-Regular.ttf"),
-        )
-        .expect("OpenSquare-Regular.ttf must load");
+        let assets_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_RELEASE/Assets");
+        let f = oh_render::font::Font::load(&assets_dir.join("OpenSquare-Regular.ttf"))
+            .expect("OpenSquare-Regular.ttf must load");
         let wheel_events = Arc::new(RwLock::new(Vec::new()));
         let adapter = MenuSlotAdapter {
             menu: menu.clone(),
             input_manager: Rc::new(RefCell::new(Manager::new())),
-            menu_draw: RefCell::new(crate::menu_draw::MenuDraw::new(&f, &f)),
+            menu_draw: RefCell::new(crate::menu_draw::MenuDraw::new(&assets_dir, &f, &f)),
             released_edges: Arc::new(RwLock::new(ReleasedEdges::default())),
             wheel_events: wheel_events.clone(),
             entered_text: Arc::new(RwLock::new(Vec::new())),
@@ -3682,16 +3685,15 @@ mod tests {
             None,
             Rc::new(oh_menu::layout::LinearFontHeight),
         ));
-        let f = oh_render::font::Font::load(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../_RELEASE/Assets/OpenSquare-Regular.ttf"),
-        )
-        .expect("OpenSquare-Regular.ttf must load");
+        let assets_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_RELEASE/Assets");
+        let f = oh_render::font::Font::load(&assets_dir.join("OpenSquare-Regular.ttf"))
+            .expect("OpenSquare-Regular.ttf must load");
         let soft_input: Arc<dyn SoftInput> = rec.clone();
         let adapter = MenuSlotAdapter {
             menu: menu.clone(),
             input_manager: Rc::new(RefCell::new(Manager::new())),
-            menu_draw: RefCell::new(crate::menu_draw::MenuDraw::new(&f, &f)),
+            menu_draw: RefCell::new(crate::menu_draw::MenuDraw::new(&assets_dir, &f, &f)),
             released_edges: Arc::new(RwLock::new(ReleasedEdges::default())),
             wheel_events: Arc::new(RwLock::new(Vec::new())),
             entered_text: Arc::new(RwLock::new(Vec::new())),

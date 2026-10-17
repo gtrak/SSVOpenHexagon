@@ -307,7 +307,7 @@ impl IlcConsole {
 
     /// The previous frame's `ilc_show_console` (the caller's
     /// false→true "just shown" detector — the C++ toggle's
-    /// `ProcessEvent(GainedFocus)`, HGUpdate.cpp:1305).
+    /// `ProcessEvent(GainedFocus)`, HGUpdate.cpp:1306).
     #[must_use]
     pub fn shown_last_frame(&self) -> bool {
         self.shown_last_frame
@@ -380,7 +380,7 @@ impl IlcConsole {
     /// C++ `drawImguiLuaConsole` (`HGGraphics.cpp:318-336`): the console's
     /// GL paint — AFTER the frame's game draws (the C++'s `draw()` calls
     /// `drawImguiLuaConsole()` as its LAST step, HGGraphics.cpp:315). The
-    /// C++'s `window->setView(renderWindow.getDefaultView())` (:334) is
+    /// C++'s `window->setView(renderWindow.getDefaultView())` (:333) is
     /// implicit: egui paints the full window rect in its own ortho
     /// (top-left origin) — the same the `ImGui::SFML::Render` uses
     /// (the default-view `ImGui::GetDrawData` viewport).
@@ -469,7 +469,7 @@ pub fn frame_post_update<S: SharedStore>(
         // The toggle-off frame (the C++'s `if (!ilcShowConsole) return;`,
         // HGUpdate.cpp:1308-1311) — the "just shown" detector resets, so
         // the next shown frame grants the focus again (the C++'s
-        // `ProcessEvent(GainedFocus)`, HGUpdate.cpp:1305).
+        // `ProcessEvent(GainedFocus)`, HGUpdate.cpp:1306).
         console.note_hidden();
     }
 }
@@ -584,10 +584,10 @@ fn console_contents<S: SharedStore>(
 
     // C++ `ImGui::InputText("Command", &ilcCmdBuffer,
     // EnterReturnsTrue | CallbackCompletion | CallbackHistory,
-    // &ilcTextEditCallbackStub, ...)` (HGUpdate.cpp:1419-1549).
+    // &ilcTextEditCallbackStub, ...)` (HGUpdate.cpp:1420-1541).
     command_input(ui, game, just_shown);
 
-    // C++ `ImGui::Separator();` (HGUpdate.cpp:1551).
+    // C++ `ImGui::Separator();` (HGUpdate.cpp:1543).
     ui.separator();
 
     // C++ `ImGui::Text("update ms: %.2f", window->getMsUpdate());
@@ -629,14 +629,14 @@ fn console_contents<S: SharedStore>(
     footer.sim_speed = sim_speed;
     footer.invincible = invincible;
     // The C++ per-frame write-backs (`Config::setTimescale(simSpeed)` /
-    // `setInvincible(invincible)`, HGUpdate.cpp:1560,1564).
+    // `setInvincible(invincible)`, HGUpdate.cpp:1551,1557).
     {
         let mut c = config.write().expect("config poisoned");
         c.set_timescale(sim_speed);
         c.set_invincible(invincible);
     }
 
-    // C++ `ImGui::Separator();` (HGUpdate.cpp:1566).
+    // C++ `ImGui::Separator();` (HGUpdate.cpp:1559).
     ui.separator();
 
     // C++ `ImGui::InputText("Track", &ilcTrackBuffer,
@@ -648,7 +648,7 @@ fn console_contents<S: SharedStore>(
     tracked_results_table(ui, game);
 }
 
-/// C++ `ImGui::InputText("Command", ...)` (HGUpdate.cpp:1419-1549): the
+/// C++ `ImGui::InputText("Command", ...)` (HGUpdate.cpp:1420-1541): the
 /// buffer bound to `ilcCmdBuffer` (the widget's text is written into the
 /// engine member each frame it edits — the C++'s direct member binding),
 /// the `EnterReturnsTrue` command execution (the landed
@@ -668,7 +668,7 @@ fn command_input<S: SharedStore>(ui: &mut egui::Ui, game: &HexagonGame<S>, just_
     let cmd_id = ui.make_persistent_id(CMD_EDIT_ID_SALT);
 
     // C++ toggle's `ImGui::SFML::ProcessEvent(GainedFocus)`
-    // (HGUpdate.cpp:1305): the egui equivalent of "the console window just
+    // (HGUpdate.cpp:1306): the egui equivalent of "the console window just
     // gained focus — keyboard goes to it" is requesting focus on the
     // command field (egui manages per-widget focus; for a freshly opened
     // console the C++'s context focus lands on the last-focused widget,
@@ -865,7 +865,7 @@ fn tracked_results_table<S: SharedStore>(ui: &mut egui::Ui, game: &HexagonGame<S
     // debug-asserted invariant). An error erased a pair AND left the
     // results short — the table is skipped exactly as the C++'s.
     if tracked_after.len() == results.len() && !tracked_after.is_empty() {
-        // C++ `ImGui::Separator();` (HGUpdate.cpp:1621).
+        // C++ `ImGui::Separator();` (HGUpdate.cpp:1622).
         ui.separator();
         // C++ `ImGui::BeginTable("TrackedResults", 2)` + the
         // `TableNextRow` / `TableSetColumnIndex` name/result pairs

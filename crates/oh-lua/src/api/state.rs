@@ -283,6 +283,22 @@ impl GameApiState {
         self.shared.get_dependent_shader_filename(shader_name)
     }
 
+    /// C++ `Utils::withDependencyAssetFilename`'s
+    /// `catch(const std::runtime_error& err)` (Utils.cpp:193-200): the
+    /// "Fatal error while looking for Lua dependency" line, logged
+    /// BEFORE the rethrow (the port returns the error to the Lua call
+    /// frame instead of unwinding a C++ exception — the script still
+    /// aborts, exactly the C++ behaviour). The `catch(...)` arm
+    /// (Utils.cpp:201-207, "Fatal unknown error ...") has no port
+    /// analogue: the only error flowing through the dependency lookup is
+    /// the `LuaError` (the C++ `std::runtime_error` class).
+    pub fn log_dependency_lookup_failure(&self, err: &LuaError) {
+        self.backend.log(
+            "hg::Utils::withDependencyAssetFilename",
+            &format!("Fatal error while looking for Lua dependency\nError: {err}\n"),
+        );
+    }
+
     /// C++ `Utils::findDependencyPackDataOrThrow(assets, currentPack, ...)`.
     ///
     /// Faithful to the C++ quirk: `currentPack` is the level's OWN pack

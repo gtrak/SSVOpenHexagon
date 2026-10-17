@@ -41,7 +41,7 @@ use crate::seams::{
 };
 use crate::states::{DialogInputState, PackChange, States};
 
-/// C++ `MenuGame` constructor's random tips (MenuGame.cpp:752-766) — the
+/// C++ `MenuGame` constructor's random tips (MenuGame.cpp:758-767) — the
 /// verbatim four two-line pairs. The tip is chosen at construction with
 /// `randomTip = tips[ssvu::getRndI(0, tips.size())]` (29b8a).
 const RANDOM_TIPS: [[&str; 2]; 4] = [
@@ -71,7 +71,7 @@ fn entropy_seed() -> u64 {
 }
 
 /// C++ `randomTip = tips[ssvu::getRndI(0, tips.size())]` (MenuGame.cpp:
-/// 752-766). The C++ `getRndI(min, max)` is
+/// 758-767). The C++ `getRndI(min, max)` is
 /// `uniform_int_distribution(min, max − 1)` (Rnd.hpp:44-50, inclusive) on
 /// the thread-local `pcg32_fast`; the port runs the same draw through
 /// `oh_rng` (the oracle-pinned `pcg32_fast` + `std::uniform_int`
@@ -140,7 +140,7 @@ pub struct Shared {
     /// C++ `shiftHeld`'s port equivalent (29b8c) — the app layer feeds the
     /// per-frame `LShift` / `RShift` state (the C++ `leftRightActionImpl`
     /// reads `sf::Keyboard::isKeyPressed(LShift/RShift)` live, MenuGame.cpp:
-    /// 1860-1862; the menu has no window access, so the app layer's input
+    /// 1877-1878; the menu has no window access, so the app layer's input
     /// snapshot feeds it — `MenuSlotAdapter::refresh_input`).
     pub shift_held: bool,
     // ---- level selection ----
@@ -277,11 +277,12 @@ impl Shared {
         // C++ ctor default state is `LoadingScreen`.
         Self {
             state: States::LoadingScreen,
-            // C++ ctor BODY `setIgnoreAllInputs(1)` (MenuGame.cpp:357 —
-            // "To close the load results with any key"; the member-init
-            // `ignoreInputs{0}` at MenuGame.cpp:192 is overwritten by the
-            // ctor body before the `onEvent` boot-screen handlers register
-            // at :518/:617/:674). The boot screens hold this gate until
+            // C++ ctor BODY `setIgnoreAllInputs(1)` (MenuGame.cpp:358 —
+            // the "To close the load results with any key" comment at
+            // :357; the member-init `ignoreInputs{0}` at MenuGame.cpp:192
+            // is overwritten by the ctor body before the `onEvent`
+            // boot-screen handlers register at :519/:616/:673). The boot
+            // screens hold this gate until
             // `checkCloseBootScreens` decrements it back to 0.
             ignore_inputs: 1,
             focus_held: false,
@@ -887,8 +888,8 @@ impl Shared {
 
     /// The C++ release handlers' raw `--ignoreInputs` (the Key handler's
     /// close-key half, MenuGame.cpp:544-550; the mouse / joystick
-    /// dialog halves, :639-641 / :696-698; the generic tails, :579-582 /
-    /// :647-650 / :697-700). The C++'s raw decrement leaves the manager
+    /// dialog halves, :638-641 / :695-698; the generic tails, :579-582 /
+    /// :649-653 / :706-709). The C++'s raw decrement leaves the manager
     /// gate unsynced; the port re-syncs it on every decrement via
     /// `set_ignore_all_inputs` — observable-identical here (the gate is
     /// already latched while `ignore_inputs > 0`, and the close / the
@@ -1070,7 +1071,7 @@ impl Shared {
 
     /// C++ `playLocally()` — `assets.pSaveCurrent(); enteredStr = "";
     /// state = getLocalProfilesSize() == 0 ? ETLPNewBoot : SLPSelectBoot`
-    /// (MenuGame.cpp:2427-2432): a run's scores reach disk FIRST — the
+    /// (MenuGame.cpp:1783-1789): a run's scores reach disk FIRST — the
     /// C++'s `pSaveCurrent()` is the call (the no-current-profile early
     /// return keeps the call a no-op on a fresh boot).
     pub fn play_locally(&mut self) {
@@ -1332,7 +1333,7 @@ impl Shared {
         d.y_offset = d.y_offset.min(0.0);
     }
 
-    /// C++ `getLevelListHeight()` (MenuGame.cpp:4388-4395) — the level
+    /// C++ `getLevelListHeight()` (MenuGame.cpp:4389-4395) — the level
     /// list's height in the selection layout: `levelLabelHeight * (
     /// focusHeld ? 1 : levelCount) + slctFrameSize` (the focused list
     /// shows ONE collapsed row — the draw side's `...` rows, :5018-5138).
@@ -1352,7 +1353,7 @@ impl Shared {
         layout.level_label_height * rows + layout.slct_frame_size
     }
 
-    /// C++ `getLevelSelectionHeight()` (MenuGame.cpp:4315-4326) — the whole
+    /// C++ `getLevelSelectionHeight()` (MenuGame.cpp:4315-4325) — the whole
     /// selection's height (pack labels + level list + the pack borders). No
     /// C++ call site (the method is declared and defined but never invoked
     /// in MenuGame.cpp — ported for API parity; the scroll machinery
@@ -1436,7 +1437,7 @@ impl Shared {
     }
 
     /// C++ `checkWindowTopScroll` / `checkWindowTopScrollWithResult`
-    /// (MenuGame.cpp:4659-4681) — one ported function: the action fires
+    /// (MenuGame.cpp:4604-4627) — one ported function: the action fires
     /// iff `-scroll` is STRICTLY greater than the active drawer's
     /// `YOffset`; the `WithResult` variant's return value is the `bool`
     /// (the callers' `if(!checkWindowTopScrollWithResult(...))` tails).
@@ -1468,7 +1469,7 @@ impl Shared {
     }
 
     /// C++ `checkWindowBottomScroll` / `checkWindowBottomScrollWithResult`
-    /// (MenuGame.cpp:4683-4711) — the bottom-boundary twin: the action
+    /// (MenuGame.cpp:4629-4652) — the bottom-boundary twin: the action
     /// fires iff `h − scroll` is STRICTLY less than `YOffset`.
     fn check_window_bottom_scroll(&mut self, scroll: f32, with_offset: bool) -> bool {
         let target = self.h - scroll;
@@ -2085,7 +2086,7 @@ impl MenuGame {
         self.shared.borrow_mut().add_remove_favorite_level();
     }
 
-    /// C++ hardcoded `{{k::F2}}` bind (MenuGame.cpp:1007-1010) + the
+    /// C++ hardcoded `{{k::F2}}` bind (MenuGame.cpp:1007-1009) + the
     /// `Jid::FavoritesMenu` rising edge (MenuGame.cpp:2751-2754):
     /// `switchToFromFavoriteLevels()`.
     pub fn switch_to_from_favorite_levels(&self) {
@@ -2093,7 +2094,7 @@ impl MenuGame {
     }
 
     /// C++ hardcoded `{{k::F3}}` / `{{k::F4}}` binds (MenuGame.cpp:
-    /// 1012-1018): `reloadAssets(false)` — F3 reloads the LEVEL's assets;
+    /// 1011-1017): `reloadAssets(false)` — F3 reloads the LEVEL's assets;
     /// `reloadAssets(true)` — F4 reloads the PACK's assets (the handler's
     /// guard — LevelSelection + no dialog + debug mode — is inside,
     /// MenuGame.cpp:3092-3127).
@@ -2102,7 +2103,7 @@ impl MenuGame {
     }
 
     /// C++ `isEnteringText()` (the input-gate half of the editable
-    /// `Tid::Exit` bind, MenuGame.cpp:989-997).
+    /// `Tid::Exit` bind, MenuGame.cpp:975-983).
     #[must_use]
     pub fn is_entering_text(&self) -> bool {
         self.shared.borrow().is_entering_text()
@@ -2615,7 +2616,7 @@ impl MenuGame {
         }
         let modifier = {
             let s = self.shared.borrow();
-            // C++ :1860-1862 — `isKeyPressed(LShift) || isKeyPressed(RShift)
+            // C++ :1877-1879 — `isKeyPressed(LShift) || isKeyPressed(RShift)
             // || focusHeld || wasFocusHeld` (the Shift half is the app-
             // layer-fed `shift_held`, 29b8c) — two menu-item steps.
             s.shift_held || s.focus_held || s.was_focus_held
@@ -2978,7 +2979,7 @@ impl MenuGame {
             }
 
             // TODO(010b-menu-screenshot): C++ `mustTakeScreenshot = true`
-            // (MenuGame.cpp:2783) — the menu's screenshot consumer is the
+            // (MenuGame.cpp:2782-2784) — the menu's screenshot consumer is the
             // unported `MenuGame::draw` lane (the `Tid::Screenshot`
             // keyboard bind's marker).
 
@@ -3083,7 +3084,7 @@ impl MenuGame {
 
     /// App-layer hook (29b8c): the C++ `leftRightActionImpl`'s Shift
     /// modifier reads the keyboard live (`sf::Keyboard::isKeyPressed(
-    /// LShift) || isKeyPressed(RShift)`, MenuGame.cpp:1860-1862); the port
+    /// LShift) || isKeyPressed(RShift)`, MenuGame.cpp:1877-1878); the port
     /// has no window access in oh-menu, so the app layer's per-frame input
     /// snapshot feeds the equivalent (`MenuSlotAdapter::refresh_input`).
     pub fn set_shift_held(&self, held: bool) {
@@ -3100,9 +3101,9 @@ impl MenuGame {
     ///
     /// The C++'s two non-navigation halves are documented seams: the
     /// cursor re-enable (`setMouseCursorVisible(true)` while
-    /// `window.hasFocus()`, MenuGame.cpp:304-307) is the S1 mouse-input
+    /// `window.hasFocus()`, MenuGame.cpp:302-305) is the S1 mouse-input
     /// seam (the port has no menu mouse state yet), and the bind-capture
-    /// gate (MenuGame.cpp:309-316 — `state == MOpts` + the current item's
+    /// gate (MenuGame.cpp:308-316 — `state == MOpts` + the current item's
     /// `isWaitingForBind()`) is the S3 BindControl seam (the port's bind
     /// items never enter a waiting state; capture is owned by oh-config's
     /// `KeyboardBindControl` — `menu.rs` module docs).
@@ -3254,7 +3255,7 @@ impl MenuGame {
 
     /// C++ `KeyReleased` / `MouseButtonReleased` /
     /// `JoystickButtonReleased` release dispatch
-    /// (MenuGame.cpp:518-565 / :616-643 / :673-700) — issue 025g (the
+    /// (MenuGame.cpp:519-614 / :616-671 / :673-728) — issue 025g (the
     /// generic `--ignoreInputs` tail: while `ignoreInputs > 0`, a release
     /// that is NOT a boot-screen close (scenario 1 — the C++
     /// `checkCloseBootScreens`, MenuGame.cpp:360-380; the port's
@@ -3277,10 +3278,10 @@ impl MenuGame {
     /// 552-561); (c) the `checkCloseDialogBox` sequence machine (the port's
     /// [`Shared::check_close_dialog_box`]) — the mouse / joystick halves
     /// ignore the input box entirely (`keyToClose != Unknown → return`,
-    /// :636-643 / :693-700) and decrement + close an Unknown-key box.
+    /// :636-645 / :693-702) and decrement + close an Unknown-key box.
     ///
     /// The C++'s scenario-3 bind-capture half (the
-    /// `KeyboardBindControl` key-assignment, MenuGame.cpp:586-601 /
+    /// `KeyboardBindControl` key-assignment, MenuGame.cpp:585-598 /
     /// :655-666) is the documented oh-config `BindControl` seam (the
     /// port's options bind-capture UI lives there — `oh-menu`
     /// `menu.rs` module docs).
@@ -3296,12 +3297,12 @@ impl MenuGame {
         if matches!(s.state, States::LoadingScreen | States::EpilepsyWarning) {
             return;
         }
-        // Scenario 2 (MenuGame.cpp:530-532 / :633-635 / :683-685).
+        // Scenario 2 (MenuGame.cpp:537-541 / :631-634 / :688-691).
         if s.dialog_box_delay > 0.0 {
             return;
         }
         // Scenario 3 — the open dialog box (29b3: the Key / mouse /
-        // joystick dialog halves, MenuGame.cpp:542-565 / :636-643 /
+        // joystick dialog halves, MenuGame.cpp:544-565 / :636-645 /
         // :693-700).
         if !s.dialog.empty() {
             match released_key {
@@ -3315,7 +3316,7 @@ impl MenuGame {
                     {
                         s.decrement_ignore_inputs();
                     }
-                    // C++ :552-561 — the input box's Escape cancel (the
+                    // C++ :553-561 — the input box's Escape cancel (the
                     // only way out of a started sequence besides
                     // completing it).
                     if s.dialog.is_input_box() && key == oh_config::Key::ESCAPE {
@@ -3330,7 +3331,7 @@ impl MenuGame {
                     s.check_close_dialog_box();
                 }
                 None => {
-                    // C++ :636-643 / :693-700 — the mouse / joystick
+                    // C++ :636-645 / :693-702 — the mouse / joystick
                     // halves: the input box (keyToClose == Enter) ignores
                     // pointer releases; an Unknown-key box decrements +
                     // closes.
@@ -3346,7 +3347,7 @@ impl MenuGame {
         // The generic `--ignoreInputs` tail (all three handlers); the
         // C++'s `if ((--ignoreInputs) == 0)` — `setIgnoreAllInputs(0)`
         // re-syncs the manager flag at 0 (the no-menu / not-MOpts
-        // branch, MenuGame.cpp:579-582 / :647-650 / :697-700; the MOpts
+        // branch, MenuGame.cpp:579-582 / :649-653 / :706-709; the MOpts
         // bind-assignment branch is the documented `BindControl` seam).
         s.decrement_ignore_inputs();
     }
@@ -3488,9 +3489,9 @@ impl Shared {
     /// `creditsBar2` sprite should show this frame (the id changes every
     /// 100 accumulated seconds of frametime). `currentCreditsId` only
     /// accumulates (non-negative), but the `rem_euclid` is the C++
-    /// `getMod` (Math.hpp:292) regardless. The draw-side note: until the
-    /// 15c texture table lands, all three textures are the same 1×1
-    /// placeholder (menu_draw's module docs), so the cycle is state-only.
+    /// `getMod` (Math.hpp:292) regardless. The port's `MenuDraw::draw`
+    /// sets the sprite's frame from this id every frame (29w1: the real
+    /// `Assets/creditsBar2{,b,c}.png` textures).
     #[must_use]
     pub fn credits_bar2_id(&self) -> usize {
         let idx = (self.current_credits_id / 100.0) as i32; // C++ toInt: trunc
