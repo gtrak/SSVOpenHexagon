@@ -865,3 +865,50 @@ enforce:
   replace worktree branches; the runner's `worktree-diffs` artifact no
   longer applies.
 - Landing: squash into master (D-025) still applies for multi-commit lanes.
+
+## D-037 — Unify on Luau: the LuaJIT machinery goes away (operator directive, 2026-10-17)
+
+Operator: *"will we still keep parity with c++ without rust luajit built in? if so, go
+ahead"* — and the answer is YES, on direct evidence rather than by transitivity.
+
+**The decision.** The port ships ONE Lua VM: **Luau** (mlua's `luau` feature, statically
+built from `luau0-src`). `backend-luajit`, `extlibs/luajit-src`, the root
+`[patch.crates-io]`, the `ffi_stub.c` link shim, the Android `cshim.c` `__clear_cache`
+shim, and the per-target Lua selection are all deleted. This **supersedes D-036's
+per-target split** (LuaJIT desktop / Luau emscripten) — there is nothing left to split.
+
+**Why parity survives.** All three pieces of evidence are already landed:
+- The C++ oracle (030b) fingerprints **game state** — RNG state, walls, player, score,
+  customScore, status timers, entities — NOT Lua internals. It is VM-agnostic by
+  construction and keeps working unchanged after the switch.
+- The Luau column was verified against the C++ **directly**: 030c ran the committed
+  `cpp_fingerprints.json` (6 cases, **3627 frames**) under `backend-luau` and every frame
+  matched — the same result the LuaJIT column produced. So the configuration we will SHIP
+  is the configuration that is compared against the C++, which is *stronger* than shipping
+  LuaJIT and inferring.
+- Every measured VM difference is non-observable in gameplay: 030a's probes put the
+  divergence surface at error chunk prefixes, number spellings, sandbox presence and
+  Integer width — none of them fingerprinted — while `%.14g` and number→string, the two
+  that could reach game-visible text, are **identical**. `math.random` is engine-shimmed
+  and deterministic, and replays store input bits plus engine RNG, so they are
+  VM-independent (43/43 cases and 3627 frames both confirm it).
+
+**Residual risks, named rather than buried.** (1) **Third-party content** — there is no
+such corpus in this repo; mitigated by the zero census, by Luau 0.663 keeping most 5.1-isms
+natively (030c's per-ism classification), by the compat prelude, and by a one-line Rust
+binding for `loadstring` — the single ism that is not Lua-emulatable (Luau's base library
+has no chunk compiler at all). (2) **`pairs`/`next` iteration order is genuinely
+VM-dependent**, so a third-party level that DEPENDS on iteration order could diverge from
+the C++'s LuaJIT (such a level is already fragile — both VMs may vary it — but this is a
+real hole and belongs in the record). (3) Error text and tracebacks differ: logs and the
+console only, never gameplay or replays.
+
+**Deliberate casualty.** 030a's A/B harness loses its LuaJIT arm, because keeping that arm
+alive means keeping the machinery this decision exists to delete. The harness survives as
+regression pins against the C++ vectors (030c's per-case table), plus the dialect census,
+the VM probes and the prelude tests. The ground truth becomes the C++ column.
+
+**Consequences closed by this.** **K3** (the arm64 `lj_asm_trace` ANR — the operator's own
+"hangs non-responsive") and **K4** (LuaJIT version skew) become moot BY CONSTRUCTION, and
+deviation **F29** (the `jit.off()` mitigation) is deleted with them: the shipping
+configuration has no `jit` table left to disable. The Android `__clear_cache` shim goes too.
