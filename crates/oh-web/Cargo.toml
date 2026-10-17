@@ -1,6 +1,6 @@
 [package]
 name = "oh-web"
-description = "The emscripten (web) entry crate (issue 26c sub-goal 4b, D-029): the wasm32-unknown-emscripten BINARY that boots the engine in a browser - the canvas + oh-render's emscripten backend (WebGL2 via the emscripten_webgl_* C API) + the request_animation_frame loop + a #[wasm_bindgen] status() probe (the boot skeleton; the engine content/Lua/menu composition is sub-goals 5/6)"
+description = "The emscripten (web) entry crate (issue 26c, D-029): the wasm32-unknown-emscripten BINARY that boots the real engine composition (oh_app::client::main_client, headless = false) in a browser - the _RELEASE tree preloaded into emscripten MEMFS (sub-goal 5B) + oh-render's emscripten backend (WebGL2 via the emscripten_webgl_* C API) + the request_animation_frame loop + a #[wasm_bindgen] status() probe"
 version.workspace = true
 edition.workspace = true
 
@@ -10,20 +10,18 @@ edition.workspace = true
 # `-Clink-arg=-sWASM_BINDGEN` link flag (the root .cargo/config.toml's
 # [target.wasm32-unknown-emscripten] table, the verbatim 26c.1/26c.2
 # recipe); emcc then runs the wasm-bindgen CLI itself over the linked wasm.
-# `js-sys` / `web-sys`: the browser console + the page's
-# `<canvas id="c">` lookup (the DOM events + the rAF loop themselves live in
-# oh-render's emscripten backend, which carries the wider web-sys feature
-# set - the features here are the ones THIS crate's own code touches).
+# `web-sys`: the browser console (the `status()` probe + the boot progress
+# lines — the canvas lookup + the DOM events + the rAF loop themselves live
+# in oh-render's emscripten backend, which carries the wider web-sys feature
+# set — the features here are the ones THIS crate's own code touches).
 [dependencies]
-oh-render = { path = "../oh-render" }
+# Sub-goal 5B: the real composition — the C++ `mainClient` port
+# (`crates/oh-app/src/client.rs`): config + assets over the preloaded
+# `_RELEASE` MEMFS tree (the `oh_vfs::RealFs`, sub-goal 5a), the windowed
+# client (the emscripten `oh-render` window + engine + MenuGame), the boot
+# dispatch to the menu, and the `request_animation_frame` loop.
+oh-app = { path = "../oh-app" }
 wasm-bindgen = "0.2.129"
-js-sys = "0.3.106"
 web-sys = { version = "0.3.106", features = [
-  "Window",
-  "Document",
-  "Element",
-  "HtmlCanvasElement",
-  "WebGl2RenderingContext",
   "console",
-  "Performance",
 ] }

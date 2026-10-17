@@ -58,6 +58,18 @@ linker = "x86_64-linux-android28-clang"
 #   `emscripten_webgl_create_context` returns 0.
 # - MODULARIZE + EXPORT_ES6: the artifacts are a loadable ES module
 #   (`oh-web.js` default-exports the Module factory) + `oh-web.wasm`.
+# - `--preload-file=_RELEASE@/RELEASE` + `-sFORCE_FILESYSTEM=1` (sub-goal
+#   5B, the SIMPLE content path): the `_RELEASE` content tree (~32.6 MB) is
+#   embedded into the build (emsdk 6.0.x puts the preload package in the
+#   WASM binary — `oh_web.wasm` grows from ~19.5 MB to ~59.5 MB; the JS
+#   loader stays small) and unpacked into emscripten's in-memory FS (MEMFS)
+#   at `/RELEASE` BEFORE `main` runs (the preload unpack is a preRun step,
+#   ahead of the wasm-bindgen glue's addOnInit `main`).
+#   `oh-web`'s `main` then passes `Path::new("/RELEASE")` as
+#   `main_client`'s `base_dir` — `oh_vfs::RealFs` (sub-goal 5a) reads the
+#   preloaded tree through `std::fs` (the emscripten libc). The host path
+#   is RELATIVE to the build CWD (cargo runs the linker with the invoking
+#   directory) — build from the repo root so `_RELEASE` resolves.
 # - The 26c.2 MANDATORY gotcha #2 lives in the CODE, not here: `main()`
 #   calls `__wasm_call_ctors()` as its FIRST statement (the wasm-bindgen
 #   glue registers `main` via `addOnInit`, which runs BEFORE emscripten's
@@ -79,4 +91,6 @@ rustflags = [
   "-Clink-arg=-sEXPORT_ES6",
   "-Clink-arg=-sMAX_WEBGL_VERSION=2",
   "-Clink-arg=-sMIN_WEBGL_VERSION=2",
+  "-Clink-arg=--preload-file=_RELEASE@/RELEASE",
+  "-Clink-arg=-sFORCE_FILESYSTEM=1",
 ]

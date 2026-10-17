@@ -1,25 +1,28 @@
-//! `oh-web` — the emscripten (web) entry crate (issue 26c sub-goal 4b,
-//! DECISIONS.md D-029): the `wasm32-unknown-emscripten` **binary** that
-//! boots the engine in a browser — the page's `<canvas id="c">` +
-//! `oh-render`'s emscripten backend (the WebGL2 context via the
-//! `emscripten_webgl_*` C API + the `glow` loader, the DOM event listeners,
-//! the `request_animation_frame` loop — the winit event loop's web
-//! replacement) + a `#[wasm_bindgen] status()` probe.
-//!
-//! This is the BOOT SKELETON (sub-goal 4b): it exercises the `oh-render`
-//! web backend with an animated clear. The real engine content / Lua /
-//! menu composition is sub-goal 5 (fetch `_RELEASE` into a `MemoryVfs`,
-//! boot to the menu) and 6 (the D-028 playable session).
+//! `oh-web` — the emscripten (web) entry crate (issue 26c, DECISIONS.md
+//! D-029): the `wasm32-unknown-emscripten` **binary** that boots the REAL
+//! engine composition in a browser — `oh_app::client::main_client` (the
+//! C++ `mainClient` port) with `headless = false` over the `_RELEASE`
+//! tree preloaded into emscripten MEMFS (sub-goal 5B): content (config /
+//! assets / packs through `oh_vfs::RealFs`), the `oh-render` emscripten
+//! window (the page's `<canvas id="c">` + the WebGL2 context via the
+//! `emscripten_webgl_*` C API + the DOM event listeners + the
+//! `request_animation_frame` loop — the winit event loop's web
+//! replacement), the engine + MenuGame (boot to the menu — the first
+//! representative state), and a `#[wasm_bindgen] status()` probe.
 //!
 //! **Build**: `cargo build -p oh-web --target wasm32-unknown-emscripten`
 //! (the emsdk env recipe — `.agents/skills/lib-web-stack.md` §26c.1; the
 //! target's rustflags live in the root `.cargo/config.toml`'s
 //! `[target.wasm32-unknown-emscripten]` table, the verbatim 26c.1/26c.2
-//! recipe). It emits `oh-web.js` (MODULARIZE + EXPORT_ES6 — default-exports
-//! the Module factory) + `oh_web.wasm` (emcc names the wasm after the
-//! object file — underscore; the loader's `locateFile` looks for exactly
-//! that name); the page is `site/index.html` (serve the folder with the
-//! two artifacts next to it — see that file's header comment).
+//! recipe + the sub-goal 5B `--preload-file=_RELEASE@/RELEASE` /
+//! `-sFORCE_FILESYSTEM=1` content path — build from the repo root so the
+//! relative preload path resolves). It emits `oh-web.js` (MODULARIZE +
+//! EXPORT_ES6 — default-exports the Module factory; the preloaded
+//! `_RELEASE` tree is embedded in it) + `oh_web.wasm` (emcc names the
+//! wasm after the object file — underscore; the loader's `locateFile`
+//! looks for exactly that name); the page is `site/index.html` (serve the
+//! folder with the two artifacts next to it — see that file's header
+//! comment).
 //!
 //! On every OTHER target this crate is a no-op binary (the desktop gate's
 //! `cargo build --workspace` compiles it; nothing runs).
@@ -49,8 +52,8 @@ fn main() {
         __wasm_call_ctors()
     };
 
-    // The boot (the canvas + the oh-render emscripten window + the rAF
-    // loop + the status probe — `web.rs`).
+    // The boot (the real composition — `oh_app::client::main_client` over
+    // the preloaded `_RELEASE` MEMFS tree, sub-goal 5B — `web.rs`).
     #[cfg(target_os = "emscripten")]
     web::boot();
 

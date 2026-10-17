@@ -42,7 +42,15 @@ oh-discord = { path = "../oh-discord" }
 # Issue 18 milestone 4: the `-server` wiring (`dispatch.rs::main_server`
 # — the C++ `mainServer`, main.cpp:197-242) over the ported
 # `HexagonServer` + the `Database`/`ReplayExecutor` composition.
-oh-net = { path = "../oh-net" }
+# OFF on emscripten (sub-goal 5B, link-time): the web vertical slice has no
+# online client / server (26c §5 — the online *client* is a follow-up), and
+# `oh-net`'s C deps do not LINK for emscripten on a Windows host
+# (`libsodium-sys`'s build script takes its `#[cfg(windows)]` prebuilt-libs
+# shortcut — the host's mingw/msvc statics — which emcc cannot consume; the
+# sub-goal 5a `cargo check` never linked, so this only surfaces at the
+# first real `cargo build`). `dispatch` (the only `oh_net` consumer in this
+# crate) is already `#[cfg(not(target_os = "emscripten"))]`; the dep joins
+# the not-emscripten target table below.
 
 # Issue 020 — the Steam manager the `mainClient` composition shares with
 # the engine (`HexagonGame`'s `steam_manager` seam) and the menu
@@ -59,6 +67,13 @@ oh-steam = { path = "../oh-steam" }
 # letting `oh-app` COMPILE for emscripten; the real web client lands in
 # the `oh-web` crate (sub-goal 4B).
 [target.'cfg(not(target_os = "emscripten"))'.dependencies]
+# Issue 18 milestone 4: the `-server` wiring (`dispatch.rs::main_server`)
+# — the only `oh_net` consumer in this crate (the `dispatch` module, the
+# `-server` entry, is `#[cfg(not(target_os = "emscripten"))]`). Gated off
+# emscripten for the link-time reason in the `oh-net` note above (sub-goal
+# 5B): `oh-net`'s `sodiumoxide` / `rusqlite` C deps do not link for
+# emscripten on a Windows host.
+oh-net = { path = "../oh-net" }
 # C++ main.cpp:340-349 — the SIGINT handler, the SAFE port (the C++'s
 # `TODO (P2): UB`, main.cpp:339: the C++ handler called
 # `globalWindow.stop()` — non-atomic engine state — inside the signal

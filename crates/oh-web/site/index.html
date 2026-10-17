@@ -1,7 +1,11 @@
 <!doctype html>
 <!--
-  oh-web (issue 26c sub-goal 4b, D-029) - the browser page for the
-  emscripten boot skeleton.
+  oh-web (issue 26c sub-goal 5B, D-029) - the browser page for the
+  emscripten REAL-composition boot: oh_app::client::main_client (the C++
+  mainClient port, headless = false) over the _RELEASE tree preloaded
+  into emscripten MEMFS at /RELEASE (the root .cargo/config.toml's
+  --preload-file=_RELEASE@/RELEASE + -sFORCE_FILESYSTEM=1; the tree is
+  embedded in oh-web.js itself).
 
   SERVE (static, no build step): copy the two build artifacts next to this
   file, then serve THIS folder:
@@ -18,15 +22,21 @@
   URL: http://localhost:8000/
   (Any static file server works - the page is plain ES-module + two files.)
 
-  Expected browser console (the 26c.1/26c.2 evidence shape):
+  Expected browser console (the composition's boot - the emscripten
+  stdout/stderr redirect carries the Rust println!/eprintln! lines):
       oh-web: boot started (after __wasm_call_ctors)
-      oh-web: canvas found (640x480)
-      oh-web: WebGL2 context live - GL 3.0 (...) (glow-ok)
-      oh-web: render loop starting (request_animation_frame)
-      oh-web: first frame rendered
+      [::createFolderIfNonExistant] 'Profiles/' folder does not exist, creating
+      [::createFolderIfNonExistant] 'Replays/' folder does not exist, creating
+      [::mainClient] Finished
+      [::main] Saving config...
+      [::main] Done saving config
+      oh-web: main_client returned 0 (the rAF loop keeps driving the menu)
       oh-web: module loaded
-      status booted=true;glow=true;frames=N   (N grows ~60x/second)
-  The 640x480 canvas animates (a slow orange <-> slate clear sweep).
+      status booted=true;exit_code=0   (every 2s; the rAF loop keeps running)
+  The canvas renders the MENU (the request_animation_frame loop keeps
+  driving it after main returns): the C++ boot screens first (the
+  LoadingScreen / EpilepsyWarning - any key or mouse RELEASE advances
+  them, the C++ checkCloseBootScreens), then the main menu.
 -->
 <html>
   <head>

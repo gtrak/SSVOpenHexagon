@@ -91,6 +91,13 @@ impl oh_game::seams::SteamSink for SteamManager {
 /// — the C++ holds the manager by reference and polls these four during
 /// construction; the port implements the same surface on the shared
 /// manager, `oh_net::client::SteamManager` — `oh-net/src/client.rs`).
+/// Emscripten (issue 26c sub-goal 5B): OFF — the web vertical slice has no
+/// online client (26c §5), and `oh-net` (the trait's home) is gated off
+/// emscripten (its C deps do not link there on a Windows host — the
+/// `Cargo.toml` note). The `SteamManager`'s own ticket methods (the
+/// `manager.rs` surface) stay available; only this `oh-net` trait impl is
+/// gone on web.
+#[cfg(not(target_os = "emscripten"))]
 impl oh_net::client::SteamManager for SteamManager {
     fn got_encrypted_app_ticket_response(&self) -> bool {
         SteamManager::got_encrypted_app_ticket_response(self)

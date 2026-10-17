@@ -2311,16 +2311,24 @@ impl WindowedClient {
             _app_draw,
             ilc,
         } = self;
-        let _ = &composed; // keep it alive until the end of the scope
         let mut timer = timer;
         // `move`: the emscripten `Window::run`'s `on_frame` is `'static`
         // (the rAF loop outlives this function — D-029), so the closure
         // owns the captured pieces (the desktop `run_with_event_hook`'s
         // `on_frame` is not `'static` and borrows them instead).
+        // `composed` (the heap-pinned `LuaContext` every `SharedLua`
+        // carrier points into — the `SharedLua` contract, compose.rs) is
+        // captured into the closure too: the loop outlives `main`
+        // (emscripten's runtime stays alive after `main` returns —
+        // sub-goal 5B), so the `LuaContext` must live with the loop, not
+        // die at this function's end. It is referenced LAST in the body,
+        // so the closure captures (and drops) it AFTER the states'
+        // `Rc<HexagonGame>` carriers (the contract's drop order).
         window.run(move |window| {
             Self::tick_fields(
                 window, &mut timer, &engine, &menu, &interrupt, &game, &config, &ilc,
-            )
+            );
+            let _ = &composed;
         });
     }
 

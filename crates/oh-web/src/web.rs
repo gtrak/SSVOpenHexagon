@@ -1,52 +1,62 @@
-//! The emscripten (web) boot (issue 26c sub-goal 4b, D-029) — called from
-//! `main` AFTER `__wasm_call_ctors()` (the 26c.2 trap fix):
+//! The emscripten (web) boot (issue 26c sub-goal 5B, D-029) — called from
+//! `main` AFTER `__wasm_call_ctors()` (the 26c.2 trap fix): the REAL
+//! composition — `oh_app::client::main_client` (the C++ `mainClient` port)
+//! with `headless = false` over the preloaded `_RELEASE` tree:
 //!
-//! 1. the page's `<canvas id="c">` (the `oh-render` emscripten backend's
-//!    selector contract — the 26c.1 gotcha: `"#c"`, not a bare id),
-//! 2. the `oh-render` emscripten window — the WebGL2 context (the
-//!    `emscripten_webgl_*` C API + the `glow` loader, `oh-render`'s
-//!    `GlBackend`) + the DOM event listeners,
+//! 1. the content — the `_RELEASE` tree preloaded into emscripten MEMFS at
+//!    `/RELEASE` (the root `.cargo/config.toml`'s
+//!    `--preload-file=_RELEASE@/RELEASE` + `-sFORCE_FILESYSTEM=1`);
+//!    `main_client`'s `RealFs` (sub-goal 5a) reads it through `std::fs`
+//!    (the emscripten libc) — `config.json`, `Packs/`, `Assets/`, the
+//!    fonts;
+//! 2. the windowed client — the emscripten `oh-render` `Window` over the
+//!    page's `<canvas id="c">` (the WebGL2 context via the
+//!    `emscripten_webgl_*` C API + the DOM event listeners), the engine +
+//!    MenuGame + the four callback links, the boot dispatch (`gotoMenu` —
+//!    the menu is the first representative state);
 //! 3. the `request_animation_frame` loop (`oh-render`'s web
-//!    `Window::run` — the winit event loop's web replacement): an animated
-//!    clear per frame (the boot skeleton's stand-in for the engine's draw
-//!    pass — the real content / Lua / menu composition is sub-goal 5/6).
+//!    `Window::run` — the winit event loop's web replacement):
+//!    `main_client` RETURNS after scheduling the first frame (D-029: the
+//!    browser owns the loop) — the loop's self-owning closure keeps the
+//!    engine / menu / the heap-pinned Lua context alive across `main`
+//!    returning (the emscripten runtime stays alive after `main` —
+//!    `EXIT_RUNTIME=0` default), so the menu keeps driving.
 //!
-//! Progress is logged to the browser console, and `status()` (the
-//! `#[wasm_bindgen]` export) reports the boot state + the frame count.
+//! Progress is logged to the browser console (the composition's own
+//! `println!` / `eprintln!` lines land there through the emscripten
+//! stdout/stderr redirect), and `status()` (the `#[wasm_bindgen]` export)
+//! reports the boot state + the `main_client` exit code.
 
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use wasm_bindgen::prelude::wasm_bindgen;
-use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use web_sys::console;
 
-/// The page's canvas id (the `oh-render` emscripten backend looks up
-/// `<canvas id="c">` — the 26c.1 selector contract).
-const CANVAS_ID: &str = "c";
-/// The canvas size (the 26c.1 spike's 640×480).
-const WIDTH: u32 = 640;
-const HEIGHT: u32 = 480;
+/// The `_RELEASE` tree's MEMFS mount point (the root
+/// `.cargo/config.toml`'s `--preload-file=_RELEASE@/RELEASE`) — passed
+/// verbatim as `main_client`'s `base_dir` (the C++'s CWD-relative content
+/// root: `config.json`, `Packs/`, `Assets/`, ... live directly under it).
+const BASE_DIR: &str = "/RELEASE";
 
 /// The single-init guard (the 26c.1/26c.2 "main ran twice" artifact):
 /// `true` once the boot has run — a re-entered `main` skips the second
-/// init (only one canvas / one WebGL2 context / one rAF loop).
+/// init (one composition / one canvas / one WebGL2 context / one rAF loop).
 static BOOTED: AtomicBool = AtomicBool::new(false);
-/// A live WebGL2 context was created (the 26c.1/26c.2 `glow-ok` flag).
-static GL_OK: AtomicBool = AtomicBool::new(false);
-/// The `request_animation_frame` frames rendered so far.
-static FRAMES: AtomicI32 = AtomicI32::new(0);
+/// The `main_client` return code (`-1` until it returns — the windowed
+/// boot path returns `0` after `window->run()` schedules the rAF loop).
+static EXIT_CODE: AtomicI32 = AtomicI32::new(-1);
 
 /// The `#[wasm_bindgen]` probe (the 26c.1/26c.2 `status()` shape): the
-/// boot state + the frame count — the supervisor's browser check calls it
-/// after the module loads.
+/// boot state + the composition's exit code — the supervisor's browser
+/// check calls it after the module loads.
 #[wasm_bindgen]
 pub fn status() -> String {
     format!(
-        "booted={};glow={};frames={}",
+        "booted={};exit_code={}",
         BOOTED.load(Ordering::SeqCst),
-        GL_OK.load(Ordering::SeqCst),
-        FRAMES.load(Ordering::SeqCst)
+        EXIT_CODE.load(Ordering::SeqCst)
     )
 }
 
@@ -66,64 +76,18 @@ pub fn boot() {
     }
     log("oh-web: boot started (after __wasm_call_ctors)");
 
-    // 1. The canvas (the page MUST provide `<canvas id="c">`).
-    let canvas = match web_sys::window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.get_element_by_id(CANVAS_ID))
-        .map(|el| el.unchecked_into::<web_sys::HtmlCanvasElement>())
-    {
-        Some(canvas) => canvas,
-        None => {
-            log("oh-web: FATAL - no <canvas id=\"c\"> in the page");
-            return;
-        }
-    };
+    // The real composition (sub-goal 5B): the C++ `mainClient` port with
+    // `headless = false` — `RealFs` rooted at the preloaded `_RELEASE`
+    // tree, config + assets load, the windowed client (the emscripten
+    // window over `<canvas id="c">` + engine + MenuGame), the boot
+    // dispatch to the menu, and the rAF loop. It RETURNS after scheduling
+    // the first frame (the browser owns the loop — D-029); the loop's
+    // self-owning closure keeps the engine + menu + the heap-pinned Lua
+    // context alive across `main` returning (the emscripten runtime stays
+    // alive — `EXIT_RUNTIME=0` default).
+    let code = oh_app::client::main_client(false, &[], None, None, Path::new(BASE_DIR));
+    EXIT_CODE.store(code, Ordering::SeqCst);
     log(&format!(
-        "oh-web: canvas found ({}x{})",
-        canvas.width(),
-        canvas.height()
+        "oh-web: main_client returned {code} (the rAF loop keeps driving the menu)"
     ));
-
-    // 2. The `oh-render` emscripten window: the WebGL2 context (the
-    //    `emscripten_webgl_*` C API — init attributes (major_version = 2)
-    //    -> create ("#c") -> make_context_current — then `glow` via
-    //    `from_loader_function_cstr`) + the DOM event listeners. Degrades
-    //    to the headless frames when the canvas / WebGL2 is unavailable.
-    let window = oh_render::Window::create(WIDTH, HEIGHT, "SSVOpenHexagon (web)");
-    match window.gl() {
-        Some(gl) => {
-            GL_OK.store(true, Ordering::SeqCst);
-            log(&format!(
-                "oh-web: WebGL2 context live - {} (glow-ok)",
-                gl.version_string().unwrap_or_default()
-            ));
-        }
-        None => {
-            log("oh-web: WARNING - no WebGL2 context (headless frames; check WebGL2 support)");
-        }
-    }
-
-    // 3. The `request_animation_frame` loop (`oh-render`'s emscripten
-    //    `Window::run` — RETURNS after scheduling the first frame; the
-    //    browser owns the loop, the frames run until `Event::Closed`). An
-    //    animated clear per frame: a slow orange <-> slate sweep (f32 —
-    //    the boot skeleton's stand-in for the engine's draw pass;
-    //    sub-goal 5/6 replaces it with the real content / menu /
-    //    gameplay).
-    log("oh-web: render loop starting (request_animation_frame)");
-    window.run(|w| {
-        let frame = FRAMES.fetch_add(1, Ordering::Relaxed);
-        if frame == 0 {
-            log("oh-web: first frame rendered");
-        }
-        // The sweep: `t` in -1..1 (one full sweep every ~314 frames).
-        let t = (frame as f32 * 0.02).sin();
-        let r = 0.55 + 0.30 * t;
-        let g = 0.40 + 0.10 * t;
-        let b = 0.15 - 0.15 * t;
-        if let Some(gl) = w.gl() {
-            gl.clear([r, g, b, 1.0]);
-            gl.present();
-        }
-    });
 }

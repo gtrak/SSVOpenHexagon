@@ -19,12 +19,24 @@ steam = ["dep:steamworks", "dep:steamworks-sys"]
 # `steam_manager*` the `HexagonGame`/`MenuGame` composition points take,
 # main.cpp:415,434; the `impl` in `lib.rs`).
 oh-game = { path = "../oh-game" }
-oh-net = { path = "../oh-net" }
 serde_json = { workspace = true }
 steamworks = { workspace = true, optional = true }
 # The sys crate only behind the `steam` feature (its loader-stub link only
 # happens when it is built — see .agents/skills/lib-steamworks.md §4).
 steamworks-sys = { version = "0.13", optional = true }
+
+# The online-server seam's trait (`oh_net::client::SteamManager`, the four
+# ticket-polling methods `HexagonClient` drives — `impl` in `lib.rs`, gated
+# off emscripten there). OFF on emscripten (issue 26c sub-goal 5B, link-time):
+# the web vertical slice has no online client (26c §5), and `oh-net`'s C
+# deps do not link for emscripten on a Windows host (`libsodium-sys`'s
+# `#[cfg(windows)]` prebuilt-libs shortcut — the host's mingw/msvc statics —
+# which emcc cannot consume; the sub-goal 5a `cargo check` never linked, so
+# this only surfaces at the first real `cargo build`). The host-only tests
+# (`tests/manager.rs`'s seam block) still see it (they run on the host
+# target).
+[target.'cfg(not(target_os = "emscripten"))'.dependencies]
+oh-net = { path = "../oh-net" }
 
 [dev-dependencies]
 # Test-only: the `workshopCache.json` scenarios need an isolated CWD.

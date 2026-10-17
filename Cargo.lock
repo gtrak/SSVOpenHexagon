@@ -2094,8 +2094,7 @@ dependencies = [
 name = "oh-web"
 version = "0.1.0"
 dependencies = [
- "js-sys",
- "oh-render",
+ "oh-app",
  "wasm-bindgen",
  "web-sys",
 ]
