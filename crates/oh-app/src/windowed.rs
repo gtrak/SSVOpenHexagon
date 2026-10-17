@@ -1368,6 +1368,16 @@ struct MenuSlotAdapter {
     /// on entering the text-entry states and hides it on leaving (the C++
     /// `isEnteringText` gate's port — `oh-menu` `States::is_entering_text`).
     soft_input: std::sync::Arc<dyn SoftInput>,
+    /// 29i1 (F3/F4's `reloadAssets`): the pending `ignoreAllInputs` flag.
+    /// The handler's `setIgnoreAllInputs(2)` fires INSIDE this adapter's
+    /// `input_manager` `update` (the F3/F4 bind), so its callback can't
+    /// borrow the manager reentrantly (the C++ has no such lock — plain
+    /// `game.ignoreAllInputs`, MenuGame.cpp:3389-3402): it stashes the
+    /// flag here instead, and the `update_input` applies it right after
+    /// the `update` returns. Observationally identical: the manager reads
+    /// `is_ignoring_all` only at `update` entry (the C++'s
+    /// `Manager.hpp:31-33` `if(isIgnoringAll) return;` half).
+    ignore_all_pending: std::rc::Rc<std::cell::Cell<Option<bool>>>,
     /// issue 025f (D-031) — the previous frame's `is_entering_text` (the
     /// `was` latch of the transition edge the `refresh_input` tail
     /// computes — the `refresh_input` docs, below).
@@ -1541,6 +1551,14 @@ impl GameState for MenuSlotAdapter {
 
     fn update_input(&self, input: &InputState, ft: f32) {
         self.input_manager.borrow_mut().update(input, ft);
+        // 29i1 — the F3/F4 `ignoreAllInputs` deferral (the
+        // `ignore_all_pending` field's docs): the manager reads
+        // `is_ignoring_all` only at `update` entry, so applying the flag
+        // after the `update` returns is observationally identical to the
+        // C++'s in-fire `game.ignoreAllInputs`.
+        if let Some(flag) = self.ignore_all_pending.take() {
+            self.input_manager.borrow_mut().ignore_all_inputs(flag);
+        }
     }
 
     // C++ `MenuGame` registers no `onPostUpdate` (only `onUpdate` /
@@ -1968,32 +1986,28 @@ fn register_menu_binds(mgr: &mut Manager, menu: &Rc<MenuGame>, config: &Arc<RwLo
             Mode::Overlap,
         );
     }
-    // Hardcoded F3/F4 (MenuGame.cpp:1027-1033): `reloadAssets(false/true)`
-    // → the `MenuAssets::reload_assets` seam.
+    // Hardcoded F3 (MenuGame.cpp:1012-1014): `reloadAssets(false)` —
+    // reload the LEVEL's assets (the handler's guard — LevelSelection +
+    // no dialog + debug mode — is inside `MenuGame::reloadAssets`,
+    // MenuGame.cpp:3092-3127).
     {
         let m = menu.clone();
         mgr.add_input(
             Trigger::key(Key::F3),
-            move |_ft| {
-                let assets = m.assets().clone();
-                let id = m.selected_level_id();
-                assets.reload_assets(false, &id);
-            },
+            move |_ft| m.reload_assets(false),
             |_| {},
             Type::Once,
             -1,
             Mode::Overlap,
         );
     }
+    // Hardcoded F4 (MenuGame.cpp:1016-1018): `reloadAssets(true)` — reload
+    // the PACK's assets.
     {
         let m = menu.clone();
         mgr.add_input(
             Trigger::key(Key::F4),
-            move |_ft| {
-                let assets = m.assets().clone();
-                let id = m.selected_level_id();
-                assets.reload_assets(true, &id);
-            },
+            move |_ft| m.reload_assets(true),
             |_| {},
             Type::Once,
             -1,
@@ -2385,6 +2399,13 @@ impl WindowedClient {
             window.get_height(),
         ));
 
+        // 29i1 — the F3/F4 `ignoreAllInputs` deferral latch (the
+        // `MenuSlotAdapter::ignore_all_pending` field's docs): the handler
+        // fires inside the menu manager's `update`, so its callback can't
+        // re-borrow the manager; the `update_input` applies the flag after
+        // the `update` returns.
+        let ignore_all_pending = std::rc::Rc::new(std::cell::Cell::new(None));
+
         let menu = Rc::new(MenuGame::new(
             Rc::new(RealMenuAssets::from_arc(assets)),
             Rc::new(ConfigMenuAdapter::new(
@@ -2414,11 +2435,14 @@ impl WindowedClient {
                 }))
             },
             {
-                let menu_manager = menu_manager.clone();
+                // 29i1 (the `ignore_all_pending` deferral — the field's
+                // docs): the C++'s `setIgnoreAllInputs` `game.ignoreAll`
+                // half (MenuGame.cpp:3389-3402), stashed instead of
+                // applied (the reentrancy) and applied by the
+                // `update_input` after the `update` the handler fired in.
+                let ignore_all_pending = ignore_all_pending.clone();
                 Some(Box::new(move |ignore| {
-                    // C++ `setIgnoreAllInputs`' `game.ignoreAllInputs` half
-                    // (MenuGame.cpp:3389-3402) → the menu state's manager.
-                    menu_manager.borrow_mut().ignore_all_inputs(ignore);
+                    ignore_all_pending.set(Some(ignore));
                 }))
             },
             Rc::new(LinearFontHeight),
@@ -2473,6 +2497,7 @@ impl WindowedClient {
             wheel_events: wheel_events_sink.clone(),
             entered_text: entered_text_sink.clone(),
             soft_input,
+            ignore_all_pending,
             // The first menu state is the boot `LoadingScreen` (not a
             // text-entry state — `is_entering_text` is false), so the
             // edge latch starts there.
@@ -3138,6 +3163,7 @@ mod tests {
             wheel_events: Arc::new(RwLock::new(Vec::new())),
             entered_text: Arc::new(RwLock::new(Vec::new())),
             soft_input: Arc::new(NoOpSoftInput),
+            ignore_all_pending: Rc::new(Cell::new(None)),
             was_entering_text: Cell::new(false),
         };
 
@@ -3234,6 +3260,7 @@ mod tests {
             wheel_events: Arc::new(RwLock::new(Vec::new())),
             entered_text: Arc::new(RwLock::new(Vec::new())),
             soft_input: Arc::new(NoOpSoftInput),
+            ignore_all_pending: Rc::new(Cell::new(None)),
             was_entering_text: Cell::new(false),
         };
         let mut window = Window::headless(800, 480);
@@ -3329,6 +3356,7 @@ mod tests {
             wheel_events: Arc::new(RwLock::new(Vec::new())),
             entered_text: entered_text.clone(),
             soft_input: Arc::new(NoOpSoftInput),
+            ignore_all_pending: Rc::new(Cell::new(None)),
             was_entering_text: Cell::new(false),
         };
         let mut window = Window::headless(800, 480);
@@ -3428,6 +3456,7 @@ mod tests {
             wheel_events: wheel_events.clone(),
             entered_text: Arc::new(RwLock::new(Vec::new())),
             soft_input: Arc::new(NoOpSoftInput),
+            ignore_all_pending: Rc::new(Cell::new(None)),
             was_entering_text: Cell::new(false),
         };
         let mut window = Window::headless(800, 480);
@@ -3545,6 +3574,7 @@ mod tests {
             wheel_events: Arc::new(RwLock::new(Vec::new())),
             entered_text: Arc::new(RwLock::new(Vec::new())),
             soft_input,
+            ignore_all_pending: Rc::new(Cell::new(None)),
             was_entering_text: Cell::new(false),
         };
 

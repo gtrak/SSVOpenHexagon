@@ -533,6 +533,124 @@ fn scripted_down_key_navigates_the_level_selection() {
     );
 }
 
+/// The hardcoded F3 (MenuGame.cpp:1012-1014): the menu's `reloadAssets`
+/// handler (MenuGame.cpp:3092-3127) runs end-to-end — the `Config::
+/// getDebug()` guard (the config's `official = false` + `debug = true`,
+/// Config.cpp:1117-1120), the real-assets `reloadAllShaders` +
+/// `reloadLevel` (the CUBE pack's `apeirogon` level), the UPPERCASE
+/// result dialog, and `setIgnoreAllInputs(2)`.
+#[test]
+fn scripted_f3_reloads_the_level_assets_in_debug() {
+    let assets = Arc::new(
+        oh_assets::Assets::new(common::release_dir(), false, false).expect("_RELEASE loads"),
+    );
+    let config = Arc::new(RwLock::new({
+        let mut c = Config::default();
+        c.set_first_time_playing(false);
+        c.set_official(false);
+        c.set_debug(true);
+        c
+    }));
+    let mut client = WindowedClient::build(
+        Window::headless(1920, 1080),
+        config,
+        assets,
+        &common::release_dir(),
+        Arc::new(oh_steam::SteamManager::new(Box::new(oh_steam::NoSteam))),
+        None, // no Discord (headless test; build() creates the real IPC manager when None)
+        Arc::new(oh_app::windowed::NoOpSoftInput),
+    )
+    .expect("windowed build");
+    client.boot(Some("cube"), Some("apeirogon"), None);
+    assert_eq!(client.menu.state(), States::LevelSelection);
+
+    set_key(&mut client, Key::F3, true);
+    tick(&mut client);
+    set_key(&mut client, Key::F3, false);
+    tick(&mut client);
+
+    let s = client.menu.shared().borrow();
+    let lines = s.dialog.dialog_text();
+    // The C++'s `reloadLevel` result, uppercased (the level file + the
+    // style + the music data sections — the `nullSoundId` early return
+    // ends the output).
+    assert_eq!(
+        lines.first().map(String::as_str),
+        Some("LEVEL DATA APEIROGON.JSON SUCCESSFULLY LOADED"),
+        "the uppercase reload result dialog"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l == "PRESS ANY KEY OR BUTTON TO CLOSE THIS MESSAGE"),
+        "the C++'s close line: {lines:?}"
+    );
+    assert_eq!(s.ignore_inputs, 2, "the C++'s `setIgnoreAllInputs(2)`");
+}
+
+/// The hardcoded F4 (MenuGame.cpp:1016-1018): `reloadAssets(true)` — the
+/// PACK's assets re-read (the first result line: "Levels successfully
+/// reloaded", uppercased by the handler).
+#[test]
+fn scripted_f4_reloads_the_pack_assets_in_debug() {
+    let assets = Arc::new(
+        oh_assets::Assets::new(common::release_dir(), false, false).expect("_RELEASE loads"),
+    );
+    let config = Arc::new(RwLock::new({
+        let mut c = Config::default();
+        c.set_first_time_playing(false);
+        c.set_official(false);
+        c.set_debug(true);
+        c
+    }));
+    let mut client = WindowedClient::build(
+        Window::headless(1920, 1080),
+        config,
+        assets,
+        &common::release_dir(),
+        Arc::new(oh_steam::SteamManager::new(Box::new(oh_steam::NoSteam))),
+        None, // no Discord (headless test; build() creates the real IPC manager when None)
+        Arc::new(oh_app::windowed::NoOpSoftInput),
+    )
+    .expect("windowed build");
+    client.boot(Some("cube"), Some("apeirogon"), None);
+
+    set_key(&mut client, Key::F4, true);
+    tick(&mut client);
+    set_key(&mut client, Key::F4, false);
+    tick(&mut client);
+
+    let s = client.menu.shared().borrow();
+    let lines = s.dialog.dialog_text();
+    assert_eq!(
+        lines.first().map(String::as_str),
+        Some("LEVELS SUCCESSFULLY RELOADED"),
+        "the uppercase pack-reload result: {lines:?}"
+    );
+    assert_eq!(s.ignore_inputs, 2);
+}
+
+/// The handler's `Config::getDebug()` guard, end-to-end: the default
+/// (non-debug) client's F3 press runs the handler, which returns before
+/// the reload — no dialog, no input-ignore change.
+#[test]
+fn scripted_f3_without_debug_mode_is_a_no_op() {
+    let mut client = windowed_client(); // `Config::default()` — `debug = false`
+    client.boot(Some("cube"), Some("apeirogon"), None);
+    assert_eq!(client.menu.state(), States::LevelSelection);
+    let ignore_before = client.menu.shared().borrow().ignore_inputs;
+
+    set_key(&mut client, Key::F3, true);
+    tick(&mut client);
+    set_key(&mut client, Key::F3, false);
+    tick(&mut client);
+
+    let s = client.menu.shared().borrow();
+    assert!(s.dialog.empty(), "no result dialog (the debug guard)");
+    assert_eq!(s.ignore_inputs, ignore_before);
+    assert_eq!(client.menu.state(), States::LevelSelection);
+}
+
 /// Replay no-leak (the task's critical invariant): during a replay, the
 /// live window's input still feeds the input manager (the C++'s
 /// `GameState::updateInput` runs every frame — GameEngine.hpp:40-50), so

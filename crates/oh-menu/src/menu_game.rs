@@ -609,6 +609,70 @@ impl Shared {
         self.play_sound_override("select.ogg");
     }
 
+    // ---- reloadAssets (§11.x) ----
+
+    /// C++ `MenuGame::reloadAssets(reloadEntirePack)` (MenuGame.cpp:3092-3127)
+    /// — the hardcoded F3 (`reloadAssets(false)` — reload the LEVEL's
+    /// assets) / F4 (`reloadAssets(true)` — reload the PACK's assets) debug
+    /// handler.
+    ///
+    /// Guard (C++ :3094-3099): `state == LevelSelection &&
+    /// dialogBox.empty() && Config::getDebug()` — the whole thing is
+    /// debug-gated. Then: `reloadAllShaders` + `reloadPack` / `reloadLevel`
+    /// (the current level's `packId` / `packPath` / `id` — the C++'s
+    /// `levelData` member; the port's active drawer's current entry, the
+    /// full asset id the `MenuAssets` seam resolves), `setIndex(
+    /// lvlDrawer->currentIndex)` to load the new level
+    /// data, the UPPERCASE result dialog + `select.ogg` +
+    /// `setIgnoreAllInputs(2)` (the C++'s "needs to be two" comment:
+    /// the dialog box reacts to key releases — the first release is the
+    /// key that popped the box, the second closes it).
+    pub fn reload_assets(&mut self, reload_entire_pack: bool) {
+        // C++ :3094-3099 — the guard.
+        if self.state != States::LevelSelection || !self.dialog.empty() || !self.config.debug() {
+            return;
+        }
+        // C++ :3101 — `assets.reloadAllShaders()`.
+        self.assets.reload_all_shaders();
+        // C++ :3104-3114 — the current level's data. The C++'s `levelData`
+        // member (the `setIndex`-loaded entry) — the port's active
+        // drawer's current entry: the full asset id the `MenuAssets` seam
+        // resolves into the C++'s `packId` / `packPath` / `id` triplet.
+        let level_id = {
+            let d = if self.favorites_active {
+                &self.fav_slct
+            } else {
+                &self.lvl_slct
+            };
+            d.level_data_ids.get(d.current_index as usize).cloned()
+        };
+        let Some(level_id) = level_id else {
+            // C++: `levelData` would be the null-deref; the port's
+            // defensive no-op (the handler only fires with a drawer
+            // entry — the boot's `setIndex` half).
+            return;
+        };
+        let reload_output = self.assets.reload_assets(reload_entire_pack, &level_id);
+        // C++ :3116 — `setIndex(lvlDrawer->currentIndex)` — loads the new
+        // level data (the active drawer's index — the C++'s `lvlDrawer`).
+        let index = if self.favorites_active {
+            self.fav_slct.current_index
+        } else {
+            self.lvl_slct.current_index
+        };
+        self.set_index(index);
+        // C++ :3118-3120 — the uppercase result dialog + the close line
+        // (`Utils::uppercasify` = per-char `std::toupper` → the ASCII
+        // half; the line itself is already uppercase).
+        let mut reload_output = reload_output.to_ascii_uppercase();
+        reload_output.push_str("\nPRESS ANY KEY OR BUTTON TO CLOSE THIS MESSAGE\n");
+        // C++ :3121-3126 — the "Needs to be two" comment, the sound,
+        // the dialog, the two-release gate.
+        self.play_sound_override("select.ogg");
+        self.show_dialog_box(&reload_output);
+        self.set_ignore_all_inputs(2);
+    }
+
     // ---- setIndex (§11.10) ----
 
     /// C++ `setIndex(mIdx)` — resolve the level at `mIdx` in the active
@@ -2020,6 +2084,15 @@ impl MenuGame {
     /// `switchToFromFavoriteLevels()`.
     pub fn switch_to_from_favorite_levels(&self) {
         self.shared.borrow_mut().switch_to_from_favorite_levels();
+    }
+
+    /// C++ hardcoded `{{k::F3}}` / `{{k::F4}}` binds (MenuGame.cpp:
+    /// 1012-1018): `reloadAssets(false)` — F3 reloads the LEVEL's assets;
+    /// `reloadAssets(true)` — F4 reloads the PACK's assets (the handler's
+    /// guard — LevelSelection + no dialog + debug mode — is inside,
+    /// MenuGame.cpp:3092-3127).
+    pub fn reload_assets(&self, reload_entire_pack: bool) {
+        self.shared.borrow_mut().reload_assets(reload_entire_pack);
     }
 
     /// C++ `isEnteringText()` (the input-gate half of the editable
