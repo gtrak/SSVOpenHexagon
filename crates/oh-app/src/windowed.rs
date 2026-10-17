@@ -135,7 +135,6 @@ use oh_config::{Config, Key, Tid, Trigger, TIME_SLICE, TIME_STEP};
 use oh_game::hexagon_game::HexagonGame;
 #[cfg(not(target_os = "emscripten"))]
 use oh_game::seams::Audio;
-use oh_game::seams::NullProfiles;
 use oh_lua::api::state::GameApiState;
 use oh_menu::layout::LinearFontHeight;
 use oh_menu::seams::{
@@ -2842,6 +2841,7 @@ impl WindowedClient {
             _app_draw,
             ilc,
             render_size,
+            fps_bits,
         } = self;
         let mut timer = timer;
         window.run(move |window| {
@@ -2855,6 +2855,8 @@ impl WindowedClient {
                 &config,
                 &ilc,
                 &render_size,
+                &fps_bits,
+                &_app_draw,
             );
             let _ = &composed;
         });
