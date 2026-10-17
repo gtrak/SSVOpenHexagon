@@ -65,39 +65,68 @@ Every sub-goal must keep the **desktop gate unchanged**
 (`cargo test --workspace` = only the known Windows-environment failures) and
 must not regress master's Android path.
 
-* **W0 — `oh-web` crate skeleton.** New `crates/oh-web` (bin), deps only under
+### Landed status (2026-10-17, on `wasm` over `origin/master`)
+
+W0, W1, W2, W3, W5, W6 are **LANDED** (commit hashes below). W4's scope was
+**absorbed** into W2 (`oh-net`/`oh-steam`/`oh-audio` gated) and W3
+(`oh-discord` + `oh-lua` gated) rather than landing as its own commit.
+**26a (`oh-vfs`) is DROPPED**: emscripten's MEMFS makes master's `std::fs`
+content path work on web unchanged, so no VFS refactor is needed — the whole
+26a research branch stays parked in `wasm-backup-prewas`.
+
+* **W0 — `oh-web` crate skeleton — LANDED `29f3824e`.** New `crates/oh-web` (bin), deps only under
   `[target.'cfg(target_os = "emscripten")'.dependencies]` (the `oh-android`
   pattern: empty/no-op on other targets so the desktop gate stays green); add
   the emscripten table to the root `.cargo/config.toml`; add the workspace
   member. A trivial `main` + `index.html`. **Acceptance:** `cargo build
   --workspace` green; `cargo build -p oh-web --target wasm32-unknown-emscripten`
   emits `.js`/`.wasm`; loads in a browser (blank canvas / a clear).
-* **W1 — `oh-render` emscripten backend (isolated).** A dedicated web backend
+* **W1 — `oh-render` emscripten backend (isolated) — LANDED `dad120b8` + `966f7637`.** A dedicated web backend
   module + thin gates on `Window`/`GlParts`' winit/glutin bootstrap; keep the
   `glow` loader route (3); **preserve master's input work** (Enter mapping,
   `entered_text_sink`, swap interval) and **feed the sink from the web
   keydown path** so text entry works. **Acceptance:** `cargo check -p oh-render
   --target wasm32-unknown-emscripten` green; desktop byte-identical (cfg-only
   diff audit).
-* **W2 — `oh-app` web support (minimal).** Gate `winit`/`egui`/`egui-winit`/
+* **W2 — `oh-app` web support (minimal) — LANDED `324e2527`.** Gate `winit`/`egui`/`egui-winit`/
   `egui_glow`/`glow0.17`/`signal-hook` to non-emscripten; gate the egui console
   + SIGINT + window icon; provide the minimal seam so `oh-web` can drive the
   shared `WindowedClient`. **Acceptance:** `cargo check -p oh-app --target
   wasm32-unknown-emscripten` green; desktop unchanged.
-* **W3 — Lua backend as a feature (Luau selectable everywhere).** `oh-lua`:
+* **W3 — Lua backend as a feature (Luau selectable everywhere) — LANDED `f6906368`.** `oh-lua`:
   mlua backend by feature — default `luajit`; a `luau` feature used on
   emscripten (and flippable globally later). **Acceptance:** desktop default
   unchanged; emscripten builds with `luau`; note the global-Luau experiment as
   a follow-up (per the user: Luau may go everywhere after testing).
-* **W4 — non-core subsystems off on web.** Gate `oh-net`/`oh-steam`/
+* **W4 — non-core subsystems off on web — ABSORBED** into W2 (`oh-net`/`oh-steam`/`oh-audio`) + W3 (`oh-discord`/`oh-lua`). Gate `oh-net`/`oh-steam`/
   `oh-discord` and audio (`oh-audio`/`rodio`) for emscripten (online + audio are
   out of the web prototype's scope; audio may be silent). **Acceptance:** the
   emscripten link succeeds; desktop unchanged.
-* **W5 — content + boot to the menu.** `_RELEASE` preloaded into MEMFS (6);
+* **W5 — content + boot to the menu — LANDED `30c0dab1`.** `_RELEASE` preloaded into MEMFS (6);
   `oh-web` boots the shared composition to the **menu**. **Acceptance:** verified
   in Chromium via `agent-browser` (loading screen → menu).
-* **W6 — playable session.** Reach a real gameplay state (input incl. text
-  entry). **Acceptance:** a representative game session in a browser.
+* **W6 — playable session — LANDED `352a8ae0`.** `oh-web` seeds a default
+   profile into MEMFS (a documented prototype workaround for master's known
+   profile/save no-op, tracker 29b6/29c1) so the game boots past the blocking
+   PROFILE CREATION. Reach a real gameplay state (input incl. text
+   entry). **Acceptance:** a representative game session in a browser.
+
+### Verification
+
+- **Browser-verified (Chromium):** the menu loading screen renders —
+  `PACKS LOADED 8 / LEVELS LOADED 37 / ASSETS LOADED 61 / NO LOAD ERRORS`
+  (W5). Text entry works in-browser (W1's fix: web `TextEntered` is
+  independent of the SFML key-code map).
+- **NOT yet verified:** navigating the main menu → level selection → a level
+  in the browser (agent-browser automation was flaky; master's profile flow is
+  queued 29b6/29c1).
+- **Desktop/Android unaffected:** `cargo build --workspace` green;
+  `cargo test --workspace --no-fail-fast` = the 8 known Windows-environment
+  failures; clippy/fmt clean. Every target-gate is `cfg`-only (desktop no-op).
+- **Artifacts (debug):** `oh-web.js` ~358KB, `oh_web.wasm` ~59MB,
+  `oh_web.data` ~32.6MB. Toolchain: emsdk 6.0.12; the recipe + the two
+  gotchas (`-sDEFAULT_TO_CXX`; `__wasm_call_ctors()` FIRST in `main()`) are in
+  `.agents/skills/lib-web-stack.md` §26c.
 
 ## Constraints
 

@@ -840,3 +840,44 @@ enforce:
   replace worktree branches; the runner's `worktree-diffs` artifact no
   longer applies.
 - Landing: squash into master (D-025) still applies for multi-commit lanes.
+
+## D-036 — Web target: `wasm32-unknown-emscripten` for the whole app (issue 026 clean-restart lane)
+
+The clean-restart web port (spec `.agents/tasks/issue-026-web.md`, on `wasm`
+over `origin/master`) settled these:
+
+- **Target = `wasm32-unknown-emscripten` for the whole app; `winit` dropped on
+  web.** `winit` 0.30's web backend is `target_os = "unknown"`-only and cannot
+  target emscripten, so the web build uses a dedicated canvas +
+  `emscripten_webgl_*` context + `glow::Context::from_loader_function_cstr`
+  backend (isolated in `oh-render`), with `winit`/`egui`/`egui-winit`/
+  `egui_glow`/`glow0.17`/`signal-hook` gated to `not(emscripten)`.
+- **Content via MEMFS preload, NOT a VFS refactor.**
+  `--preload-file=_RELEASE@/RELEASE` + `-sFORCE_FILESYSTEM=1` makes
+  emscripten's MEMFS serve the game root, so master's existing `std::fs`
+  content path works on web unchanged — the 26a `oh-vfs` trait is DROPPED (its
+  whole research branch stays parked in `wasm-backup-prewas`).
+- **Lua backend selectable (Luau on web, LuaJIT desktop).** `oh-lua` picks the
+  mlua backend by target: `luajit` on desktop, `luau` on emscripten (Luau/C++
+  is the only Lua that builds on emscripten); `mlua::Integer` width fixed for
+  the Luau build. Global-Luau remains a follow-up experiment.
+- **Profile-seed workaround for 29b6/29c1.** Master's profile/save system is a
+  known no-op (tracker 29b6/29c1), which blocks boot at PROFILE CREATION on
+  web; `oh-web` seeds a default profile into MEMFS as a documented prototype
+  workaround so the game boots to the menu.
+
+- **Evidence:**
+  - `winit`'s `target_os = "unknown"` web gate (its web backend cannot target
+    emscripten) — forces the canvas/WebGL backend.
+  - `wasm-bindgen` now supports emscripten: the crate must be a **bin** and
+    link with `-sWASM_BINDGEN` (emcc then runs the wasm-bindgen CLI).
+  - The two mandatory gotchas: (a) `-sDEFAULT_TO_CXX` (link the C++ EH
+    runtime); (b) call `__wasm_call_ctors()` as the FIRST statement of
+    `main()` (or Luau traps — the `-sWASM_BINDGEN` glue runs Rust `main`
+    before the C++ static ctors). Full recipe + gotchas:
+    `.agents/skills/lib-web-stack.md` §26c.
+- **Landed by:** issue 026 (W0 `29f3824e`, W1 `dad120b8`+`966f7637`, W2
+  `324e2527`, W3 `f6906368`, W5 `30c0dab1`, W6 `352a8ae0`; plan `56747b2f`).
+  Browser-verified: the menu loading screen renders (PACKS 8 / LEVELS 37 /
+  ASSETS 61 / NO LOAD ERRORS). Not yet verified: menu → level select → a
+  level. Desktop/Android unaffected (every gate `cfg`-only).
