@@ -5,9 +5,9 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
-use oh_game::seams::{NullProfiles, ScriptHost};
+use oh_game::seams::ScriptHost;
 
-use crate::compose::compose_with;
+use crate::compose::{compose_with, RealProfiles};
 
 /// C++ `mainPrintLuaDocs()` (main.cpp:167-189), verbatim in the pieces that
 /// exist:
@@ -36,9 +36,12 @@ use crate::compose::compose_with;
 ///   (`Assets.cpp:323-352`) → `[FATAL ERROR]` line + exit 1;
 /// * audio / window / client / discord (issues 17/20/21 + step (c)): the
 ///   `None`/absent equivalents the engine seams already accept;
-/// * profiles: `NullProfiles` (the C++ `HGAssets` profile surface's
-///   mutation API is unported — issue 17); the printDocs path never reads
-///   profiles anyway.
+/// * profiles: [`crate::compose::RealProfiles`] over the real
+///   `oh_assets::Assets` (issue 029c1 — the C++ `mainPrintLuaDocs`
+///   constructs the full `HGAssets`, main.cpp:169-172; no pSaveAll guard
+///   there — main.cpp:382-388 is `mainClient`-only — so the real store
+///   with no current profile is the parity; the printDocs path never
+///   reads profiles anyway).
 pub fn print_lua_docs(root: &Path, out: &mut dyn Write) -> std::io::Result<i32> {
     let assets = match oh_assets::Assets::new(
         root, true,  /* headless — the C++ `HGAssets{nullptr, true}` */
@@ -55,11 +58,15 @@ pub fn print_lua_docs(root: &Path, out: &mut dyn Write) -> std::io::Result<i32> 
     // The C++ constructs the full `HexagonGame` (null audio/window/client/
     // discord; `nullptr /* steamManager */` — the port's
     // `NoneSteamSink`, the C++'s null-manager equivalent).
+    // issue 029c1 — the `Profiles` seam is the real store (the C++
+    // `mainPrintLuaDocs`'s full `HGAssets`; the `assets` `Arc` is cloned
+    // for the seam before the move into the composition).
+    let profiles = Arc::new(RealProfiles::new(assets.clone()));
     let game = compose_with(
         assets,
         root.to_path_buf(),
         false, /* window */
-        Arc::new(NullProfiles),
+        profiles,
         Arc::new(oh_game::seams::NoneSteamSink),
         None, // C++ `mainPrintLuaDocs`: headless -> no Discord manager
     );

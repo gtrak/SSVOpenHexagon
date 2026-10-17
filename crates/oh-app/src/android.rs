@@ -72,7 +72,9 @@ use oh_config::Config;
 use winit::platform::android::activity::AndroidApp;
 use winit::platform::android::EventLoopBuilderExtAndroid;
 
-use crate::lifecycle::{create_folder_if_non_existant, load_and_reapply, ConfigSaveGuard};
+use crate::lifecycle::{
+    create_folder_if_non_existant, load_and_reapply, ConfigSaveGuard, ProfileSaveGuard,
+};
 use crate::windowed::{SoftInput, WindowedClient};
 
 /// issue 025f (D-031) — the Android `SoftInput` controller: the
@@ -366,6 +368,13 @@ pub fn run(app: AndroidApp) {
             return;
         }
     };
+
+    // C++ main.cpp:382-388 — the pSaveAll scope guard (issue 029c1): the
+    // C++'s Android build is the `mainClient` path (windowed, non-headless)
+    // with the same guard — the run's profile writes persist on exit.
+    // LIFO: constructed after `_config_save` → fires before it (the C++'
+    // drop order).
+    let _profile_save = ProfileSaveGuard::new(assets.clone());
 
     // The winit android event loop (the `AndroidApp` from `android_main` —
     // MUST be created before any winit window / GL work; the platform

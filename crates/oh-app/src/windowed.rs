@@ -133,7 +133,7 @@ use std::sync::{Arc, RwLock};
 
 use oh_config::{Config, Key, Tid, Trigger, TIME_SLICE, TIME_STEP};
 use oh_game::hexagon_game::HexagonGame;
-use oh_game::seams::{Audio, NullProfiles};
+use oh_game::seams::Audio;
 use oh_lua::api::state::GameApiState;
 use oh_menu::layout::LinearFontHeight;
 use oh_menu::seams::{
@@ -155,7 +155,7 @@ use oh_render::window::Window;
 use oh_render::GlParts;
 
 use crate::bridge::AppDraw;
-use crate::compose::compose_with_config;
+use crate::compose::{compose_with_config, RealProfiles};
 use crate::game_state::{GameEngine, GameSlot, GameState};
 
 /// The menu's `AudioSink` over the REAL `oh_audio::Audio` (issue 025e — the
@@ -2031,9 +2031,12 @@ impl WindowedClient {
         // ------------------------------------------------------------------
         // C++ main.cpp:413-421 — the engine (`window` = true): the C++
         // passes `&steamManager` first (issue 020 — the composition's
-        // shared manager); the profile editor surface is issue 17
-        // (`NullProfiles`), the audio / discord null equivalents are the
-        // composition's. The shared `Config` is the C++'s single
+        // shared manager); the profile surface is the SAME shared
+        // `Assets` store the menu's `RealMenuAssets` below holds (issue
+        // 029c1 — the C++'s single `HGAssets`, main.cpp:381/:434: a run's
+        // PB writes are visible in the menu and persist through the
+        // `main_client` pSaveAll exit guard), the audio / discord null
+        // equivalents are the composition's. The shared `Config` is the C++'s single
         // process-global `hg::Config` (menu writes reach the engine —
         // e.g. the debug toggle the `Tid::Pause` body reads,
         // HexagonGame.cpp:421-441).
@@ -2109,7 +2112,12 @@ impl WindowedClient {
             assets.clone(),
             base_dir.to_path_buf(),
             true, /* window */
-            Arc::new(NullProfiles),
+            // issue 029c1 — the C++'s single `HGAssets` (main.cpp:381/
+            // :434): the SAME `Arc<Assets>` the menu's `RealMenuAssets`
+            // below wraps, so a run's PB writes reach the menu and the
+            // exit-save guard (the `NullProfiles` no-op stand-in is gone
+            // from the shipping windowed composition).
+            Arc::new(RealProfiles::new(assets.clone())),
             config.clone(),
             steam.clone(),
             Some(discord.clone()),

@@ -10,14 +10,14 @@ use std::sync::{Arc, RwLock};
 
 use oh_config::Config;
 use oh_game::hexagon_game::HexagonGame;
-use oh_game::seams::{NullProfiles, NullReplayStore};
+use oh_game::seams::NullReplayStore;
 use oh_lua::api::state::GameApiState;
 use oh_net::database::Database;
 use oh_net::server::{GameExecutionResult, HexagonServer, ReplayExecutor};
 
 use crate::args::parse_args;
 use crate::client::main_client;
-use crate::compose::compose_with_config;
+use crate::compose::{compose_with_config, RealProfiles};
 use crate::lifecycle::ConfigSaveGuard;
 use crate::print_lua_docs::main_print_lua_docs;
 
@@ -116,7 +116,13 @@ pub fn main_server(base_dir: &Path) -> i32 {
         assets.clone(),
         base_dir.to_path_buf(),
         false, /* window */
-        Arc::new(NullProfiles),
+        // C++ main.cpp:211-214 — `mainServer` constructs the REAL
+        // `HGAssets{&steamManager, true}` (no pSaveAll scope guard here —
+        // that one is `mainClient`-only, main.cpp:382-388): the real
+        // store, with no current profile (the server never calls
+        // `pSetCurrent`), is the parity — `anyLocalProfileActive` reads
+        // false exactly as the C++'s `currentProfilePtr == nullptr`.
+        Arc::new(RealProfiles::new(assets.clone())),
         config.clone(),
         // C++ main.cpp:199 — `mainServer` also constructs a `steam_manager`
         // (the NoSteam/feature-split backend; the server path never

@@ -9,8 +9,11 @@
 //! * [`Audio`] — C++ `Audio* audio` (nullable).
 //! * [`Profiles`] — the C++ `HGAssets` local-profile/score surface
 //!   (`anyLocalProfileActive`, `getCurrentLocalProfile().getName()`,
-//!   `getLocalScore`, `setLocalScore`) — `oh-assets` ports the profile
-//!   *loading* only (its editor/mutation API is out of that task's scope).
+//!   `getLocalScore`, `setLocalScore`) — the full write/state surface is
+//!   now ported in `oh-assets` (issue 029c1); the shipping compositions
+//!   back this seam with `compose::RealProfiles` over the shared
+//!   `Arc<oh_assets::Assets>` the menu also holds (the C++'s single
+//!   `HGAssets`); [`NullProfiles`] is the test stand-in.
 //! * [`ReplayStore`] — C++ `death_saveReplay`'s `Replays/<levelId>/<diff>x/`
 //!   file write (the C++ server-send half always fails headless:
 //!   `hexagonClient == nullptr`).
@@ -88,6 +91,14 @@ impl Audio for NoAudio {
 /// The C++ `HGAssets` local-profile/score surface (mapping `data-json.md`
 /// profile section): `currentProfilePtr` is non-null iff a profile is
 /// active, and scores live inside the active `ProfileData`.
+///
+/// The shipping compositions (oh-app `compose::RealProfiles`, issue
+/// 029c1) back this with the SAME `Arc<oh_assets::Assets>` the menu's
+/// `RealMenuAssets` holds — the C++'s single `HGAssets` (main.cpp:381/
+/// :434), so a score set here during play is visible in the menu
+/// immediately and persists through the `mainClient` exit save.
+/// [`NullProfiles`] remains the no-profile stand-in for tests (the C++'
+/// `currentProfilePtr == nullptr` state).
 pub trait Profiles: Send + Sync + 'static {
     /// C++ `assets.anyLocalProfileActive()`.
     fn any_local_profile_active(&self) -> bool;
@@ -101,7 +112,10 @@ pub trait Profiles: Send + Sync + 'static {
     fn set_local_score(&self, level_id: &str, score: f32);
 }
 
-/// No-profile stand-in (`currentProfilePtr == nullptr`).
+/// No-profile stand-in (`currentProfilePtr == nullptr`) — the test
+/// equivalent of the C++'s never-`pSetCurrent`ed state (the shipping
+/// compositions use `compose::RealProfiles` over the shared `Assets` store
+/// instead, issue 029c1).
 pub struct NullProfiles;
 
 impl Profiles for NullProfiles {

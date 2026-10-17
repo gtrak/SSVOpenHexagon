@@ -100,11 +100,9 @@ pub fn load_and_reapply(
 /// on the way out.
 ///
 /// C++ drop order for the three `mainClient` guards is LIFO: the assets
-/// `pSaveAll` guard fires FIRST, then the ImGui shutdown guard, and this
-/// config-save guard LAST. The two missing pieces are not step-(b) scope:
-/// `pSaveAll` needs the profile-mutation API (issue 17) and ImGui is step
-/// (c) — so in the ported tree the config save is the only surviving
-/// scope-end effect, at the same (last) relative position.
+/// `pSaveAll` guard (`ProfileSaveGuard`, main.cpp:382-388, ported in
+/// 029c1) fires FIRST, then the ImGui shutdown guard (step (c)), and this
+/// config-save guard LAST — the same relative position the port keeps.
 pub struct ConfigSaveGuard {
     config: Arc<RwLock<Config>>,
     path: PathBuf,
@@ -132,6 +130,46 @@ impl Drop for ConfigSaveGuard {
             let _ = config.save_config(&self.path);
         }
         println!("[::main] Done saving config");
+    }
+}
+
+/// C++ `main.cpp:382-388` — the `HG_SCOPE_GUARD` registered in
+/// `mainClient` right after the `HGAssets` construction:
+///
+/// ```cpp
+/// HG_SCOPE_GUARD({
+///     ssvu::lo("::main") << "Saving all local profiles...\n";
+///     assets.pSaveAll();
+///     ssvu::lo("::main") << "Done saving all local profiles\n";
+/// });
+/// ```
+///
+/// Fires on EVERY exit of `mainClient` — including the headless branch's
+/// early `return 1`s (the C++'s headless `mainClient` builds the full
+/// `HGAssets` and keeps the guard — the port's `profile_save_all` is the
+/// C++'s `saveAllProfiles`, rewriting every profile file; with no profiles
+/// loaded it is disk-silent, so the headless determinism tests that carry
+/// no `Profiles/` content write nothing).
+///
+/// LIFO: constructed AFTER the `ConfigSaveGuard` (the C++'s order — the
+/// assets + this guard come after the config-save guard at main.cpp:285-
+/// 291), so it fires BEFORE the config save, exactly the C++'s drop order.
+pub struct ProfileSaveGuard {
+    assets: Arc<oh_assets::Assets>,
+}
+
+impl ProfileSaveGuard {
+    #[must_use]
+    pub fn new(assets: Arc<oh_assets::Assets>) -> Self {
+        Self { assets }
+    }
+}
+
+impl Drop for ProfileSaveGuard {
+    fn drop(&mut self) {
+        println!("[::main] Saving all local profiles...");
+        self.assets.profile_save_all();
+        println!("[::main] Done saving all local profiles");
     }
 }
 
@@ -276,5 +314,56 @@ mod tests {
             .expect("reload");
         assert_eq!(reloaded.get_windowed_width(), 1024, "round-trip");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The C++ `pSaveAll` exit guard (main.cpp:382-388): at drop it
+    /// rewrites EVERY profile file (the in-memory store's contents — a
+    /// post-load `set_local_score` must reach disk through the guard),
+    /// and with no profiles loaded it writes nothing (disk-silent — the
+    /// headless determinism tests' guarantee).
+    #[test]
+    fn profile_save_guard_rewrites_profiles_at_drop() {
+        let dir = temp_dir("profile_guard");
+        fs::create_dir_all(dir.join("Packs")).expect("packs");
+        fs::create_dir_all(dir.join("Profiles")).expect("profiles");
+        fs::write(
+            dir.join("Profiles").join("p1.json"),
+            "{\n\t\"name\" : \"p1\"\n}\n",
+        )
+        .expect("seed profile");
+        let assets = Arc::new(oh_assets::Assets::new(&dir, true, false).expect("load"));
+        assert_eq!(assets.get_local_profiles_size(), 1, "loaded p1");
+        assets.profile_set_current("p1");
+        assets.set_local_score("lvl_a", 12.5);
+        {
+            let _guard = ProfileSaveGuard::new(assets.clone());
+            // (C++ exit — the guard fires here, at scope end.)
+        }
+        let written = fs::read_to_string(dir.join("Profiles").join("p1.json")).expect("file");
+        assert!(
+            written.contains("\"lvl_a\" : 12.50"),
+            "score persisted: {written}"
+        );
+        assert!(
+            written.contains("\"major\" : 2")
+                && written.contains("\"micro\" : 7")
+                && written.contains("\"minor\" : 1"),
+            "the full four-key shape (version object byte-sorted): {written}"
+        );
+        // No profiles loaded → no files touched (the disk-silent arm).
+        let empty = temp_dir("profile_guard_empty");
+        fs::create_dir_all(empty.join("Packs")).expect("packs");
+        fs::create_dir_all(empty.join("Profiles")).expect("profiles");
+        let assets = Arc::new(oh_assets::Assets::new(&empty, true, false).expect("load"));
+        {
+            let _guard = ProfileSaveGuard::new(assets.clone());
+        }
+        assert_eq!(
+            fs::read_dir(empty.join("Profiles")).expect("read").count(),
+            0,
+            "no profiles → no writes"
+        );
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&empty);
     }
 }

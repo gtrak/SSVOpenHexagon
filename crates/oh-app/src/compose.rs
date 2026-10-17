@@ -406,6 +406,39 @@ impl ScriptHost for LuaScriptHost {
     }
 }
 
+/// The engine's `Profiles` seam backed by the shared `oh_assets::Assets`
+/// (issue 029c1 — the C++'s ONE `HGAssets`, main.cpp:381/:434: the engine
+/// and the menu observe the SAME profile state, so a score the engine's
+/// death path sets during play is visible in the menu immediately, and the
+/// `mainClient` exit guard's `pSaveAll` persists it. The port shares ONE
+/// `Arc<Assets>` between this seam and the menu's `RealMenuAssets` — the
+/// same single-object semantics; `NullProfiles` remains the
+/// no-profile stand-in for tests).
+#[derive(Debug, Clone)]
+pub struct RealProfiles(Arc<oh_assets::Assets>);
+
+impl RealProfiles {
+    #[must_use]
+    pub fn new(assets: Arc<oh_assets::Assets>) -> Self {
+        Self(assets)
+    }
+}
+
+impl Profiles for RealProfiles {
+    fn any_local_profile_active(&self) -> bool {
+        self.0.any_local_profile_active()
+    }
+    fn current_local_profile_name(&self) -> String {
+        self.0.current_local_profile_name().unwrap_or_default()
+    }
+    fn get_local_score(&self, level_id: &str) -> f32 {
+        self.0.get_local_score(level_id)
+    }
+    fn set_local_score(&self, level_id: &str, score: f32) {
+        self.0.set_local_score(level_id, score);
+    }
+}
+
 /// One fully composed engine: `HexagonGame<GameApiState>` + its
 /// `LuaContext` + the shared `State` + the host.
 ///
@@ -451,10 +484,11 @@ impl Composed {
 /// `window` mirrors the C++ `mGameWindow != nullptr` (the step-(b) binary
 /// passes `false` — the windowed path is step (c)); `root` is the
 /// process-CWD equivalent the level-script paths resolve against;
-/// `profiles` is the engine's `Profiles` seam (the binary passes
-/// `NullProfiles` — the C++ `HGAssets` profile surface's mutation API is
-/// not ported yet, issue 17; the step-(a) tests pass their
-/// `testProfile` stand-in); `steam` is the engine's Steam seam (issue
+/// `profiles` is the engine's `Profiles` seam (the shipped compositions
+/// pass [`RealProfiles`] over the same `Arc<Assets>` the menu's
+/// `RealMenuAssets` holds — the C++'s single `HGAssets`; the step-(a)
+/// tests pass their `testProfile` stand-in); `steam` is the engine's Steam
+/// seam (issue
 /// 020 — `mainClient` passes the composition's `oh_steam::SteamManager`;
 /// `mainPrintLuaDocs`'s `nullptr /* steamManager */` is
 /// `NoneSteamSink`).

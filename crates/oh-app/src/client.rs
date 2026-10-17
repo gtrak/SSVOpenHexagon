@@ -8,12 +8,13 @@ use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 use oh_config::Config;
-use oh_game::seams::NullProfiles;
 use oh_render::VideoMode;
 
 use crate::args::get_first_compressed_replay_filename_from_args;
-use crate::compose::compose_with;
-use crate::lifecycle::{create_folder_if_non_existant, load_and_reapply, ConfigSaveGuard};
+use crate::compose::{compose_with, RealProfiles};
+use crate::lifecycle::{
+    create_folder_if_non_existant, load_and_reapply, ConfigSaveGuard, ProfileSaveGuard,
+};
 
 /// C++ `mainClient(headless, args, cliLevelName, cliLevelPack)`
 /// (main.cpp:244-597), the ported pieces in the C++ order:
@@ -21,7 +22,7 @@ use crate::lifecycle::{create_folder_if_non_existant, load_and_reapply, ConfigSa
 /// Steam (`:251-258` — the manager + the initialized-gated ticket/stats/
 /// callbacks calls; issue 020) → folders (`:275-276`) → config load +
 /// reapply (`:279-283`) → [config-save scope guard `:285-291`] → assets
-/// (`:380`) → [pSaveAll guard: issue 17] → (audio: absent — issue 17 owns
+/// (`:380`) → [pSaveAll guard (`:382-388`, issue 029c1)] → (audio: absent — issue 17 owns
 /// the port; the engine null-guards every C++ `audio->` call site) →
 /// (HexagonClient: issue 17) → replay scan (`:468-470`) → the branch:
 /// windowed (`!headless`: `crate::windowed::WindowedClient` — window +
@@ -103,9 +104,11 @@ pub fn main_client(
     let config = Arc::new(RwLock::new(config));
 
     // C++ main.cpp:285-291 scope guard — fires on EVERY exit below,
-    // including the headless branch's early returns (LIFO-last of the
-    // three mainClient guards; the pSaveAll/ImGui pieces are issues 17 /
-    // step (c)).
+    // including the headless branch's early returns. LIFO-LAST of the two
+    // surviving mainClient guards after 029c1: the pSaveAll guard
+    // constructed below (the C++'s :382-388, built after this one) fires
+    // BEFORE the config save, exactly the C++'s drop order (the ImGui
+    // piece is step (c)).
     let _config_save = ConfigSaveGuard::new(config.clone(), base_dir.join("config.json"));
 
     // (C++ main.cpp:305-332: window + config setters + timer — the
@@ -123,9 +126,15 @@ pub fn main_client(
         }
     };
 
-    // (C++ main.cpp:381-387 pSaveAll scope guard — issue 17: the profile
-    // mutation API is unported; headless replay runs never create replays
-    // (`in_replay` guard, `hexagon_game.rs:1118`), so nothing is saved.)
+    // C++ main.cpp:382-388 pSaveAll scope guard (issue 029c1): the C++
+    // `HGAssets` profile store's exit save — fires on EVERY exit below
+    // (LIFO: BEFORE the config-save guard, the C++'s drop order),
+    // headless included (the C++'s headless `mainClient` builds the full
+    // `HGAssets` and keeps the guard; with no profiles loaded it is
+    // disk-silent). The engine's `Profiles` seam is the SAME store
+    // (`RealProfiles`, the C++'s single `HGAssets` — a run's PB writes
+    // persist through this guard).
+    let _profile_save = ProfileSaveGuard::new(assets.clone());
 
     // (C++ main.cpp:390-407: audio + HexagonClient — issue 17; the engine
     // takes the None/no-op equivalents its seams already accept.)
@@ -191,10 +200,15 @@ pub fn main_client(
         // headless path has NO Discord manager (main.cpp:264-269 `if(!headless)`
         // is false), so `discord = None`.
         let composed = compose_with(
-            assets,
+            assets.clone(),
             base_dir.to_path_buf(),
             false, /* window */
-            Arc::new(NullProfiles),
+            // issue 029c1 — the C++ headless `mainClient` builds the FULL
+            // `HGAssets` (main.cpp:381) and keeps the pSaveAll exit guard
+            // (main.cpp:382-388): the real store, shared with nothing else
+            // here (no menu), is the parity (`NullProfiles` would report
+            // "no local profile" where the C++ reports the loaded state).
+            Arc::new(RealProfiles::new(assets.clone())),
             steam,
             None, // C++ headless: no Discord manager (main.cpp:264-269)
         );
