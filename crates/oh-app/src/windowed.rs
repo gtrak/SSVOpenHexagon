@@ -2573,7 +2573,7 @@ impl WindowedClient {
             fps_bits,
             engine_slot: _engine_slot,
             interrupt,
-            _app_draw,
+            _app_draw: app_draw,
             ilc,
             render_size,
         } = self;
@@ -2609,6 +2609,7 @@ impl WindowedClient {
                     &ilc,
                     &render_size,
                     &fps_bits,
+                    &app_draw,
                 )
             },
         );
@@ -2631,6 +2632,7 @@ impl WindowedClient {
             &self.ilc,
             &self.render_size,
             &self.fps_bits,
+            &self._app_draw,
         )
     }
 
@@ -2650,6 +2652,7 @@ impl WindowedClient {
             &self.ilc,
             &self.render_size,
             &self.fps_bits,
+            &self._app_draw,
         )
     }
 
@@ -2664,12 +2667,24 @@ impl WindowedClient {
         f32::from_bits(self.fps_bits.load(std::sync::atomic::Ordering::SeqCst))
     }
 
+    /// 029e4 — the composition's `AppDraw` (the C++'s `HexagonGame`
+    /// window-side draw state): `tick_fields` refreshes its `fps`
+    /// (the `onRenderStage` frametime's `60.f / fps` divisor — the C++'
+    /// `window->getFPS()`, HGGraphics.cpp:76) every frame; tests read it
+    /// to pin that refresh (the `_app_draw` field is held for drop order,
+    /// not API — this accessor is the test's window onto it).
+    #[must_use]
+    pub fn app_draw(&self) -> &Rc<RefCell<crate::bridge::AppDraw>> {
+        &self._app_draw
+    }
+
     /// The frame body over the client's pieces (the `tick` wrapper is the
     /// `&self` convenience; `run` calls this with the moved-out fields).
-    /// `#[allow]`: the C++'s frame body genuinely needs all eight pieces
+    /// `#[allow]`: the C++'s frame body genuinely needs all eleven pieces
     /// (the two states' frame halves + the console's post-update/draw
-    /// halves + the phase timers) — a context struct would just hide the
-    /// C++'s parameter list (cf. `HexagonGame::new`'s allow).
+    /// halves + the phase timers + the window's FPS publication + the
+    /// composition's `AppDraw` fps refresh) — a context struct would just
+    /// hide the C++'s parameter list (cf. `HexagonGame::new`'s allow).
     #[allow(clippy::too_many_arguments)]
     fn tick_fields(
         window: &mut Window,
@@ -2687,6 +2702,12 @@ impl WindowedClient {
         // `Renderer::fps()` read in the FPS text) sees the C++'s
         // previous-frame value (GameWindow.hpp:117-150's loop order).
         fps_bits: &std::sync::Arc<std::sync::atomic::AtomicU32>,
+        // 029e4 — the composition's `AppDraw` (the C++'s
+        // `HexagonGame` window-side draw state): its `fps` (the
+        // `onRenderStage` frametime's `60.f / fps` divisor — the C++'
+        // `window->getFPS()`, HGGraphics.cpp:76) is refreshed from the
+        // timer at the same `runFPS` position below.
+        app_draw: &std::rc::Rc<std::cell::RefCell<crate::bridge::AppDraw>>,
     ) {
         // C++ `while(gameEngine->isRunning())` loop head (GameWindow.hpp:
         // 121) — the SIGINT flag (the safe port of the C++ handler, main
@@ -2828,6 +2849,14 @@ impl WindowedClient {
         // `window->getFPS()` is exactly this value by the loop order
         // above (a frame's draw/update sees the previous frame's).
         fps_bits.store(timer.get_fps().to_bits(), Ordering::SeqCst);
+        // 029e4 — the SAME value drives the `onRenderStage` frametime
+        // (`60.f / fps`, HGGraphics.cpp:76) through the composition's
+        // `AppDraw` — the pre-fix `fps` stayed at its `AppDraw::new`
+        // initial (60.0, never updated), so the hook's frametime was the
+        // constant `1/60` instead of the C++'s live `60.f /
+        // window->getFPS()` (the first frame's C++ value is `60.f / 0.f`
+        // = +inf, the C++'s `TimerBase::fps{0}`).
+        app_draw.borrow_mut().fps = timer.get_fps();
 
         // Loop-exit translation — the C++ `while(gameEngine->isRunning())`
         // (GameWindow.hpp:121) sees `false` from:

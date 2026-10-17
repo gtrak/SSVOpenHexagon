@@ -728,3 +728,38 @@ fn the_window_fps_slot_publishes_the_timer_fps() {
         "the slot IS the C++'s `window->getFPS()` = the timer's fps"
     );
 }
+
+/// 029e4 (the graphics audit's M4): the `onRenderStage` frametime's
+/// divisor — the composition's `AppDraw.fps` (the C++'s
+/// `window->getFPS()`, HGGraphics.cpp:76) — must track the timer's live
+/// FPS: 0 before the first frame (the C++'s `TimerBase::fps` initial
+/// 0 — the first hook call's frametime is the C++'s `60.f / 0.f` = +inf,
+/// pinned by `bridge.rs`'s first-frame test), the timer's value after
+/// each frame's `runFPS`. The pre-fix `AppDraw.fps` stayed at its
+/// `AppDraw::new` initial 60.0 (never updated) — a constant `1/60`
+/// frametime.
+#[test]
+fn the_app_draw_fps_tracks_the_timer_fps() {
+    let mut client = windowed_client();
+
+    assert_eq!(
+        client.app_draw().borrow().fps,
+        0.0,
+        "the C++'s initial 0 before the first runFPS (the pre-fix 60.0 is gone)"
+    );
+
+    // One frame — `tick_fields`'s end runs the C++'s `runFPS`
+    // (GameWindow.hpp:148) then refreshes the `AppDraw`'s fps from the
+    // timer (the next frame's hook call divides 60 by this value).
+    client.tick_self();
+    let fps = client.app_draw().borrow().fps;
+    assert!(
+        fps > 0.0,
+        "after a frame, AppDraw.fps = the timer's live fps"
+    );
+    assert_eq!(
+        fps,
+        client.timer.get_fps(),
+        "AppDraw.fps IS the C++'s window->getFPS() (the frametime's divisor)"
+    );
+}

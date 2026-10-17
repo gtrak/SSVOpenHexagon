@@ -118,8 +118,12 @@ pub struct AppDraw {
     state: DrawState,
     /// C++ `window->getFPS()` — the per-frame window-reported rate that
     /// drives the `onRenderStage` frametime (`60.f / fps`,
-    /// `HGGraphics.cpp:76`). Step (c) updates it from the window each
-    /// frame; the headless tests set it explicitly.
+    /// `HGGraphics.cpp:76`): the timer's `float fps` (GameWindow.hpp:335-338
+    /// → TimerBase.hpp:23 — the LAST frame's `runFPS` result, 0 on the
+    /// very first frame, the C++'s `TimerBase::fps{0}` initial value).
+    /// 029e4: the windowed client's `tick_fields` refreshes it from the
+    /// timer every frame (right after the C++'s `runFPS` position,
+    /// GameWindow.hpp:148); the headless tests set it explicitly.
     pub fps: f32,
     // Per-frame scratch (the C++ member batches `wallQuads` /
     // `pivotQuads` / `playerTris` / `capTris`).
@@ -216,7 +220,12 @@ impl AppDraw {
 
         Self {
             state,
-            fps: 60.0,
+            // C++ `TimerBase::fps{0}` (TimerBase.hpp:23) — 0 on the very
+            // first frame (the C++'s initial value; the windowed
+            // client's `tick_fields` refreshes it from the timer every
+            // frame — 029e4 — so the first `onRenderStage`'s
+            // frametime is the C++'s `60.f / 0.f` = +inf, like the C++).
+            fps: 0.0,
             wall_quads: Vec::new(),
             pivot_quads: Vec::new(),
             player_tris: Vec::new(),

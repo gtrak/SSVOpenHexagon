@@ -309,6 +309,71 @@ fn on_render_stage_fires_per_stage_with_frametime() {
 }
 
 // ---------------------------------------------------------------------
+// 029e4 (the graphics audit's M4): the `onRenderStage` frametime is the
+// C++'s live `60.f / window->getFPS()` (HGGraphics.cpp:76) — the
+// composition's `AppDraw.fps` (its divisor) must mean the C++ window
+// FPS: 0 on the first frame (the C++'s `TimerBase::fps{0}` initial
+// value — the first hook call gets the C++'s `60.f / 0.f` = +inf), the
+// timer's live value after each `runFPS`. The pre-fix `AppDraw.fps`
+// stayed at its `AppDraw::new` initial 60.0 (never updated) — a
+// constant `1/60` frametime.
+// ---------------------------------------------------------------------
+
+/// The first frame: `AppDraw::new`'s initial `fps = 0.0` (the C++'
+/// `TimerBase::fps{0}`, TimerBase.hpp:23) → the hook's frametime is the
+/// C++'s `60.f / 0.f` = +inf (the pre-fix port's 60.0 start would have
+/// pinned the first frame's frametime to `1/60`).
+#[test]
+fn on_render_stage_first_frame_frametime_is_the_cpp_inf() {
+    let assets = load_release();
+    let c = compose(assets, release_dir(), true);
+    c.game.new_game(PACK, LEVEL, true, 1.0, false);
+    c.game.set_must_start(true);
+    for _ in 0..20 {
+        c.game.update(TIME_STEP, 1.0);
+        c.game.post_update();
+    }
+
+    c.host
+        .execute_code(
+            "rsLog = ''\nfunction onRenderStage(rs, ft)\n\
+             rsLog = rsLog .. rs .. ',' .. ft .. ';'\n\nend",
+        )
+        .expect("onRenderStage definition");
+
+    bind_all_stages(&c.game);
+
+    let (font, font_bold) = test_fonts();
+    let mut app = oh_app::bridge::AppDraw::new(
+        &Config::default(),
+        &release_dir().join("Assets"),
+        font,
+        font_bold,
+    );
+    // `AppDraw::new`'s initial fps = 0.0 (the C++'s `fps{0}` start —
+    // the value the first frame's hook call reads; the pre-fix 60.0 is
+    // gone).
+    assert_eq!(
+        app.fps, 0.0,
+        "AppDraw::new's fps start (the C++'s initial 0)"
+    );
+    let mut rec = Recording::default();
+    oh_app::bridge::draw(&c.game, &mut app, &mut rec);
+
+    let log = c
+        .host
+        .read_variable_string("rsLog")
+        .expect("rsLog readable");
+    // The C++'s `60.f / 0.f` = +inf — the same value the C++'s first
+    // frame hands `onRenderStage`.
+    let expected = (0..9).map(|s| format!("{s},inf;")).collect::<String>();
+    assert_eq!(
+        log, expected,
+        "the first-frame frametime is the C++'s 60/0 = +inf"
+    );
+}
+
+// ---------------------------------------------------------------------
 // 029e2 (the graphics audit's M2): the per-frame character-size / origin
 // half of the C++ `updateText` (HGGraphics.cpp:545-571, :593) must reach
 // the render state every frame — the pre-fix port never called
