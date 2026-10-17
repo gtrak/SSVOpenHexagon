@@ -70,21 +70,46 @@ The branch's **D-036** (web target) is the first D-036, so the Lua-runtime
 decision becomes **D-037**. Correct `.agents/plans/001-rust-port/30-lua-runtime.md`,
 which says "next free is D-036".
 
-### 4. Verify
-- **Host gate must stay green**: `bash tools/gate.sh` — 4/4, and the test count
-  should be master's (908) plus whatever the branch adds. This is the
-  non-negotiable part.
-- **The web target**: there is **no emscripten toolchain on this machine** (no
-  `emsdk`, no `emcc`; `wasm32-unknown-*` targets are not installed). Docker and
-  podman **are** available, so the practical route is the `emscripten/emsdk`
-  container (mount the checkout, run the branch's documented recipe). Try that
-  **once, bounded** — if the image pull fails on the network, or the recipe needs
-  pieces the branch did not record, **stop and report** with the exact command and
-  error. Do not burn the lane on toolchain archaeology, and do not claim the web
-  build works if you could not run it: mark it **PENDING — needs emsdk**.
-- If you do get a build: a real browser boot-to-menu is the milestone the branch
-  claims (W5/W6). A headless `chrome`/`firefox` screenshot is device-ish work —
-  follow the hygiene rule (bounded commands; at most one image read).
+### 4. Verify — the browser boot is REQUIRED, not optional
+
+**The wasm build was never actually run in a browser.** The branch claims
+boot-to-menu (its W5/W6), but that claim is unverified upstream — so verifying it
+here is part of the integration, not a nice-to-have.
+
+**Host gate must stay green**: `bash tools/gate.sh` — 4/4, master's 908 tests
+plus whatever the branch adds. Non-negotiable.
+
+**The web target** — no emscripten toolchain is installed on this machine (no
+`emsdk`, no `emcc`), but **docker works** (verified; no sudo needed) and the
+`emscripten/emsdk` image is **not yet pulled** (expect one ~1 GB pull, bounded).
+Mount the checkout and run the branch's documented recipe **once**; if the pull or
+the recipe fails, **stop and report the exact command + error** rather than
+burning the lane on toolchain archaeology.
+
+**Then test it in a real browser — this is the milestone.** The tooling is here
+(`agent-browser` 0.27.0, installed globally):
+
+```
+AB="node $(npm root -g)/agent-browser/bin/agent-browser.js"   # no PATH shim
+python3 -m http.server <port> --directory <build-dir> &        # serve (bounded)
+$AB open http://localhost:<port>/ ; $AB wait <ms>
+$AB console        # console logs — the wasm/WebGL boot trace
+$AB errors         # page errors — the decisive failure signal
+$AB eval '...'     # canvas size, WebGL context, module/state probes
+$AB screenshot /tmp/web-boot.png
+$AB close --all
+```
+
+Evidence to report, in this order: `errors` (must be empty of fatal ones),
+`console` (the port's own `[channel]` log lines — the engine's boot trace should
+appear, which proves the *engine* ran and not just JS), the `eval` probes, and a
+screenshot analysed with **PIL** (dimensions + non-black pixel count) — the
+hygiene rule applies: **at most ONE image read**, bounded commands, and if the
+page white-screens, read `console`/`errors` before spending an image.
+
+WebGL in headless Chromium may need software GL; if the context fails, say so and
+report whether it is a toolchain limitation or a port bug — do not report "works"
+without the console/errors evidence shown above.
 
 ### 5. Report
 What you integrated, the per-file conflict resolutions, the profile-seed decision,
