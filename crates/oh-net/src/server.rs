@@ -1835,11 +1835,14 @@ impl HexagonServer {
             None => return self.discard_replay(i, "no game started", rf),
         };
 
-        if !self.assets.is_valid_pack_id(&rf.pack_id) {
+        if !self.assets.is_valid_pack_id(&rf.pack_id.to_string_lossy()) {
             return self.discard_replay(i, &format!("invalid pack id '{}'", rf.pack_id), rf);
         }
 
-        if !self.assets.is_valid_level_id(&rf.level_id) {
+        if !self
+            .assets
+            .is_valid_level_id(&rf.level_id.to_string_lossy())
+        {
             return self.discard_replay(i, &format!("invalid level id '{}'", rf.level_id), rf);
         }
 
@@ -1847,7 +1850,7 @@ impl HexagonServer {
         // validity — checked above).
         let level_data = self
             .assets
-            .get_level_data(&rf.level_id)
+            .get_level_data(&rf.level_id.to_string_lossy())
             .expect("the is_valid_level_id above");
 
         if level_data.unscored {
@@ -1858,7 +1861,8 @@ impl HexagonServer {
         // the raw `"{levelId}_m_{dm}"` construction (NOT a supported-
         // validators lookup — the C++'s `processReplay` never
         // `isLevelSupported`s).
-        let level_validator = oh_data::get_level_validator(&rf.level_id, rf.difficulty_mult);
+        let level_validator =
+            oh_data::get_level_validator(&rf.level_id.to_string_lossy(), rf.difficulty_mult);
 
         Self::slog(
             "processReplay",
@@ -2182,7 +2186,7 @@ mod tests {
                 paused_time_seconds: 0.0,
                 custom_score: 0.0,
             };
-            Some(match rf.player_name.as_str() {
+            Some(match rf.player_name.to_string_lossy().as_ref() {
                 // The valid path: total ≈ the test's pinned 2 s
                 // `startTP` age (ratio ≈ 1, difference < 5) — the played
                 // time (the `addScore` value) is 42.0, NOT the total.
@@ -2822,11 +2826,11 @@ mod tests {
         fn replay(player: &str, pack: &str, level: &str) -> oh_replay::ReplayFile {
             oh_replay::ReplayFile {
                 version: 1,
-                player_name: player.to_string(),
+                player_name: player.into(),
                 seed: 0,
                 data: oh_replay::ReplayData::default(),
-                pack_id: pack.to_string(),
-                level_id: level.to_string(),
+                pack_id: pack.into(),
+                level_id: level.into(),
                 first_play: false,
                 difficulty_mult: 1.0,
                 played_score: 0.0,

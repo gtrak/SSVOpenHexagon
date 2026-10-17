@@ -11,3 +11,8 @@ edition.workspace = true
 flate2 = { workspace = true }
 oh-math = { path = "../oh-math" }
 oh-rng = { path = "../oh-rng" }
+
+[dev-dependencies]
+# tempfile — test-only (the 29m1 bounded-read test creates a sparse oversized
+# file in a temp dir; never a committed giant fixture).
+tempfile = { workspace = true }

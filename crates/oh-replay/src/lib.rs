@@ -13,17 +13,22 @@
 //! - **Packet form**: `sf::Packet` wire encoding — integers big-endian,
 //!   strings u32-BE length + raw bytes, `append` raw (see [`packet::Packet`]).
 //!
-//! Two deliberate port deviations (hostile-input failure modes only; the byte
+//! Deliberate port deviations (hostile-input failure modes only; the byte
 //! format on well-formed input is identical to C++):
 //!
-//! 1. C++ `std::string` fields hold raw bytes; Rust `String` is UTF-8, so
-//!    deserializing a non-UTF-8 `player_name`/`pack_id`/`level_id` (or
-//!    [`packet::Packet::read_str`]) marks the result failed instead of
-//!    storing invalid bytes.
-//! 2. C++ `resize`s to attacker-controlled lengths before reading
+//! 1. C++ `resize`s to attacker-controlled lengths before reading
 //!    (`_inputs.resize(n_inputs)`, `s.resize(s_size)`), which OOMs/terminates
 //!    on hostile values; the port bounds-checks against the remaining buffer
 //!    up front and fails cleanly (`success = false`).
+//!
+//! The C++ `std::string` replay fields (`player_name` / `pack_id` /
+//! `level_id`) hold raw bytes (no UTF-8 requirement); the port holds them in
+//! [`ByteString`] (raw `Vec<u8>`), so a legacy C++ `.ohr` with a non-UTF-8
+//! name round-trips losslessly (29m1). The ONE remaining deviation: the C++
+//! writes those raw bytes to the display and to `create_filename`'s path;
+//! the port's `String`-based `Display` / `create_filename` is the lossy
+//! UTF-8 form (U+FFFD) for non-UTF-8 names (Rust `String` is UTF-8-only). The
+//! wire bytes themselves round-trip losslessly.
 //!
 //! The C++ `SSVOH_TRY` / `printTryFailure` diagnostic (Replay.cpp:25-41) is
 //! ported at the same 24 call sites with the same message shape: a failed
@@ -49,6 +54,95 @@ pub use packet::Packet;
 /// C++ `replay_file::seed_type` = `random_number_generator_seed_type`
 /// (`unsigned long long`) — the `oh-rng` seed alias.
 pub type Seed = oh_rng::Seed;
+
+/// C++ `std::string` — a raw byte string. The replay's `player_name` /
+/// `pack_id` / `level_id` are `std::string` in the C++ (raw bytes, NO UTF-8
+/// requirement); a legacy C++ `.ohr` with a non-UTF-8 name must round-trip
+/// losslessly, so the port holds the raw bytes here. Rust's `String` is
+/// UTF-8-only, so this wraps the bytes. `Display` / `to_string_lossy` are
+/// LOSSY (U+FFFD) for non-UTF-8 bytes; `as_bytes` / `to_str` are the
+/// lossless / validated forms.
+///
+/// The ONE recorded deviation (29m1): the C++ writes these raw bytes to the
+/// display and to `create_filename`'s path; the port's `String`-based
+/// `Display` / `create_filename` is the lossy UTF-8 form (U+FFFD) for
+/// non-UTF-8 names (Rust `String` is UTF-8-only). The wire bytes themselves
+/// round-trip losslessly.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ByteString(pub Vec<u8>);
+
+impl ByteString {
+    /// Construct from owned bytes.
+    #[must_use]
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+
+    /// The raw bytes (lossless).
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// `true` if empty (the C++ `std::string::empty`).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The UTF-8 text, if the bytes are valid UTF-8 (`None` otherwise).
+    #[must_use]
+    pub fn to_str(&self) -> Option<&str> {
+        std::str::from_utf8(&self.0).ok()
+    }
+
+    /// Lossy UTF-8 (U+FFFD for invalid bytes) — for display / filenames /
+    /// `&str` contexts. A valid-UTF-8 value is `Borrowed` (no allocation).
+    #[must_use]
+    pub fn to_string_lossy(&self) -> std::borrow::Cow<'_, str> {
+        String::from_utf8_lossy(&self.0)
+    }
+}
+
+impl std::ops::Deref for ByteString {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl From<&str> for ByteString {
+    fn from(s: &str) -> Self {
+        Self(s.as_bytes().to_vec())
+    }
+}
+
+impl From<String> for ByteString {
+    fn from(s: String) -> Self {
+        Self(s.into_bytes())
+    }
+}
+
+impl From<Vec<u8>> for ByteString {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+}
+
+impl From<&[u8]> for ByteString {
+    fn from(bytes: &[u8]) -> Self {
+        Self(bytes.to_vec())
+    }
+}
+
+impl std::fmt::Display for ByteString {
+    /// The C++ `operator<<(std::string)` writes the raw bytes; the port's
+    /// `Display` is the lossy UTF-8 form (the recorded deviation for
+    /// non-UTF-8 names).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.to_string_lossy())
+    }
+}
 
 /// C++ `buf_size` — the 2 MiB static (thread-local) buffer cap used by the
 /// file/packet/compression paths.
@@ -308,16 +402,17 @@ impl<'a> Writer<'a> {
     }
 
     /// C++ `write_str` lambda: `write(uint32(s.size()))` (truncating cast)
-    /// then the string one byte at a time. The C++ lambda's two `SSVOH_TRY`
+    /// then the string one byte at a time (the C++ `std::string`'s raw
+    /// bytes). The C++ lambda's two `SSVOH_TRY`
     /// (`write(static_cast<std::uint32_t>(s.size()))`, `write(c)`) print on
     /// failure; mirrored here.
-    fn write_str(&mut self, s: &str) -> bool {
-        let len = s.len() as u32;
+    fn write_str(&mut self, s: &ByteString) -> bool {
+        let len = s.0.len() as u32;
         if !self.write_u32(len) {
             print_try_failure("write(static_cast<std::uint32_t>(s.size()))");
             return false;
         }
-        for &c in s.as_bytes() {
+        for &c in s.0.iter() {
             if !self.write_u8(c) {
                 print_try_failure("write(c)");
                 return false;
@@ -421,10 +516,11 @@ impl<'a> Reader<'a> {
 
     /// C++ `read_str` lambda: `read(uint32 s_size)` then the string one byte
     /// at a time into `s`. The C++ lambda's two `SSVOH_TRY` (`read(s_size)`,
-    /// `read(c)`) print on failure; the port-only bounds-check and UTF-8
-    /// validation arms (module docs' deviations 1-2) stay silent — they have
-    /// no C++ `SSVOH_TRY` site.
-    fn read_str(&mut self, s: &mut String) -> bool {
+    /// `read(c)`) print on failure; the port-only bounds-check arm stays
+    /// silent (it has no C++ `SSVOH_TRY` site — the C++ `resize` would OOM).
+    /// The C++ `std::string` holds the raw bytes (NO UTF-8 check); a
+    /// non-UTF-8 name is stored verbatim and round-trips losslessly.
+    fn read_str(&mut self, s: &mut ByteString) -> bool {
         let mut len: u32 = 0;
         if !self.read_u32(&mut len) {
             print_try_failure("read(s_size)");
@@ -447,10 +543,8 @@ impl<'a> Reader<'a> {
                 return false;
             }
         }
-        match std::str::from_utf8(&bytes) {
-            Ok(text) => *s = text.to_string(),
-            Err(_) => self.result.success = false,
-        }
+        // C++ `std::string` holds the raw bytes (NO UTF-8 check).
+        s.0 = bytes;
         true
     }
 }
@@ -617,22 +711,22 @@ impl<'a> ReplayPlayer<'a> {
 /// f32 LE, played_score f64 LE   — total 84 bytes for the oracle fixture.
 /// ```
 ///
-/// String fields are `String` (UTF-8); see the module docs for the UTF-8
-/// deviation on deserialization.
+/// String fields are [`ByteString`] (raw bytes, the C++ `std::string`); see
+/// the module docs for the lossy-display deviation on non-UTF-8 names.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ReplayFile {
     /// C++ `_version` — replay format version.
     pub version: u32,
     /// C++ `_player_name`.
-    pub player_name: String,
+    pub player_name: ByteString,
     /// C++ `_seed` — RNG seed for the session (`Seed` = u64).
     pub seed: Seed,
     /// C++ `_data` — input data.
     pub data: ReplayData,
     /// C++ `_pack_id` — id of the selected pack.
-    pub pack_id: String,
+    pub pack_id: ByteString,
     /// C++ `_level_id` — id of the played level.
-    pub level_id: String,
+    pub level_id: ByteString,
     /// C++ `_first_play` — if this was achieved on first level play.
     pub first_play: bool,
     /// C++ `_difficulty_mult` — played difficulty multiplier (f32).
@@ -790,19 +884,32 @@ impl ReplayFile {
         })
     }
 
-    /// C++ `deserialize_from_file(p)` — read the whole file (up to the 2 MiB
-    /// cap) and deserialize it.
+    /// C++ `deserialize_from_file(p)` — read the file into the 2 MiB cap
+    /// (Replay.cpp:363-370) and deserialize it. The C++ reads into the 2 MiB
+    /// static buffer: a larger file is a short read → failbit → false. The
+    /// port reads at most cap+1 bytes (so a hostile multi-GB file is rejected
+    /// WITHOUT being read into memory) and fails past the cap.
     pub fn deserialize_from_file(&mut self, p: impl AsRef<Path>) -> bool {
-        let bytes = match std::fs::read(p.as_ref()) {
-            Ok(b) => b,
+        use std::io::Read as _;
+        let file = match std::fs::File::open(p.as_ref()) {
+            Ok(f) => f,
             Err(_) => {
                 // C++: `std::cerr << "Couldn't open replay path '" << p << "'\n"`.
                 eprintln!("Couldn't open replay path '{}'", p.as_ref().display());
                 return false;
             }
         };
-        // C++ reads the file into the 2 MiB static buffer; a larger file is a
-        // short read → stream failbit → false.
+        // Read at most cap+1 bytes: a file larger than the 2 MiB cap fills the
+        // read past `BUF_SIZE` and is rejected (the C++'s "fails, does not
+        // OOM"); a file at or under the cap is read in full.
+        let mut bytes = Vec::new();
+        if file
+            .take(BUF_SIZE as u64 + 1)
+            .read_to_end(&mut bytes)
+            .is_err()
+        {
+            return false;
+        }
         if bytes.len() > BUF_SIZE {
             return false;
         }
@@ -852,14 +959,19 @@ impl ReplayFile {
     pub fn create_filename(&self) -> String {
         let tp = timestamp::to_timepoint(timestamp::now_timestamp());
         let tp_str = timestamp::format_timepoint(tp, "%Y%m%d_%H%M%S");
+        // The C++ concatenates the raw `_player_name` / `_level_id` bytes;
+        // the port's `String`-based `concat` is the lossy UTF-8 form (the
+        // recorded deviation for non-UTF-8 names).
+        let player_name = self.player_name.to_string_lossy();
+        let level_id = self.level_id.to_string_lossy();
         concat(&[
             ConcatPart::U32(self.version),
             ConcatPart::Str("_"),
             ConcatPart::Str(&tp_str),
             ConcatPart::Str("_"),
-            ConcatPart::Str(&self.player_name),
+            ConcatPart::Str(&player_name),
             ConcatPart::Str("_"),
-            ConcatPart::Str(&self.level_id),
+            ConcatPart::Str(&level_id),
             ConcatPart::Str("_"),
             ConcatPart::F32(self.difficulty_mult),
             ConcatPart::Str("x_"),

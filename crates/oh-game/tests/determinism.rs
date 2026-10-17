@@ -89,7 +89,8 @@ fn assert_replay_pins(rf: &ReplayFile, status: &oh_game::HexagonGameStatus) {
     // C++ test source: `ProfileData{GAME_VERSION, "testProfile"}` +
     // `pSetCurrent` → `death_createReplayFile` records the profile name.
     assert_eq!(
-        rf.player_name, "testProfile",
+        rf.player_name.to_str(),
+        Some("testProfile"),
         "C++ pSetCurrent(\"testProfile\")"
     );
     // C++ test: `newGame(..., true /* firstPlay */, 1.f /* diffMult */, ...)`.
@@ -391,11 +392,11 @@ fn stream_fixture() -> ReplayFile {
     }
     ReplayFile {
         version: 0,
-        player_name: "testProfile".to_string(),
+        player_name: "testProfile".into(),
         seed: 987654321,
         data,
-        pack_id: "ohvrvanilla_vittorio_romeo_cube_1".to_string(),
-        level_id: "ohvrvanilla_vittorio_romeo_cube_1_apeirogon".to_string(),
+        pack_id: "ohvrvanilla_vittorio_romeo_cube_1".into(),
+        level_id: "ohvrvanilla_vittorio_romeo_cube_1_apeirogon".into(),
         first_play: true,
         difficulty_mult: 1.0,
         played_score: 720.0,

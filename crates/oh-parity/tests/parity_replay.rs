@@ -77,11 +77,11 @@ fn data_from_bytes(bytes: &[u8]) -> ReplayData {
 fn fixture_file(f: &Value) -> ReplayFile {
     ReplayFile {
         version: f["version"].as_u64().unwrap() as u32,
-        player_name: f["player_name"].as_str().unwrap().to_string(),
+        player_name: f["player_name"].as_str().unwrap().into(),
         seed: f["seed"].as_u64().unwrap(),
         data: data_from_bytes(&corpus_inputs(f)),
-        pack_id: f["pack_id"].as_str().unwrap().to_string(),
-        level_id: f["level_id"].as_str().unwrap().to_string(),
+        pack_id: f["pack_id"].as_str().unwrap().into(),
+        level_id: f["level_id"].as_str().unwrap().into(),
         first_play: f["first_play"].as_bool().unwrap(),
         difficulty_mult: f32::from_bits(
             u32::from_str_radix(

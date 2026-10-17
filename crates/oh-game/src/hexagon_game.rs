@@ -781,11 +781,11 @@ impl<S: SharedStore> HexagonGame<S> {
                 let rf_name = self.0.profiles.current_local_profile_name();
                 e.active_replay = Some(ActiveReplay::new(ReplayFile {
                     version: 0,
-                    player_name: rf_name,
+                    player_name: rf_name.into(),
                     seed: e.last_seed,
                     data: e.last_replay_data.clone(),
-                    pack_id: m_pack_id.to_string(),
-                    level_id: m_id.to_string(),
+                    pack_id: m_pack_id.into(),
+                    level_id: m_id.into(),
                     first_play: e.last_first_play,
                     difficulty_mult: m_difficulty_mult,
                     played_score: e.last_played_score,
@@ -1355,11 +1355,11 @@ impl<S: SharedStore> HexagonGame<S> {
         let e = self.est();
         ReplayFile {
             version: 0,
-            player_name: rf_name,
+            player_name: rf_name.into(),
             seed: e.last_seed,
             data: e.last_replay_data.clone(),
-            pack_id: e.pack_id.clone(),
-            level_id: e.level_id.clone(),
+            pack_id: e.pack_id.clone().into(),
+            level_id: e.level_id.clone().into(),
             first_play: g.first_play,
             difficulty_mult: g.difficulty_mult,
             played_score: get_replay_score(&g.status),
@@ -1380,7 +1380,8 @@ impl<S: SharedStore> HexagonGame<S> {
         // C++ send half: `death_sendReplay(levelValidator, crf)` —
         // `hexagonClient == nullptr` -> `return false` ->
         // "Failure sending replay".
-        let _level_validator = get_level_validator(&rf.level_id, rf.difficulty_mult);
+        let _level_validator =
+            get_level_validator(&rf.level_id.to_string_lossy(), rf.difficulty_mult);
         self.log("Replay", "Failure sending replay\n");
 
         // C++ save half.
@@ -1660,14 +1661,20 @@ impl<S: SharedStore> HexagonGame<S> {
         max_processing_seconds: i32,
         timescale: f32,
     ) -> Option<GameExecutionResult> {
-        debug_assert!(self.0.assets.is_valid_pack_id(&m_replay_file.pack_id));
-        debug_assert!(self.0.assets.is_valid_level_id(&m_replay_file.level_id));
+        debug_assert!(self
+            .0
+            .assets
+            .is_valid_pack_id(&m_replay_file.pack_id.to_string_lossy()));
+        debug_assert!(self
+            .0
+            .assets
+            .is_valid_level_id(&m_replay_file.level_id.to_string_lossy()));
 
         self.set_last_replay(m_replay_file.clone());
 
         self.new_game(
-            &m_replay_file.pack_id,
-            &m_replay_file.level_id,
+            &m_replay_file.pack_id.to_string_lossy(),
+            &m_replay_file.level_id.to_string_lossy(),
             m_replay_file.first_play,
             m_replay_file.difficulty_mult,
             true, /* mExecuteLastReplay */

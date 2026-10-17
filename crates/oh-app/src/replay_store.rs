@@ -99,11 +99,11 @@ mod tests {
         data.record_input(false, false, true, true);
         ReplayFile {
             version: 0,
-            player_name: "tester".to_string(),
+            player_name: "tester".into(),
             seed: 42,
             data,
-            pack_id: "cube_1".to_string(),
-            level_id: "lv1".to_string(),
+            pack_id: "cube_1".into(),
+            level_id: "lv1".into(),
             first_play: false,
             difficulty_mult: 2.0,
             played_score: 123.45,

@@ -2645,8 +2645,8 @@ impl WindowedClient {
                     // C++ main.cpp:496-502.
                     self.game.set_last_replay(replay.clone());
                     self.game.new_game(
-                        &replay.pack_id,
-                        &replay.level_id,
+                        &replay.pack_id.to_string_lossy(),
+                        &replay.level_id.to_string_lossy(),
                         replay.first_play,
                         replay.difficulty_mult,
                         true, /* mExecuteLastReplay */

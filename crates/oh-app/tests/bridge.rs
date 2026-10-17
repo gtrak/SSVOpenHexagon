@@ -92,11 +92,11 @@ fn always_spin_right_replay() -> oh_replay::ReplayFile {
     }
     oh_replay::ReplayFile {
         version: 0,
-        player_name: "testProfile".to_string(),
+        player_name: "testProfile".into(),
         seed: 0,
         data,
-        pack_id: PACK.to_string(),
-        level_id: LEVEL.to_string(),
+        pack_id: PACK.into(),
+        level_id: LEVEL.into(),
         first_play: true,
         difficulty_mult: 1.0,
         played_score: 0.0,
@@ -133,8 +133,8 @@ fn full_frame_passes_cpp_order_and_is_deterministic() {
         // `setLastReplay(rf)` + `newGame(..., executeLastReplay = true)`.
         c.game.set_last_replay(rf.clone());
         c.game.new_game(
-            &rf.pack_id,
-            &rf.level_id,
+            &rf.pack_id.to_string_lossy(),
+            &rf.level_id.to_string_lossy(),
             rf.first_play,
             rf.difficulty_mult,
             true,

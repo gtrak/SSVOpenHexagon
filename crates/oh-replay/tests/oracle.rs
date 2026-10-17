@@ -12,8 +12,8 @@
 //! slip fails here.
 
 use oh_replay::{
-    compress_replay_file, decompress_replay_file, CompressedReplayFile, InputBits, Packet,
-    ReplayData, ReplayFile, ReplayPlayer,
+    compress_replay_file, decompress_replay_file, ByteString, CompressedReplayFile, InputBits,
+    Packet, ReplayData, ReplayFile, ReplayPlayer,
 };
 
 /// Oracle `HEX=` (84-byte file-form serialization of the fixture).
@@ -28,10 +28,10 @@ const PHEX: &str = "000000000000005405000000060000007465737465723930000000000000
 fn fixture() -> ReplayFile {
     let mut rf = ReplayFile {
         version: 5,
-        player_name: "tester".to_string(),
+        player_name: "tester".into(),
         seed: 12345,
-        pack_id: "ohvrvanilla".to_string(),
-        level_id: "cube_1_apeirogon".to_string(),
+        pack_id: "ohvrvanilla".into(),
+        level_id: "cube_1_apeirogon".into(),
         first_play: true,
         difficulty_mult: 1.6f32,
         played_score: 3600.0,
@@ -511,4 +511,130 @@ fn packet_reset_clears_everything() {
     assert_eq!(p.size(), 0);
     assert_eq!(p.available(), 0);
     assert_eq!(p.read_u64(), None);
+}
+
+// ---------------------------------------------------------------------------
+// 29m1 — the replay string bytes + the bounded file read
+// ---------------------------------------------------------------------------
+
+/// A non-UTF-8 `player_name` (the C++ `std::string` raw bytes) round-trips
+/// LOSSLESSLY through the file form — the legacy C++ `.ohr` wire-compat fix.
+/// The C++ `read_str` copies the bytes verbatim (no UTF-8 check) and
+/// `write_str` writes them back; a `[0xFF, 0x61]` name must come back byte-
+/// for-byte. The valid-UTF-8 `pack_id` / `level_id` are preserved too.
+#[test]
+fn replay_file_non_utf8_name_round_trips_losslessly() {
+    // 0xFF is an invalid UTF-8 leading byte; `[0xFF, 'a']` is non-UTF-8.
+    let raw_name = vec![0xFFu8, 0x61u8];
+    let mut data = ReplayData::default();
+    data.record_input(true, false, false, false);
+    let rf = ReplayFile {
+        version: 0,
+        player_name: ByteString::new(raw_name.clone()),
+        seed: 7,
+        data,
+        pack_id: "cube_1".into(),
+        level_id: "lv1".into(),
+        first_play: true,
+        difficulty_mult: 2.0,
+        played_score: 100.0,
+    };
+    // Round-trip through the in-memory file form (the wire path).
+    let mut buf = [0u8; 256];
+    let sr = rf.serialize(&mut buf);
+    assert!(sr.is_success());
+    let mut back = ReplayFile::default();
+    let dr = back.deserialize(&buf[..sr.written_bytes()]);
+    assert!(dr.is_success());
+    // The non-UTF-8 name is preserved byte-for-byte (the C++ `std::string`).
+    assert_eq!(back.player_name.as_bytes(), &raw_name[..]);
+    assert_eq!(back.player_name.to_str(), None, "not valid UTF-8");
+    // The valid-UTF-8 ids are preserved.
+    assert_eq!(back.pack_id.to_str(), Some("cube_1"));
+    assert_eq!(back.level_id.to_str(), Some("lv1"));
+    assert_eq!(back, rf, "the whole file must round-trip");
+}
+
+/// `ByteString`'s lossy display (the recorded deviation): a non-UTF-8 name
+/// shows U+FFFD for the invalid byte; a valid name shows verbatim.
+#[test]
+fn bytestring_display_is_lossy_for_non_utf8() {
+    assert_eq!(
+        ByteString::new(vec![0xFFu8, 0x61u8]).to_string_lossy(),
+        "\u{FFFD}a"
+    );
+    assert_eq!(
+        ByteString::new(vec![0xFFu8, 0x61u8]).to_string(),
+        "\u{FFFD}a"
+    );
+    assert_eq!(ByteString::from("abc").to_str(), Some("abc"));
+    assert_eq!(ByteString::new(vec![0xFFu8]).to_str(), None);
+}
+
+/// A file LARGER than the 2 MiB cap fails (`deserialize_from_file` → false)
+/// WITHOUT being read into memory — the C++'s "fails, does not OOM".
+/// The sparse file is created in the test's temp dir (never a committed
+/// giant fixture): `set_len` makes a 3 MiB file with no backing data.
+#[test]
+fn replay_file_deserialize_from_file_fails_on_a_file_over_the_cap() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("big.ohr");
+    // 3 MiB sparse file (well over the 2 MiB = 2_097_152 cap).
+    let f = std::fs::File::create(&path).expect("create sparse file");
+    f.set_len(3 * 1024 * 1024).expect("set sparse length");
+    drop(f);
+
+    let mut rf = ReplayFile::default();
+    assert!(
+        !rf.deserialize_from_file(&path),
+        "a >2 MiB file must fail (the C++ short-read → failbit → false)"
+    );
+    // And it must NOT have been deserialized (the field is untouched).
+    assert_eq!(rf.version, 0);
+}
+
+/// A file of EXACTLY cap+1 bytes fails; a file of exactly cap bytes is
+/// readable (the boundary the "read cap+1, fail past it" rule pins).
+#[test]
+fn replay_file_deserialize_from_file_cap_boundary() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // The 2 MiB cap is 2_097_152 bytes.
+    const CAP: u64 = 2_097_152;
+
+    // cap+1 bytes → fail.
+    let over = dir.path().join("over.ohr");
+    let f = std::fs::File::create(&over).expect("create");
+    f.set_len(CAP + 1).expect("set length");
+    drop(f);
+    let mut rf = ReplayFile::default();
+    assert!(!rf.deserialize_from_file(&over), "cap+1 must fail");
+
+    // cap bytes → the read succeeds (the deserialize then fails on the
+    // content, but the BOUNDED READ itself did not reject the file).
+    // A cap-sized zero file: `read(_version)` = 0 (valid), then the
+    // player_name length = 0, seed = 0, data count = 0, ... all zeros
+    // deserialize to the default file (all fields zero) — success.
+    let at_cap = dir.path().join("atcap.ohr");
+    let f = std::fs::File::create(&at_cap).expect("create");
+    f.set_len(CAP).expect("set length");
+    drop(f);
+    let mut rf = ReplayFile::default();
+    // All-zero 2 MiB file: version=0, name="" (len 0), seed=0, 0 inputs,
+    // pack="" , level="", first_play=false, dm=0.0, score=0.0 → success.
+    assert!(
+        rf.deserialize_from_file(&at_cap),
+        "a file of exactly the cap (all zero) must be readable"
+    );
+    assert_eq!(rf.version, 0);
+    assert!(rf.player_name.is_empty());
+}
+
+/// A missing file fails with the C++'s "Couldn't open replay path" (the open
+/// error half, unchanged by the bounded read).
+#[test]
+fn replay_file_deserialize_from_file_missing_path_fails() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let missing = dir.path().join("does_not_exist.ohr");
+    let mut rf = ReplayFile::default();
+    assert!(!rf.deserialize_from_file(&missing));
 }
