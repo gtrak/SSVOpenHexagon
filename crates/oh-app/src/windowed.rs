@@ -203,10 +203,23 @@ impl AudioSink for MenuAudioSink {
 /// renderer every update tick). Desktop: `WindowEvent::Touch` never
 /// arrives — every slot stays `None`, the engine sees the exact
 /// no-renderer behavior (behavior-identical, the 25b constraint).
+///
+/// 029e3: the window's FPS slot (the C++ `window->getFPS()` —
+/// `GameWindow.hpp:335-338`'s `gameEngine->getFPS()` = the timer's
+/// `float fps`, TimerBase.hpp:23: refreshed by `runFPS` at the END of
+/// each loop iteration, GameWindow.hpp:148 — so a draw/update pass
+/// reads the PREVIOUS iteration's value, 0 on the very first frame). The
+/// C++'s window IS the timer owner; the port's `WindowTouchRenderer`
+/// stands in for the C++'s `window` on this data path too (the
+/// engine's `Renderer` seam's `fps()` — the FPS text in `updateText`).
+/// `tick_fields` writes `timer.get_fps()`'s `f32` bits here right after
+/// the C++'s `runFPS` position; the engine reads it through the trait
+/// on its next tick.
 struct WindowTouchRenderer {
     positions: std::sync::Arc<
         std::sync::RwLock<[Option<oh_math::ssvs::Vec2>; oh_render::input::FINGER_COUNT]>,
     >,
+    fps_bits: std::sync::Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl oh_game::renderer::Renderer for WindowTouchRenderer {
@@ -217,6 +230,13 @@ impl oh_game::renderer::Renderer for WindowTouchRenderer {
             .iter()
             .filter_map(|slot| *slot)
             .collect()
+    }
+
+    // C++ `window->getFPS()` — the timer's `float fps` (0 before the
+    // first `runFPS`), the previous frame's value by the C++'s loop
+    // order (GameWindow.hpp:117-150: runDraw runs before runFPS).
+    fn fps(&self) -> f32 {
+        f32::from_bits(self.fps_bits.load(std::sync::atomic::Ordering::SeqCst))
     }
 }
 
@@ -1955,6 +1975,16 @@ pub struct WindowedClient {
     /// seed/write back into it (HGUpdate.cpp:1549, 1555-1557) and the
     /// `tick` / `run` frame bodies pass it to the console pass.
     pub config: Arc<RwLock<Config>>,
+    /// 029e3 — the window's FPS slot (the C++ `window->getFPS()` /
+    /// `gameEngine->getFPS()` = the timer's `float fps`, TimerBase.hpp:23)
+    /// as raw `f32` bits: `tick_fields` stores `timer.get_fps()`'s bits
+    /// right after the C++'s `runFPS` position (GameWindow.hpp:148);
+    /// the engine's `WindowTouchRenderer` (the C++'s `window` stand-in
+    /// for the `Renderer::fps()` seam — the FPS text in `updateText`)
+    /// reads it on the next tick. The C++'s `TimerBase::fps{0}` initial
+    /// value = the slot's `0.0f32.to_bits()` start (the first frame's
+    /// FPS text renders "0" — the C++'s first-frame value).
+    fps_bits: std::sync::Arc<std::sync::atomic::AtomicU32>,
     /// Issue 014b — the egui console overlay's lazy slot (`None` until
     /// the first shown frame — `crate::lua_console_ui`'s module docs:
     /// Gates). Shared by the per-event hook (the C++'s
@@ -2081,9 +2111,14 @@ impl WindowedClient {
         let entered_text_sink: std::sync::Arc<std::sync::RwLock<Vec<char>>> =
             std::sync::Arc::new(std::sync::RwLock::new(Vec::new()));
         window.set_entered_text_sink(entered_text_sink.clone());
+        // 029e3 — the window's FPS slot (the C++ `TimerBase::fps{0}`
+        // initial value, TimerBase.hpp:23 — `0.0f32.to_bits()`; the
+        // client field's docs carry the loop-order semantics).
+        let fps_bits = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0.0f32.to_bits()));
         let renderer: Option<std::sync::Arc<dyn oh_game::renderer::Renderer + 'static>> =
             Some(std::sync::Arc::new(WindowTouchRenderer {
                 positions: touch_sink,
+                fps_bits: fps_bits.clone(),
             }));
         // C++ main.cpp:264-269 — `discordManager.emplace()` (only when NOT
         // headless; the windowed path is always non-headless).
@@ -2359,6 +2394,7 @@ impl WindowedClient {
             render_size,
             game,
             config,
+            fps_bits,
             steam,
             discord: Some(discord),
             engine_slot,
@@ -2534,6 +2570,7 @@ impl WindowedClient {
             menu,
             game,
             config,
+            fps_bits,
             engine_slot: _engine_slot,
             interrupt,
             _app_draw,
@@ -2571,6 +2608,7 @@ impl WindowedClient {
                     &config,
                     &ilc,
                     &render_size,
+                    &fps_bits,
                 )
             },
         );
@@ -2592,6 +2630,7 @@ impl WindowedClient {
             &self.config,
             &self.ilc,
             &self.render_size,
+            &self.fps_bits,
         )
     }
 
@@ -2610,7 +2649,19 @@ impl WindowedClient {
             &self.config,
             &self.ilc,
             &self.render_size,
+            &self.fps_bits,
         )
+    }
+
+    /// The C++ `window->getFPS()` (GameWindow.hpp:335-338 — the timer's
+    /// `float fps`, the LAST frame's `runFPS` result; 0 before the first
+    /// frame — the `TimerBase::fps{0}` initial value, TimerBase.hpp:23).
+    /// 029e3: the value the engine's `Renderer::fps()` seam (the FPS text
+    /// in `updateText`) reads every tick — the shared `fps_bits` slot
+    /// `tick_fields` publishes after the C++'s `runFPS` position.
+    #[must_use]
+    pub fn window_fps(&self) -> f32 {
+        f32::from_bits(self.fps_bits.load(std::sync::atomic::Ordering::SeqCst))
     }
 
     /// The frame body over the client's pieces (the `tick` wrapper is the
@@ -2630,6 +2681,12 @@ impl WindowedClient {
         config: &Arc<RwLock<Config>>,
         ilc: &Rc<RefCell<Option<crate::lua_console_ui::IlcConsole>>>,
         render_size: &std::sync::Arc<RenderWindowSize>,
+        // 029e3 — the window's FPS slot (the C++ `window->getFPS()`;
+        // the `WindowTouchRenderer`'s docs): the frame's `runFPS` result
+        // is published here so the NEXT frame's engine tick (the
+        // `Renderer::fps()` read in the FPS text) sees the C++'s
+        // previous-frame value (GameWindow.hpp:117-150's loop order).
+        fps_bits: &std::sync::Arc<std::sync::atomic::AtomicU32>,
     ) {
         // C++ `while(gameEngine->isRunning())` loop head (GameWindow.hpp:
         // 121) — the SIGINT flag (the safe port of the C++ handler, main
@@ -2764,6 +2821,13 @@ impl WindowedClient {
         // (TimerBase.hpp:45-48).
         timer.run_frame_time();
         timer.run_fps();
+        // 029e3 — publish the just-computed window FPS (the C++'
+        // `runFPS`'s `fps = getFTToFPS(frameTime)` result, now in
+        // `timer.get_fps()`) into the shared slot the engine's
+        // `Renderer::fps()` seam reads on its NEXT tick — the C++'
+        // `window->getFPS()` is exactly this value by the loop order
+        // above (a frame's draw/update sees the previous frame's).
+        fps_bits.store(timer.get_fps().to_bits(), Ordering::SeqCst);
 
         // Loop-exit translation — the C++ `while(gameEngine->isRunning())`
         // (GameWindow.hpp:121) sees `false` from:

@@ -1475,10 +1475,21 @@ impl<S: SharedStore> HexagonGame<S> {
 
         // Set FPS Text, if option is enabled.
         if self.config().get_show_fps() {
-            // C++ `ssvu::toStr(window->getFPS())` — the Renderer seam stands
-            // in for the window.
-            let fps = self.0.renderer.as_ref().map(|r| r.fps()).unwrap_or(0);
-            self.est().fps_text = fps.to_string();
+            // C++ `ssvu::toStr(window->getFPS())` (HGGraphics.cpp:562) —
+            // `ssvu::toStr(float)` (SSVUtils/Core/String/ToStr.hpp:63 →
+            // the default stringifier, StringifierBase.hpp:24) is the
+            // plain `std::ostream << float` (6 significant digits, no
+            // trailing zeros — e.g. 120.0 → "120", 59.9342 → "59.9342"),
+            // NOT `std::to_string`'s fixed 6 decimals (the graphics
+            // audit's M3: the old `fps.to_string()` of the `u32` seam
+            // value pinned the constant "0"). The `format_ostream_f32`
+            // oracle-pinned port (the same formatting the TIMESCALE line
+            // above uses). The Renderer seam stands in for the window's
+            // FPS (the `float` — the C++'s `window->getFPS()` is the
+            // previous frame's `runFPS` value, 0 on the first frame;
+            // TimerBase.hpp:23/45-61, GameWindow.hpp:148).
+            let fps = self.0.renderer.as_ref().map(|r| r.fps()).unwrap_or(0.0);
+            self.est().fps_text = format_ostream_f32(fps);
         }
 
         // --------------------------------------------------------------------

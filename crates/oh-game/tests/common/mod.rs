@@ -435,6 +435,14 @@ impl ScriptHost for LuaScriptHost {
 /// `SharedLua` ever outlives the `LuaContext` it points into.
 pub struct Composed {
     pub game: HexagonGame<GameApiState>,
+    /// The shared process `Config` (the C++'s `hg::Config` singleton the
+    /// engine + menu write/read through): public so tests can toggle
+    /// options the engine's per-tick halves gate on (029e3: the FPS
+    /// text's `Config::getShowFPS()` gate, HGGraphics.cpp:560-564).
+    /// `allow(dead_code)`: each test binary compiles this module
+    /// separately and not all of them read every field.
+    #[allow(dead_code)]
+    pub config: std::sync::Arc<std::sync::RwLock<Config>>,
     /// Public so tests can drive the seam directly (e.g. `host.init_lua()`
     /// to register the API before exercising console commands). Still held
     /// for the whole struct lifetime: the host/state fields own the rest of
@@ -521,6 +529,36 @@ pub fn compose_with(
     joystick: Arc<dyn Joystick>,
     cosmetic_rng: Arc<dyn CosmeticRng>,
 ) -> Composed {
+    compose_with_renderer(
+        assets,
+        root,
+        window,
+        None, // C++ headless tests: no renderer
+        profiles,
+        replay_store,
+        joystick,
+        cosmetic_rng,
+    )
+}
+
+/// [`compose_with`] with an injectable `Renderer` seam (the C++'s
+/// `mGameEngine`'s window stand-in — the `Renderer::fps()` data path,
+/// 029e3: the FPS text) — the form the FPS-text tests use; the C++
+/// headless tests' `None` default stays `compose_with`'s.
+/// `allow(dead_code)`: each test binary compiles this module separately
+/// and not all of them use this parameterized variant.
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
+pub fn compose_with_renderer(
+    assets: Arc<oh_assets::Assets>,
+    root: PathBuf,
+    window: bool,
+    renderer: Option<Arc<dyn oh_game::renderer::Renderer>>,
+    profiles: Arc<dyn Profiles>,
+    replay_store: Arc<dyn ReplayStore>,
+    joystick: Arc<dyn Joystick>,
+    cosmetic_rng: Arc<dyn CosmeticRng>,
+) -> Composed {
     let config = Arc::new(RwLock::new(Config::default()));
     // Heap-pinned before the `SharedLua` capture (see the `lua` field docs
     // on `Composed`): the host's `SharedLua` points at this box's slot.
@@ -539,7 +577,7 @@ pub fn compose_with(
         joystick,
         cosmetic_rng,
         window,
-        None, // C++ headless tests: no renderer
+        renderer,
         None, // C++ headless tests: no Discord manager
     );
 
@@ -590,6 +628,7 @@ pub fn compose_with(
     game.attach_state(state.clone());
     Composed {
         game,
+        config,
         host,
         state,
         lua,

@@ -32,9 +32,15 @@ pub trait Renderer: Send + Sync + 'static {
         Vec::new()
     }
 
-    /// C++ `window->getFPS()` (the FPS text in `updateText`).
-    fn fps(&self) -> u32 {
-        0
+    /// C++ `window->getFPS()` (the FPS text in `updateText`). A `float`
+    /// — the C++'s window FPS is the timer's `float fps` field
+    /// (GameEngine.hpp:104-107 → TimerBase.hpp:23): the CURRENT window
+    /// FPS, refreshed by `runFPS` at the end of each loop iteration
+    /// (GameWindow.hpp:117-150 — runUpdate → runDraw → display → runFPS),
+    /// so a draw pass reads the PREVIOUS iteration's value and the very
+    /// first frame sees the field's initial `0.f`.
+    fn fps(&self) -> f32 {
+        0.0
     }
 }
 

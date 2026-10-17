@@ -691,3 +691,40 @@ fn icon_png_decode_is_rgba8_and_reports_errors() {
     let missing = std::env::temp_dir().join("oh-app-no-such-icon.png");
     assert!(oh_render::Image::load_png(&missing).is_err());
 }
+
+// ---------------------------------------------------------------------
+// 029e3 (the graphics audit's M3): the window's FPS slot — the C++'s
+// `window->getFPS()` (GameWindow.hpp:335-338 → the timer's `float fps`,
+// TimerBase.hpp:23) is published to the engine's `Renderer::fps()` seam
+// (the FPS text in `updateText`) every frame: 0 before the first
+// `runFPS` (the C++'s `TimerBase::fps{0}`), the timer's value after.
+// The pre-fix seam was a constant `u32` 0 (the live `timer.get_fps`
+// was never read).
+// ---------------------------------------------------------------------
+
+#[test]
+fn the_window_fps_slot_publishes_the_timer_fps() {
+    let mut client = windowed_client();
+
+    // Before any frame: the C++'s `TimerBase::fps{0}` initial value
+    // (TimerBase.hpp:23) — the FPS text's first frame renders "0".
+    assert_eq!(
+        client.window_fps(),
+        0.0,
+        "the C++'s TimerBase::fps = 0 initial value before the first runFPS"
+    );
+
+    // One frame — `tick_fields`'s end runs the C++'s
+    // `runFrameTime` + `runFPS` (GameWindow.hpp:148), then publishes the
+    // timer's value into the shared slot the engine's seam reads.
+    client.tick_self();
+    assert!(
+        client.window_fps() > 0.0,
+        "after a frame, the slot holds the live window FPS (the pre-fix constant 0 is gone)"
+    );
+    assert_eq!(
+        client.window_fps(),
+        client.timer.get_fps(),
+        "the slot IS the C++'s `window->getFPS()` = the timer's fps"
+    );
+}

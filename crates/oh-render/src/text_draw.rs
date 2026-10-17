@@ -7,13 +7,15 @@
 //! [`crate::types::FloatRect`] corner methods (mapping §10.1).
 //!
 //! String-formatting note (D-000): C++ streams use `std::to_string`
-//! (6 decimal places) for `formatTime` / FPS and default `<< float`
-//! (up to 6 significant digits) for the timescale; the Rust equivalents
-//! below reproduce those for the game's value ranges and are documented
-//! at each site.
+//! (6 decimal places) for `formatTime` and default `<< float` (up to 6
+//! significant digits) for the FPS (`ssvu::toStr(window->getFPS())` —
+//! `SSVUtils/Core/String/ToStr.hpp`'s default stringifier) and the
+//! timescale; the Rust equivalents below reproduce those for the
+//! game's value ranges and are documented at each site.
 
 use oh_config::Config;
 use oh_math::hg::color::Color;
+use oh_math::hg::concat::format_ostream_f32;
 use oh_math::hg::string::to_uppercase;
 use oh_math::ssvs::vector2::Vec2;
 use oh_math::ssvu::math::PI;
@@ -283,10 +285,12 @@ pub fn update_text(state: &mut DrawState, config: &Config, input: &TextUpdateInp
 
     // Set FPS text, if option is enabled.
     if config.get_show_fps() {
-        // C++ `ssvu::toStr(window->getFPS())` = `std::to_string` (6 decimals).
-        state
-            .fps_text
-            .set_string(format!("{:.6}", input.fps as f64));
+        // C++ `ssvu::toStr(window->getFPS())` (HGGraphics.cpp:562) — the
+        // default `std::ostream << float` (6 significant digits, no
+        // trailing zeros), `format_ostream_f32`'s oracle-pinned port
+        // (29e3 — the pre-fix `format!("{:.6}")` was `std::to_string`'s
+        // fixed 6 decimals, a different format).
+        state.fps_text.set_string(format_ostream_f32(input.fps));
     }
 
     // The per-frame character-size / origin half (HGGraphics.cpp:545-571,
