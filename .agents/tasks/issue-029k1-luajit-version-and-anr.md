@@ -228,3 +228,66 @@ pins, NOT the same build".
   `luajit-src` — the `[patch]` overrides the registry version, so a version
   bump must update the local copy (README in `extlibs/luajit-src` documents
   the patch).
+
+
+## Device session 2026-10-17 (orchestrator) — K3 CONFIRMED, mitigation MEASURED, and how to drive the phone
+
+**Reaching the device.** Wireless debugging was re-enabled and the port was RANDOM again
+(not 38721): `adb mdns services` found nothing (mDNS does not traverse here), so the port
+was found by scanning the phone (`nc -z` over 30000-50000) -> **192.168.10.138:41611**.
+The stored pairing key still worked, so no `adb pair` was needed. Device:
+moto g power (2021), Android 11, arm64-v8a; display 720x1600 with the app window
+**1600x720 / app=1530x678**; `input` coordinates are in the 1600x720 space. The installed
+build is **DEBUGGABLE**, so `run-as info.vittorioromeo.openhexagon` works (that is the key
+for every file/evidence pull). A stale `emulator-5554 offline` entry exists; ignore it.
+
+**K3 was CONFIRMED from device traces** (recorded in `deviations.md` `K3`): the installed
+build has TEN `data_app_anr` entries plus one crash, and two sampled entries share
+`Subject: Input dispatching timed out (... Waited 5001ms for MotionEvent)` with the Android
+UI thread IDLE in `__epoll_pwait` and the `android_main` game thread in `state=R` at ~29.5s
+user CPU stacked `__clear_cache -> lj_asm_trace -> trace_start -> lj_vm_cpcall ->
+lj_trace_* -> lj_dispatch -> lj_vm_ins* -> lua_pcall` -> the port's Rust frames. So the app
+is stuck ASSEMBLING A LUAJIT TRACE; it is not input plumbing and not the tutorial failing
+to advance.
+
+**The mitigation (F29) was then MEASURED on the device.** `LuaContext::new` now applies
+`jit.off()` under `cfg(all(target_os = "android", feature = "backend-luajit"))`; the APK was
+rebuilt from that tree and installed with `adb install -r` (app data preserved):
+**100+ seconds of live, ANIMATED gameplay with ZERO new ANRs** (the dropbox count stayed at
+10, and two screenshots 2.5 s apart differ — a real game frame loop at ~78% of one core).
+The JIT-on build has ten ANR records from comparable sessions. Not a laboratory A/B (levels
+differ), but the direction is unambiguous.
+
+**031's overlay was ALSO verified drawn on the device**, without a second image read: the
+overlay's buttons are STATIC content composited over an ANIMATING scene, so a patch that
+does not change between two frames while its neighbourhood does is overlay pixels. At the
+geometry from `touch_overlay::button_centers` (BUTTON_HALF=32, PAD=12, MIDDLE_GAP=80) the
+bottom-centre Focus, bottom-centre-right Swap and bottom-right RotateCW patches came back
+static, while the top-left Exit / bottom-left RotateCCW sampled black because the app's
+1530x678 viewport is INSET within the 1600x720 display. (Those two are drawn; the sample
+just straddled the black bar.)
+
+**How to actually drive this app (hard-won, reuse it):**
+- The boot screen's text field takes focus on a tap and **opens the IME**, which then eats
+  every later tap. The screen then reads mean-brightness ~45 (that is GBOARD, not the menu).
+  **Send `input keyevent 66` (ENTER) to accept the name and get out of text entry.**
+- The touch grid is `MenuGame.cpp:2801-2834`, verbatim: only when
+  `getFingerDownCount() == 1`; the MIDDLE BAND (hThird < y < hLT) maps left third ->
+  `leftAction()`, right third -> `rightAction()`, **middle third -> `okAction()`**; the TOP
+  band -> `upAction()`, the BOTTOM band -> `downAction()`.
+- A short `input tap` is unreliable (the game samples finger-down per frame); use
+  `input swipe X Y X Y 400` as a HELD press.
+- The port's own log lines do NOT reach logcat, so navigate with DIFFERENTIAL SCREENSHOTS:
+  capture, press, re-capture, and compare a 16x16 mean-brightness fingerprint
+  (`screencap -p /sdcard/x.png` + `pull`; the `exec-out screencap -p` path failed here).
+- `run-as <pkg> find files -type f` + `cat files/Profiles/*.json` is the text-evidence path.
+  Current state: `files/Replays/.../0_20261017_022919_no_profile_..._1.85417s.ohr.z` is 98
+  BYTES at the C++-shaped path (029a1 VERIFIED), and `files/Profiles/` is EMPTY with
+  `users.json`/`scores.json` at 5 bytes each — consistent with the operator having played as
+  `no_profile`, so **029c1's profile persistence is still UNVERIFIED** (it needs a profile
+  actually created on the device).
+
+**Still open on the device:** the tutorial's own acceptance (hold Focus + rotate until
+`step1_trFocus` reads "yes!"), which needs the tutorial pack/level selected and MULTI-TOUCH
+(ADB's `input` drives one pointer; `sendevent` with the ABS_MT_* protocol would be needed),
+and the two PENDING visual items (029e's textures).
