@@ -1896,14 +1896,15 @@ impl MenuGame {
                 (s.state, s.ignore_inputs)
             };
             if c % 30 == 0 {
-                let cat = self
-                    .current_menu()
-                    .map(|m| m.get_category().get_name().clone());
+                let (cat, idx) = match self.current_menu() {
+                    Some(m) => {
+                        let cat = m.get_category();
+                        (cat.get_name().to_string(), m.get_idx())
+                    }
+                    None => (String::from("<none>"), -1),
+                };
                 eprintln!(
-                    "[025j-menu] state={st:?} ignore={ign} cat={cat:?} idx={} fingers={} pos={:?}",
-                    self
-                        .current_menu()
-                        .map_or(-1, |m| m.get_idx()),
+                    "[025j-menu] state={st:?} ignore={ign} cat={cat} idx={idx} fingers={} pos={:?}",
                     touch.finger_down_count(),
                     touch.finger_down_positions()
                 );
