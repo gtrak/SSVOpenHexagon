@@ -87,3 +87,30 @@ vsync/framerate behaviour match the C++/SFML semantics.
 - Never touch non-phone processes.
 - Histograms/`dumpsys` greps over image reads; at most ONE image read.
 - Revert any probe before the final commit and say so.
+
+## Report (completed 2026-10-16, phone 192.168.10.138:38721 — POCOPhone 1600×720, Adreno 610, Android 11, winit 0.30 / glutin 0.32.3 / GLES3)
+
+**API used**: glutin 0.32 `GlSurface::set_swap_interval` (`crates/oh-render/src/gl.rs` `GlParts::set_swap_interval`) — EGL backend → `eglSwapInterval(display, 1|0)` (glutin 0.32.3 `src/api/egl/surface.rs:369-378`): the SAME display-level call the pinned SFML fork makes (`EglContext.cpp:197-200`, commit `2f11710`). `Window::set_vsync` (window.rs) applies it live on the live context (SFML's observable behavior — the C++'s full `recreateWindow` re-creation is the documented port gap, lane 029w); `ensure_android_gl` applies the stored value at GL materialization (EGL driver default is interval 1, so the shipped `vsync=false` needed the explicit request — the C++ `recreateWindow` ordering); `tick_fields` (windowed.rs) re-applies the config value on the live window each frame (the C++ `mustRecreate` re-apply slot) → the options-menu toggle changes behavior live. New host GL test: `backend.rs set_vsync_round_trips_and_applies_on_a_live_context`.
+
+**Before/after** (shipped `_RELEASE/config.json`: vsync=false, limit_fps=true, max_fps=200; toggled live through the port's own options menu; CPU = whole process over 8 s, % of one core):
+
+| phase | vsync OFF (shipped) | vsync ON (toggled) |
+|---|---|---|
+| in-game loop period | 2.4–2.9 ms (~360 fps, light tutorial level) | 16.6–17.7 ms (60 fps, vblank-locked) |
+| in-game gl.clear | 0.4–0.5 ms | 5–11 ms (GPU drain at frame start — the 025i ~10.9 ms back-pressure signature) |
+| in-game msUpdate / msDraw | 0.12–0.16 / 1.7–3.4 ms | 0.35–1.28 / 4.9–8.1 ms |
+| in-game process CPU | 76% | 47% |
+| menu period | ~2 ms (~500 fps) | 16.6–16.8 ms (60 fps) |
+| menu process CPU | 71% | 45% |
+
+Before the fix the menu vsync toggle was a no-op (period stayed ~2 ms). After: OFF→ON flips the loop from free-run to vblank-locked (2.5 ms → 16.7 ms) and ON→OFF back (16.7 ms → 2.3 ms), in both the menu and in-game. The OFF numbers are the C++'s explicit `eglSwapInterval(0)` semantics (uncapped by design); the ON numbers match the SFML/EGL blocking-swap behavior (025i's in-game 10.9 ms gl.clear + 21 ms period re-derive: that measurement ran under the driver-default non-blocking swap — the gl.clear cost is GPU pipeline back-pressure, not vsync blocking).
+
+**Register**: `.agents/plans/001-rust-port/deviations.md` — K1 promoted to **F4** (fix + citations + these numbers); **K2** filed (NEW deviation diagnosed, not fixed): the port's 200 fps cap (`WaitUntil` pacing) is nullified on Android — winit 0.30's android `poll_events_with_timeout` (mod.rs:549-554) zeroes the wait whenever a redraw is pending, and 025i's ANR fix re-requests a redraw every frame → the menu/light levels free-run at ~2–3× the C++'s 200 fps cap (C++: SFML `Window::display` `sleep(5 ms − elapsed)`, Window.cpp:372-384, verified). Fixing it touches the 025i interaction — needs its own lane + device re-verification.
+
+**ANR / 025i / 025c**: no regressions. `dumpsys dropbox` — last ANR entry 18:36 (pre-fix builds); ZERO ANRs across the ~35-min 025j session (19:46–20:20, both vsync states, menu + in-game). Texture cache untouched (no texture-path changes in this lane).
+
+**Probes**: all temporary probes reverted in commit `dc02da8f` (verified: both touched files byte-identical to the pre-probe commit `5a34cffb`).
+
+**Host gate**: fmt clean; 750/750 tests (749 baseline + 1 new); clippy clean; `cargo check --target aarch64-linux-android` clean.
+
+**Residual risk**: K2 above (the pacing deviation — pre-existing, filed, unfixed). The C++'s full window re-creation on vsync change is NOT reproduced (the SFML-observable live apply is — documented, lane 029w owns the re-creation gap). Desktop/WL backends: `set_swap_interval` maps to the platform equivalent (GLX swap interval / WGL SwapInterval) — host-tested with a live GL context, not visually verified on a desktop display.
