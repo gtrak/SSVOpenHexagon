@@ -485,12 +485,16 @@ impl JsonConvertible for Combo {
         let mut combo = Combo::cleared();
         if let SerdeValue::Array(items) = obj {
             for item in items {
+                // C++ `getExtr<std::string>(i)` — the fork's `asString`
+                // coercion (a numeric element reads as its decimal string,
+                // jsoncpp.inl:1177-1190), so a hand-edited `[123]` combo
+                // item reaches the name checks as "123".
                 let s = json::as_str(item)?;
                 if s.is_empty() {
                     combo.add_key(Key::UNKNOWN);
-                } else if let Some(key) = kkey_from_name(s) {
+                } else if let Some(key) = kkey_from_name(&s) {
                     combo.add_key(key);
-                } else if let Some(btn) = mbtn_from_name(s) {
+                } else if let Some(btn) = mbtn_from_name(&s) {
                     combo.add_btn(btn);
                 } else {
                     // C++ logs "<elem> is not a valid input name, an empty

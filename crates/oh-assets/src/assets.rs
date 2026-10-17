@@ -219,7 +219,7 @@ impl Assets {
         let name = json::extr_str(&pack_root, "name", "unknown name")?;
         let author = json::extr_str(&pack_root, "author", "unknown author")?;
         let version = json::extr_int(&pack_root, "version", 0)? as i32;
-        let pack_id = build_pack_id(disambiguator, author, name, version);
+        let pack_id = build_pack_id(&disambiguator, &author, &name, version);
 
         let pack_data = pack_data_from_json(&pack_root, pack_path, &pack_id)?;
 

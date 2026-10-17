@@ -16,14 +16,25 @@
 //!   matching the C++ baseline (error strings differ; documented in the
 //!   skill files).
 //!
-//! C++ semantics preserved for value access (mapping §1.4):
+//! C++ semantics preserved for value access (mapping §1.4) — including
+//! the fork's cross-type COERCIONS (`jsoncpp.inl:1177-1322`):
 //! - a missing key / missing array index reads as the JSON null singleton:
 //!   `as_int(null) = 0`, `as_float(null) = 0.0`, `as_bool(null) = false`,
 //!   `as_str(null) = ""`, `size(null) = 0`.
-//! - a value with the wrong JSON type is a `JsonError` — the Rust analogue
-//!   of the `std::runtime_error("Value is not convertible to int.")` the
-//!   fork's `JSON_ASSERT_MESSAGE` throws (only the per-pack asset-load path
-//!   in C++ catches it, `Assets.cpp`; see mapping §1.4 / §10.3).
+//! - `as_bool` accepts int/uint/real (non-zero → true, `asBool`
+//!   @jsoncpp.inl:1310-1322); `as_int` / `as_uint` accept bool (→ 1/0) and
+//!   real (truncated toward zero, in-range checks, `asInt` @:1191-1210 /
+//!   `asUInt` @:1211-1229); `as_float` accepts bool (→ 1.0/0.0,
+//!   `asFloat` @:1297-1309 / `asDouble` @:1284-1295); `as_str` accepts bool ("true"/
+//!   "false") and numbers (decimal strings, reals via the fork's
+//!   `valueToString(double)` = `%#.16g` + trailing-zero trim,
+//!   `asString` @:1177-1190).
+//! - a value with a type the fork does NOT coerce (a string where a
+//!   number is expected, an object/array where a scalar is) is a
+//!   `JsonError` — the Rust analogue of the `std::runtime_error`
+//!   (`"Value is not convertible to int."` et al.) the fork's
+//!   `JSON_ASSERT_MESSAGE` throws (only the per-pack asset-load path in
+//!   C++ catches it, `Assets.cpp`; see mapping §1.4 / §10.3).
 
 use serde_json::{Number, Value as SerdeValue};
 
@@ -329,62 +340,162 @@ fn is_real(obj: &Obj) -> bool {
 // → error, exactly as the fork's `as*` JSON_ASSERT throws, mapping §1.4)
 // ---------------------------------------------------------------------------
 
-/// C++ `asInt()` on the whole value. null → 0; real → truncate toward zero;
-/// string/bool/object/array → `JsonError` (the fork throws
-/// `"Value is not convertible to int."`).
+/// C++ `asInt()` (jsoncpp.inl:1191-1210) with the fork's int64 range
+/// asserts: null → 0; int64 within the i32 range (else "LargestInt out of
+/// int range"), uint64 ≤ i32::MAX (else "LargestUInt out of int range"),
+/// real within [i32::MIN, i32::MAX] truncated toward zero (else "double
+/// out of int range"); bool → 1/0; string/object/array → `JsonError`
+/// (`"Value is not convertible to int."`).
 #[must_use = "mirrors the C++ [[nodiscard]]"]
 pub fn as_int(obj: &Obj) -> Result<i64, JsonError> {
     match obj {
         SerdeValue::Null => Ok(0),
         SerdeValue::Number(n) => {
             if let Some(i) = n.as_i64() {
-                Ok(i)
-            } else if let Some(u) = n.as_u64() {
-                // fork `asInt`: convertible iff the uint fits Int
-                // (`isInt() || (isUInt() && value <= max Int)`); a too-large
-                // uint throws, a real truncates toward zero.
-                if u > i64::MAX as u64 {
-                    return Err(type_error(obj, "int"));
+                if !(i32::MIN as i64..=i32::MAX as i64).contains(&i) {
+                    return Err(JsonError::new(
+                        1,
+                        1,
+                        "LargestInt out of int range".to_string(),
+                    ));
                 }
-                Ok(u as i64)
-            } else {
-                let f = n.as_f64().unwrap_or(0.0);
-                Ok(f as i64)
+                return Ok(i);
             }
+            if let Some(u) = n.as_u64() {
+                // fork `asInt`'s uint arm: `isInt()` iff the uint ≤ max Int
+                if u > i32::MAX as u64 {
+                    return Err(JsonError::new(
+                        1,
+                        1,
+                        "LargestUInt out of int range".to_string(),
+                    ));
+                }
+                return Ok(u as i64);
+            }
+            let f = n.as_f64().unwrap_or(0.0);
+            // fork `asInt`'s real arm: `InRange(real, minInt, maxInt)`
+            // (NaN / ±inf fail the range test, exactly as in C++).
+            if !(f >= i32::MIN as f64 && f <= i32::MAX as f64) {
+                return Err(JsonError::new(1, 1, "double out of int range".to_string()));
+            }
+            Ok(f as i64)
         }
+        SerdeValue::Bool(b) => Ok(i64::from(*b)),
         other => Err(type_error(other, "int")),
     }
 }
 
-/// C++ `asFloat()` (float converters go through `asDouble()` in the fork).
-/// null → 0.0; integral values are accepted (`isDouble()` includes
-/// integrals, mapping §1.5).
+/// C++ `asUInt()` (jsoncpp.inl:1211-1229): null → 0; int64 within
+/// [0, u32::MAX] (else "LargestInt out of UInt range"), uint64 ≤ u32::MAX
+/// (else "LargestUInt out of UInt range"), real within [0, 4294967295.0]
+/// truncated toward zero (else "double out of UInt range"); bool → 1/0;
+/// string/object/array → `JsonError` (`"Value is not convertible to
+/// UInt.").
+#[must_use = "mirrors the C++ [[nodiscard]]"]
+pub fn as_uint(obj: &Obj) -> Result<u32, JsonError> {
+    match obj {
+        SerdeValue::Null => Ok(0),
+        SerdeValue::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                if !(0..=u32::MAX as i64).contains(&i) {
+                    return Err(JsonError::new(
+                        1,
+                        1,
+                        "LargestInt out of UInt range".to_string(),
+                    ));
+                }
+                return Ok(i as u32);
+            }
+            if let Some(u) = n.as_u64() {
+                if u > u32::MAX as u64 {
+                    return Err(JsonError::new(
+                        1,
+                        1,
+                        "LargestUInt out of UInt range".to_string(),
+                    ));
+                }
+                return Ok(u as u32);
+            }
+            let f = n.as_f64().unwrap_or(0.0);
+            // fork `asUInt`'s real arm: `InRange(real, 0, maxUInt)` —
+            // `maxUInt` (4294967295) is exactly representable as a double.
+            if !(f >= 0.0 && f <= u32::MAX as f64) {
+                return Err(JsonError::new(1, 1, "double out of UInt range".to_string()));
+            }
+            Ok(f as u32)
+        }
+        SerdeValue::Bool(b) => Ok(u32::from(*b)),
+        _ => Err(JsonError::new(
+            1,
+            1,
+            "Value is not convertible to UInt.".to_string(),
+        )),
+    }
+}
+
+/// C++ `asFloat()` (jsoncpp.inl:1297-1309; float converters go through
+/// `asDouble()`, :1284-1295, in the fork): null → 0.0; integrals and reals accepted
+/// (`isDouble()` includes integrals, mapping §1.5); bool → 1.0/0.0;
+/// string/object/array → `JsonError` (`"Value is not convertible to
+/// float.").
 #[must_use = "mirrors the C++ [[nodiscard]]"]
 pub fn as_float(obj: &Obj) -> Result<f64, JsonError> {
     match obj {
         SerdeValue::Null => Ok(0.0),
         SerdeValue::Number(n) => Ok(n.as_f64().unwrap_or(0.0)),
+        SerdeValue::Bool(b) => Ok(f64::from(*b)),
         other => Err(type_error(other, "float")),
     }
 }
 
-/// C++ `asBool()`. null → false.
+/// C++ `asBool()` (jsoncpp.inl:1310-1322): null → false; bool accepted;
+/// int/uint/real coerced by non-zero test; string/object/array →
+/// `JsonError` (`"Value is not convertible to bool.").
 #[must_use = "mirrors the C++ [[nodiscard]]"]
 pub fn as_bool(obj: &Obj) -> Result<bool, JsonError> {
     match obj {
         SerdeValue::Null => Ok(false),
         SerdeValue::Bool(b) => Ok(*b),
+        SerdeValue::Number(n) => {
+            let non_zero = if let Some(i) = n.as_i64() {
+                i != 0
+            } else if let Some(u) = n.as_u64() {
+                u != 0
+            } else {
+                n.as_f64().unwrap_or(0.0) != 0.0
+            };
+            Ok(non_zero)
+        }
         other => Err(type_error(other, "bool")),
     }
 }
 
-/// C++ `asString()`. null → "" (the null singleton's string conversion).
+/// C++ `asString()` (jsoncpp.inl:1177-1190) — the fork returns an owned
+/// `std::string`, so this returns one too: null → ""; string accepted;
+/// bool → "true"/"false"; int64/uint64 → decimal strings; real → the
+/// fork's `valueToString(double)` (`%#.16g` + trailing-zero trim — the
+/// writer's [`double_to_string`]); object/array → `JsonError` (`"Type is
+/// not convertible to std::string"` — the fork's distinct message).
 #[must_use = "mirrors the C++ [[nodiscard]]"]
-pub fn as_str(obj: &Obj) -> Result<&str, JsonError> {
+pub fn as_str(obj: &Obj) -> Result<String, JsonError> {
     match obj {
-        SerdeValue::Null => Ok(""),
-        SerdeValue::String(s) => Ok(s),
-        other => Err(type_error(other, "string")),
+        SerdeValue::Null => Ok(String::new()),
+        SerdeValue::String(s) => Ok(s.clone()),
+        SerdeValue::Bool(b) => Ok(if *b { "true" } else { "false" }.to_string()),
+        SerdeValue::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(i.to_string())
+            } else if let Some(u) = n.as_u64() {
+                Ok(u.to_string())
+            } else {
+                Ok(double_to_string(n.as_f64().unwrap_or(0.0)))
+            }
+        }
+        _ => Err(JsonError::new(
+            1,
+            1,
+            "Type is not convertible to std::string".to_string(),
+        )),
     }
 }
 
@@ -399,13 +510,14 @@ fn type_error(obj: &Obj, to: &str) -> JsonError {
 // `getExtr<T>` convenience layer (C++ `Main.hpp`)
 // ---------------------------------------------------------------------------
 
-/// C++ `getExtr<T>(obj, key, default)`: `has ? getExtr : default`.
+/// C++ `getExtr<std::string>(obj, key, default)`: `has ? asString :`
+/// default (the fork's `asString` coerctions apply to the present value).
 #[must_use = "mirrors the C++ [[nodiscard]]"]
-pub fn extr_str<'a>(obj: &'a Obj, key: &str, default: &'a str) -> Result<&'a str, JsonError> {
+pub fn extr_str(obj: &Obj, key: &str, default: &str) -> Result<String, JsonError> {
     if has(obj, key) {
         as_str(get_missing_as_null(obj, key))
     } else {
-        Ok(default)
+        Ok(default.to_string())
     }
 }
 
@@ -451,7 +563,7 @@ pub fn extr_vec_f32(obj: &Obj) -> Result<Vec<f32>, JsonError> {
 pub fn extr_vec_str(obj: &Obj) -> Result<Vec<String>, JsonError> {
     let mut v = vec![String::new(); size(obj)];
     for (i, v) in v.iter_mut().enumerate() {
-        *v = as_str(get_at_or_null(obj, i))?.to_string();
+        *v = as_str(get_at_or_null(obj, i))?;
     }
     Ok(v)
 }

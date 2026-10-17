@@ -40,6 +40,8 @@ impl JsonConvertible for bool {
 
 impl JsonConvertible for i32 {
     fn from_obj(obj: &Obj) -> Result<Self, JsonError> {
+        // C++ `int` → `asInt()` (the fork's 32-bit range asserts now live
+        // in `as_int`, so the narrowing cast is infallible).
         Ok(json::as_int(obj)? as i32)
     }
     fn to_obj(&self) -> Obj {
@@ -49,8 +51,9 @@ impl JsonConvertible for i32 {
 
 impl JsonConvertible for u32 {
     fn from_obj(obj: &Obj) -> Result<Self, JsonError> {
-        // C++ `asUInt()`: null → 0.
-        Ok(json::as_int(obj)? as u32)
+        // C++ `unsigned int` → `asUInt()` (null → 0, bool → 1/0, the
+        // 32-bit range asserts).
+        json::as_uint(obj)
     }
     fn to_obj(&self) -> Obj {
         json::get_arch_int(*self as i64)
@@ -59,7 +62,9 @@ impl JsonConvertible for u32 {
 
 impl JsonConvertible for u16 {
     fn from_obj(obj: &Obj) -> Result<Self, JsonError> {
-        Ok(json::as_int(obj)? as u16)
+        // C++ `unsigned short` → `mValue = mObj.asUInt()` — the 32-bit
+        // `asUInt` read, then the implicit narrowing to `unsigned short`.
+        Ok(json::as_uint(obj)? as u16)
     }
     fn to_obj(&self) -> Obj {
         json::get_arch_int(*self as i64)
@@ -79,7 +84,9 @@ impl JsonConvertible for f32 {
 
 impl JsonConvertible for String {
     fn from_obj(obj: &Obj) -> Result<Self, JsonError> {
-        Ok(json::as_str(obj)?.to_string())
+        // C++ `std::string` → `asString()` (the fork's cross-type
+        // coercions: bool/int/uint/real → string, jsoncpp.inl:1177-1190).
+        json::as_str(obj)
     }
     fn to_obj(&self) -> Obj {
         json::get_arch_str(self)

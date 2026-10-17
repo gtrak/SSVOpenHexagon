@@ -62,10 +62,10 @@ pub fn pack_data_from_json(
     m_pack_path: &str,
     m_pack_id: &str,
 ) -> Result<PackData, JsonError> {
-    let disambiguator = json::extr_str(m_root, "disambiguator", "no disambiguator")?.to_string();
-    let name = json::extr_str(m_root, "name", "unknown name")?.to_string();
-    let author = json::extr_str(m_root, "author", "unknown author")?.to_string();
-    let description = json::extr_str(m_root, "description", "no description")?.to_string();
+    let disambiguator = json::extr_str(m_root, "disambiguator", "no disambiguator")?;
+    let name = json::extr_str(m_root, "name", "unknown name")?;
+    let author = json::extr_str(m_root, "author", "unknown author")?;
+    let description = json::extr_str(m_root, "description", "no description")?;
     let version = json::extr_int(m_root, "version", 0)? as i32;
     let priority = json::extr_float(m_root, "priority", 100.0)? as f32;
 
@@ -75,9 +75,9 @@ pub fn pack_data_from_json(
         for i in 0..json::size(deps) {
             let dep = json::get_at_or_null(deps, i);
             dependencies.push(PackDependency {
-                disambiguator: json::extr_str(dep, "disambiguator", "")?.to_string(),
-                name: json::extr_str(dep, "name", "")?.to_string(),
-                author: json::extr_str(dep, "author", "")?.to_string(),
+                disambiguator: json::extr_str(dep, "disambiguator", "")?,
+                name: json::extr_str(dep, "name", "")?,
+                author: json::extr_str(dep, "author", "")?,
                 min_version: json::extr_int(dep, "min_version", 0)? as i32,
             });
         }

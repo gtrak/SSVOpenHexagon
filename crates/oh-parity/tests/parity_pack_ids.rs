@@ -110,7 +110,12 @@ fn corpus_ids_rederive_from_shipped_pack_jsons() {
         let name = oh_data::json::extr_str(&root, "name", "missing").expect("name");
         let version = oh_data::json::extr_int(&root, "version", 0).expect("version") as i32;
         assert_eq!(
-            (disambiguator, author, name, version),
+            (
+                disambiguator.as_str(),
+                author.as_str(),
+                name.as_str(),
+                version
+            ),
             (
                 entry["disambiguator"].as_str().unwrap(),
                 entry["author"].as_str().unwrap(),
@@ -120,7 +125,7 @@ fn corpus_ids_rederive_from_shipped_pack_jsons() {
             "pack {folder}: corpus fields drifted from the shipped pack.json"
         );
         assert_eq!(
-            build_pack_id(disambiguator, author, name, version),
+            build_pack_id(&disambiguator, &author, &name, version),
             entry["pack_id"].as_str().unwrap(),
             "pack {folder}: shipped pack.json + Rust build_pack_id must yield the corpus id"
         );

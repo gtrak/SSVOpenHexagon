@@ -47,16 +47,17 @@ impl LevelData {
     pub fn from_json(m_root: &Obj, m_pack_path: &str, m_pack_id: &str) -> Result<Self, JsonError> {
         let pack_path = m_pack_path.to_string();
         let pack_id = m_pack_id.to_string();
-        let id = json::extr_str(m_root, "id", "nullId")?.to_string();
-        let name = json::extr_str(m_root, "name", "nullName")?.to_string();
-        let description = json::extr_str(m_root, "description", "")?.to_string();
-        let author = json::extr_str(m_root, "author", "")?.to_string();
+        let id = json::extr_str(m_root, "id", "nullId")?;
+        let name = json::extr_str(m_root, "name", "nullName")?;
+        let description = json::extr_str(m_root, "description", "")?;
+        let author = json::extr_str(m_root, "author", "")?;
         let menu_priority = json::extr_int(m_root, "menuPriority", 0)? as i32;
         let selectable = json::extr_bool(m_root, "selectable", true)?;
-        let music_id = json::extr_str(m_root, "musicId", "nullMusicId")?.to_string();
-        let sound_id = json::extr_str(m_root, "soundId", "nullSoundId")?.to_string();
-        let style_id = json::extr_str(m_root, "styleId", "nullStyleId")?.to_string();
-        let lua_script_path = pack_path.clone() + json::extr_str(m_root, "luaFile", "nullLuaPath")?;
+        let music_id = json::extr_str(m_root, "musicId", "nullMusicId")?;
+        let sound_id = json::extr_str(m_root, "soundId", "nullSoundId")?;
+        let style_id = json::extr_str(m_root, "styleId", "nullStyleId")?;
+        let lua_script_path =
+            pack_path.clone() + &json::extr_str(m_root, "luaFile", "nullLuaPath")?;
         let mut difficulty_mults =
             json::extr_vec_f32(json::get_missing_as_null(m_root, "difficultyMults"))?;
         let unscored = json::extr_bool(m_root, "unscored", false)?;

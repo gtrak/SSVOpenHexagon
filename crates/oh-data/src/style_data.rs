@@ -138,7 +138,7 @@ impl StyleData {
         let hue_min = json::extr_float(m_root, "hue_min", 0.0)? as f32;
 
         Ok(Self {
-            id: json::extr_str(m_root, "id", "nullId")?.to_string(),
+            id: json::extr_str(m_root, "id", "nullId")?,
             hue_min,
             hue_max: json::extr_float(m_root, "hue_max", 360.0)? as f32,
             hue_increment: json::extr_float(m_root, "hue_increment", 0.0)? as f32,

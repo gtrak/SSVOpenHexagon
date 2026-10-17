@@ -234,9 +234,9 @@ fn every_release_level_style_and_music_parses() {
         // real pack id (mapping §7.2):
         let pack_obj = load_release_json(&pack.join("pack.json"));
         let real_id = build_pack_id(
-            json::extr_str(&pack_obj, "disambiguator", "no disambiguator").unwrap(),
-            json::extr_str(&pack_obj, "author", "unknown author").unwrap(),
-            json::extr_str(&pack_obj, "name", "unknown name").unwrap(),
+            &json::extr_str(&pack_obj, "disambiguator", "no disambiguator").unwrap(),
+            &json::extr_str(&pack_obj, "author", "unknown author").unwrap(),
+            &json::extr_str(&pack_obj, "name", "unknown name").unwrap(),
             json::extr_int(&pack_obj, "version", 0).unwrap() as i32,
         );
         let full_pack_path = format!("Packs/{}/", pack.file_name().unwrap().to_string_lossy());

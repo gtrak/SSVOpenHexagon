@@ -14,11 +14,11 @@ use crate::version::GameVersion;
 #[must_use = "mirrors the C++ [[nodiscard]]"]
 pub fn load_music_from_json(m_root: &Obj) -> Result<MusicData, JsonError> {
     let mut result = MusicData::new(
-        json::as_str(json::get_missing_as_null(m_root, "id"))?,
-        json::as_str(json::get_missing_as_null(m_root, "file_name"))?,
-        json::as_str(json::get_missing_as_null(m_root, "name"))?,
-        json::as_str(json::get_missing_as_null(m_root, "album"))?,
-        json::as_str(json::get_missing_as_null(m_root, "author"))?,
+        &json::as_str(json::get_missing_as_null(m_root, "id"))?,
+        &json::as_str(json::get_missing_as_null(m_root, "file_name"))?,
+        &json::as_str(json::get_missing_as_null(m_root, "name"))?,
+        &json::as_str(json::get_missing_as_null(m_root, "album"))?,
+        &json::as_str(json::get_missing_as_null(m_root, "author"))?,
     );
 
     let segments = json::get_missing_as_null(m_root, "segments");
@@ -70,7 +70,7 @@ pub fn load_profile_from_json(m_root: &Obj) -> Result<ProfileData, JsonError> {
     // `else` branch always wins and `load_version_from_json` is never called.
     let version = GameVersion::new(-1, 0, 0);
 
-    let name = json::as_str(json::get_missing_as_null(m_root, "name"))?.to_string();
+    let name = json::as_str(json::get_missing_as_null(m_root, "name"))?;
     let scores = json::extr_map_str_f32(json::get_missing_as_null(m_root, "scores"))?;
     let favorites = json::extr_vec_str(json::get_missing_as_null(m_root, "favorites"))?;
 
