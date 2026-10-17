@@ -152,6 +152,30 @@ an input-bit-derived tutorial variable — not Lua key polling. Fix the stub (§
 Lua-facing correctness on every platform, but do not expect the tutorial to depend on
 it, and do not let §1 become a prerequisite for §2.
 
+**The port-side seam already exists — use it, do not invent one.** `register_engine_binds`
+(`crates/oh-app/src/windowed.rs:1614-1650`) already registers exactly the inputs this
+issue needs, through the port's own idiom:
+
+```rust
+two_state(Tid::Focus, HexagonGame::<GameApiState>::set_input_focused);  // windowed.rs:1648
+two_state(Tid::Swap,  HexagonGame::<GameApiState>::set_input_swap);     // windowed.rs:1649
+```
+
+(mirroring `add2StateInput(game, getTrigger(Tid::X), ...)` — HexagonGame.cpp:357-360,
+SSVStart `Utils/Input.hpp:209-219`; `trigger_of` reads the **live** config trigger, so a
+rebind re-points the bind with no re-registration). The overlay must therefore drive
+those same `Tid` two-state inputs — press → the `on` closure, release → the `off`
+closure — instead of adding a parallel path. That gets §2b's ordering, rebinding and the
+replay-bit record intact for free, and it is the port's own mechanism rather than a new
+one.
+
+The window's touch/input data path, for reference: `InputState { fingers, keys, btns }`
+(`oh-render/src/input.rs:35-42` — the C++'s three bitsets) plus the sink array
+`[Option<Vec2>; FINGER_COUNT]` behind `WindowTouchRenderer::finger_down_positions`
+(`windowed.rs:229-247`, fed by the same shared touch slot the 025f menu grid uses).
+**Excluding the overlay's consumed pointers from that array is the concrete form of
+§2b's double-count hazard.**
+
 ## 3. The "hangs non-responsive" half — get evidence, do not assume
 
 The operator reports the app hanging. Two very different causes are possible and
