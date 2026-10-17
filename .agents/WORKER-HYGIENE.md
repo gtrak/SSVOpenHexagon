@@ -115,3 +115,28 @@ Rules that make parallelism safe:
   cannot see their uncommitted work anyway. Do not "fix" it; re-run, and if it
   persists in *your* files, report it.
 - Report disk pressure rather than deleting anything.
+
+## 9. Diagnosing a dead lane (do this before theorizing about context)
+
+A lane dying with an empty final message is almost always the **compaction path**,
+not context exhaustion and not a token budget. The evidence trail, in order:
+
+1. `process-terminal.json` + the `subagent.step.failed` event in the run dir
+   (`/tmp/pi-subagents-uid-*/async-subagent-runs/<id>/`). The step record carries
+   `tokens.windowPeak` and `exitCode`.
+2. The child's `session.jsonl` (`.../run-0/session.jsonl`): count
+   `grep -c -i compact` — **zero markers means compaction never succeeded**, which
+   is the real signal (cumulative token totals are *not* — they are re-sent context
+   per turn, so 20M+ is normal for a long lane).
+3. `~/.pi/agent/settings.json`: `compaction.model` names the server that does the
+   summarizing. Here it is deliberately `desktop/desktop` — a **remote
+   workstation**, chosen so long prefills don't block the local worker model.
+   If that box is asleep/busy/hosed, compaction fails, contexts grow unbounded
+   (a 231K-token `windowPeak` was observed), and the run exits 1.
+
+So: **check the compaction server's health first** (`curl -s -o /dev/null -w '%{http_code} %{time_total}' <url>/v1/models`;
+a port that accepts TCP while HTTP hangs = a wedged server, not a network/DNS
+problem). A 2026-10-17 investigation burned ~10 tool calls on KV-exhaustion and
+model-name theories before this; the layout (localhost = worker sglang, remote
+desktop = compaction) is intentional and should not be "fixed" by pointing
+compaction at the local model — that steals prefill from the workers.
