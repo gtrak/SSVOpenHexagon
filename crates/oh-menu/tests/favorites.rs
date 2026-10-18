@@ -527,7 +527,7 @@ fn a_favorited_level_survives_save_and_reload() {
         std::thread::current()
             .name()
             .unwrap_or("t")
-            .replace('-', "_")
+            .replace(|c: char| !c.is_ascii_alphanumeric(), "_")
     ));
     let _ = std::fs::remove_dir_all(&dir); // a stale dir from a prior run
     std::fs::create_dir_all(&dir).expect("temp dir");

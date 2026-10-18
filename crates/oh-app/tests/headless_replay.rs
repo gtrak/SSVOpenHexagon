@@ -53,7 +53,7 @@ impl Sandbox {
             std::thread::current()
                 .name()
                 .unwrap_or("t")
-                .replace('-', "_")
+                .replace(|c: char| !c.is_ascii_alphanumeric(), "_")
         ));
         std::fs::create_dir_all(&dir).expect("sandbox dir");
         let release = release_dir();

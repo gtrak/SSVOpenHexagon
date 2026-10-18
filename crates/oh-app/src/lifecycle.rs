@@ -185,7 +185,7 @@ mod tests {
             std::thread::current()
                 .name()
                 .unwrap_or("t")
-                .replace('-', "_")
+                .replace(|c: char| !c.is_ascii_alphanumeric(), "_")
         ));
         fs::create_dir_all(&dir).expect("temp dir");
         dir

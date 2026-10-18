@@ -243,7 +243,7 @@ impl TestSandbox {
             std::thread::current()
                 .name()
                 .unwrap_or("t")
-                .replace('-', "_")
+                .replace(|c: char| !c.is_ascii_alphanumeric(), "_")
         ));
         std::fs::create_dir_all(&dir).expect("sandbox dir");
         let release = common::release_dir();
@@ -959,7 +959,7 @@ fn create_window_without_an_icon_file_keeps_the_platform_default() {
         std::thread::current()
             .name()
             .unwrap_or("t")
-            .replace('-', "_")
+            .replace(|c: char| !c.is_ascii_alphanumeric(), "_")
     ));
     std::fs::create_dir_all(&missing).expect("sandbox dir");
     let window = oh_app::windowed::create_window(&Config::default(), &missing);
