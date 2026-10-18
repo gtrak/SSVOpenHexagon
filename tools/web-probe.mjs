@@ -17,6 +17,19 @@
 //     proof: one char, not two), the last Enter CREATES the profile (the
 //     C++'s `okAction` bind — the 025d/025f device flow's observable);
 //     each step reports the state + the focus + the `#ime` value.
+//   node tools/web-probe.mjs http://127.0.0.1:8080/ 120 --phone \
+//     --shots=.agents/evidence/054 \
+//     --seq=t:ok;60,s:01-menu,t:menu;150,s:02-menu-press \
+//     # issue 054: the touch surface — `t:X;Y;DUR` is a CDP
+//     `Input.dispatchTouchEvent` HELD touch (touchStart → DUR ms →
+//     touchEnd — the real touch path: the mobile-emulated browser
+//     synthesizes the pointer events the canvas's pointer feed rides on,
+//     exactly as a finger on the operator's phone would), X,Y in the
+//     PORT'S view-pixel space (the button-centers / grid-thirds space;
+//     the named presets `menu` / `ok` / `left` / `right` / `up` /
+//     `down` are the 054 evidence's vocabulary) and `s:NAME` captures a
+//     screenshot to `--shots/NAME.png` (the per-step evidence — the
+//     final screenshot's `--shot` sibling).
 //
 // The port logs `status booted=…;exit_code=…;ticks=…;state=menu:<States|game>` through its
 // log_sink (oh-web installs a console.log sink), so the state timeline below is the port's own
@@ -31,7 +44,7 @@
 
 import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { writeFileSync, existsSync } from 'node:fs';
+import { writeFileSync, existsSync, mkdirSync } from 'node:fs';
 
 const argv = process.argv.slice(2);
 const url = argv.find((a) => !a.startsWith('--')) || 'http://127.0.0.1:8080/';
@@ -50,7 +63,18 @@ const keys = keysArg ? keysArg.split(',') : [];
 //   keystroke, the task's "prove the IME path programmatically");
 //   `e:JS` is a `Runtime.evaluate` (the synthetic composition /
 //   backspace event dispatches — the headless stand-ins for the soft
-//   keyboard's composition flows).
+//   keyboard's composition flows); `t:X;Y;DUR` is a CDP
+//   `Input.dispatchTouchEvent` HELD touch (touchStart → DUR ms →
+//   touchEnd — the issue 054 touch surface's driver: the held-press
+//   cadence's operator-visible half, the F35 row's evidence), X,Y in
+//   the port's view-pixel space (÷ the DPR to the CDP's CSS px — the
+//   headless viewport is NOT the emulated size, so the probe measures
+//   the canvas + DPR at run time; the named presets `t:menu;DUR` /
+//   `t:ok;DUR` / `t:left;DUR` / `t:right;DUR` / `t:up;DUR` /
+//   `t:down;DUR` are the grid's zone centers + the MENU corner — the
+//   `;` keeps the triple off the seq's `,` delimiter); `s:NAME`
+//   captures a screenshot to `--shots/NAME.png` (the per-step
+//   evidence; `--shots` absent → the `--shot` path's directory).
 // * `--phone` — the emulated phone viewport (the
 //   `Emulation.setDeviceMetricsOverride` 390x844 @3 mobile + touch —
 //   the operator's Android Chrome's shape; the soft keyboard itself
@@ -65,6 +89,8 @@ const seqArg = (argv.find((a) => a.startsWith('--seq=')) || '').slice(6);
 const seq = seqArg ? seqArg.split(',').filter(Boolean) : [];
 const phone = argv.includes('--phone');
 const shotPath = (argv.find((a) => a.startsWith('--shot=')) || '').slice(7) || '/tmp/web-probe.png';
+const shotsDir = (argv.find((a) => a.startsWith('--shots=')) || '').slice(8)
+  || shotPath.replace(/\/[^/]*$/, '');
 
 const CHROME = process.env.OH_CHROME
   || ['/home/gary/.agent-browser/browsers/chrome-148.0.7778.97/chrome',
@@ -114,10 +140,22 @@ await send('Network.setCacheDisabled', { cacheDisabled: true });
 // keyboard itself cannot be raised headlessly (the report says so
 // plainly) — this is the viewport / touch half of the phone re-run.
 if (phone) {
+  // The emulated phone viewport (the operator's Android Chrome's
+  // shape: 390x844 @3, mobile = the touch emulation). The soft keyboard
+  // itself cannot be raised headlessly (the report says so plainly).
+  // NOTE (the 054 run's finding): this headless shell SCALES the
+  // override's screen size (×~2.5: the 390×844 screen comes out a
+  // 980×2121 LAYOUT viewport @3), so the convergence below (after the
+  // navigate) re-applies the override with the MEASURED viewport —
+  // the 054 run's verified fixed point (980×2121 stays 980×2121) —
+  // making the canvas's CSS box == the viewport: the screenshot's
+  // device px == the canvas's backing px == the game view's pixels
+  // (the whole view, no crop; without it the menu's center content
+  // draws outside the captured crop).
   await send('Emulation.setDeviceMetricsOverride', {
     width: 390, height: 844, deviceScaleFactor: 3, mobile: true,
   });
-  console.log('  … phone viewport (390x844 @3, touch)');
+  console.log('  … phone viewport (390x844 @3, touch — converging post-load)');
 }
 await send('Page.navigate', { url });
 // issue 046 — the DOM event log (diagnostic): what the browser
@@ -146,6 +184,17 @@ await send('Page.navigate', { url });
     window.addEventListener('compositionend', (e) => { rec('compEnd', JSON.stringify(e.data)); }, true);
     window.addEventListener('focus', (e) => { rec('focus', e.target && e.target.id); }, true);
     window.addEventListener('blur', (e) => { rec('blur', e.target && e.target.id); }, true);
+    // issue 054 — the CANVAS's pointer events (the touch surface's browser
+    // half: the CDP synthetic touches' pointer synthesis is the probe-side
+    // mirror of the Rust pointer feed's view — "the browser delivered the
+    // touch to the canvas" vs "the game side consumed it", the 046
+    // keylog's diagnostic class).
+    const c0 = document.getElementById('c');
+    if (c0) {
+      c0.addEventListener('pointerdown', (e) => { rec('pdown', e.pointerType + '/' + e.pointerId + '/' + Math.round(e.clientX) + ',' + Math.round(e.clientY)); }, true);
+      c0.addEventListener('pointerup', (e) => { rec('pup', e.pointerType + '/' + e.pointerId); }, true);
+      c0.addEventListener('pointercancel', (e) => { rec('pcancel', e.pointerType + '/' + e.pointerId); }, true);
+    }
     // issue 046 (F33) — the port's menu<->game transition EDGE (the
     // ohstatechange DOM event — the house pattern's edge, not a
     // poll): the #fs visibility gate's signal (its display flipping
@@ -167,7 +216,7 @@ const stateOf = async () => {
 };
 // The named-key virtual-key codes (the CDP `windowsVirtualKeyCode` —
 // `charCodeAt` covers the single letters, the named keys need the map).
-const VK = { Enter: 13, Backspace: 8, Escape: 27 };
+const VK = { Enter: 13, Backspace: 8, Escape: 27, ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39 };
 const press = async (key) => {
   const vk = VK[key] ?? (key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0);
   const code = key.length === 1 ? `Key${key.toUpperCase()}` : key;
@@ -232,6 +281,7 @@ const stepCheck = async (label) => {
     }
     return JSON.stringify({
       state: (window.ohStatus ? (window.ohStatus().match(/state=([^;\\s]+)/) || [])[1] : null) || null,
+      viewport: { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio },
       active: a ? (a.tagName + (a.id ? ':' + a.id : '')) : 'none',
       ime: !!ime,
       imeValue: ime ? ime.value : null,
@@ -264,6 +314,37 @@ const checkActivation = async () => {
 
 const perKey = Math.max(4, Math.floor(secs / (Math.max(keys.length, seq.length) + 1)));
 await sleep(perKey * 1000);
+// issue 054 — the boot gate: the first input must land AFTER the
+// composition boots (the pre-boot keypresses reach no listener — the
+// `attach_web_listeners` installs on window creation, the wasm's own
+// boot), so wait for the port's own `booted=true` status line before the
+// seq (capped: a boot that never reports fails the probe's exit code
+// anyway — the wait just stops guessing the perKey boot margin).
+if (phone) {
+  // The viewport convergence (the phone block's note above): measure
+  // the shell's ACTUAL layout viewport (post-load) and pin the override
+  // to it (the fixed point — the canvas's 100vw then fills the viewport
+  // exactly; the screenshot's device px == the game view's pixels).
+  for (let i = 0; i < 3; i++) {
+    const r = await send('Runtime.evaluate', { expression: 'JSON.stringify({ w: window.innerWidth, h: window.innerHeight })', returnByValue: true });
+    const m = JSON.parse(r.result?.result?.value ?? 'null');
+    if (!m || !m.w || !m.h) break;
+    if (m.w === 390 && m.h === 844) break; // the override took verbatim
+    await send('Emulation.setDeviceMetricsOverride', { width: m.w, height: m.h, deviceScaleFactor: 3, mobile: true });
+    await sleep(300);
+  }
+  const converged = await send('Runtime.evaluate', { expression: 'JSON.stringify({ w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio })', returnByValue: true });
+  console.log(`  … phone viewport converged (${converged.result?.result?.value ?? '?'})`);
+}
+if (seq.length > 0) {
+  for (let i = 0; i < 120; i++) {
+    const st = await stateOf();
+    if (st && /booted=true/.test(st)) break;
+    await sleep(1000);
+  }
+  const bootedStatus = await stateOf();
+  console.log(`  … boot settled (${(bootedStatus ?? '(no status)').slice(0, 120)})`);
+}
 if (seq.length > 0) {
   // issue 046 — the ACTION script (the docs above): the per-step
   // keypresses / the `Input.insertText` IME-style commits / the
@@ -274,6 +355,66 @@ if (seq.length > 0) {
     if (item.startsWith('i:')) {
       console.log(`  … insertText ${JSON.stringify(item.slice(2))}`);
       await send('Input.insertText', { text: item.slice(2) });
+    } else if (item.startsWith('t:')) {
+      // issue 054 — the HELD touch (the docs above): CDP
+      // `Input.dispatchTouchEvent`'s touchStart → DUR ms → touchEnd.
+      // The X,Y are the PORT'S view-pixel space (the `button_centers`
+      // / the grid's thirds' space — the `canvas_position`'s ×
+      // device-pixel-ratio space): the probe reads the canvas's real
+      // size + the DPR and divides to the CDP's CSS-px coordinates
+      // (the headless viewport's size is NOT the emulated one — the
+      // 054 run's measurement: the 390×844 @3 override's viewport
+      // comes out 980×2121 CSS @3 in this Chrome; the port's view-
+      // px space is the invariant half). The `;` is the internal
+      // separator (the seq's `,` would split the coordinate triple).
+      // Named presets (the 054 evidence's vocabulary — the grid's
+      // zones' centers in the C++'s thirds' math + the MENU corner):
+      // `menu` (the `Exit` center, the `button_centers`'s (44, 44)),
+      // `ok` ((w/2, h/2) — the middle band's middle), `left`
+      // ((w/6, h/2)), `right` ((5w/6, h/2)), `up` ((w/2, h/6)),
+      // `down` ((w/2, 5h/6)).
+      const tparts = item.slice(2).split(';');
+      const tname = tparts[0];
+      const tnums = tparts.map(Number);
+      let vx, vy, dur;
+      if (Number.isNaN(tnums[0])) {
+        const r = await send('Runtime.evaluate', { expression: '(() => { const c = document.getElementById("c"); return JSON.stringify({ w: c.width, h: c.height }); })()', returnByValue: true });
+        const g = JSON.parse(r.result?.result?.value);
+        const P = {
+          menu: [44, 44],
+          ok: [g.w / 2, g.h / 2],
+          left: [g.w / 6, g.h / 2],
+          right: [5 * g.w / 6, g.h / 2],
+          up: [g.w / 2, g.h / 6],
+          down: [g.w / 2, (5 * g.h) / 6],
+        };
+        if (!P[tname]) throw new Error(`web-probe: unknown touch preset ${item}`);
+        [vx, vy] = P[tname];
+        dur = tnums[1];
+      } else {
+        [vx, vy, dur] = tnums;
+      }
+      const dprR = await send('Runtime.evaluate', { expression: 'window.devicePixelRatio', returnByValue: true });
+      const dpr = dprR.result?.result?.value || 1;
+      const tx = vx / dpr; const ty = vy / dpr;
+      console.log(`  … touch hold (view ${vx}, ${vy} = css ${Math.round(tx)}, ${Math.round(ty)}) for ${dur} ms`);
+      await send('Input.dispatchTouchEvent', {
+        type: 'touchStart',
+        touchPoints: [{ x: tx, y: ty, id: 1, radiusX: 2, radiusY: 2, force: 1 }],
+      });
+      await sleep(dur);
+      await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await checkActivation();
+    } else if (item.startsWith('s:')) {
+      // issue 054 — the per-step screenshot (the docs above): the
+      // evidence's stills (the operator-visible halves of the items),
+      // `--shots/NAME.png`.
+      const name = item.slice(2);
+      mkdirSync(shotsDir, { recursive: true });
+      const p = `${shotsDir}/${name}.png`;
+      const r = await send('Page.captureScreenshot', { format: 'png' });
+      if (r.result?.data) writeFileSync(p, Buffer.from(r.result.data, 'base64'));
+      console.log(`  … screenshot -> ${p}`);
     } else if (item.startsWith('e64:')) {
       // A base64-encoded `Runtime.evaluate` expression (the comma-safe
       // form — a JS body with commas would otherwise split on the

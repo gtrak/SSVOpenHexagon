@@ -136,6 +136,34 @@ pub struct Shared {
     /// 344-354: a full line's worth of progress fires `upAction` /
     /// `downAction` and resets to 0).
     pub wheel_progress: f32,
+    /// C++ `touchDelay` (MenuGame.hpp:173; ctor `touchDelay{0.f}`,
+    /// MenuGame.cpp:188). In the C++ the field is WRITE-ONLY: fifteen
+    /// writes (50 after every menu action, 10 after a key / joystick
+    /// bind assignment — MenuGame.cpp:612/:669/:726/:1867/:1894/
+    /// :1969/:1980/:2012/:2061/:2072/:2103/:2198/:2204/:2318/:2453) and
+    /// a single read — its own decay (MenuGame.cpp:2787-2790, the
+    /// `dialogBoxDelay`'s sibling: that one IS read as a guard, :538/
+    /// :631/:688). The 9-zone grid's per-frame dispatch it was almost
+    /// certainly meant to gate never checks it — the mechanism was dead
+    /// on that account alone; its value of 50 under the C++'s FT-`mFT`
+    /// decay (TimerBase.hpp:42's `getSecondsToFT(asSeconds())`: seconds
+    /// × 60 — 60 FT per second) would have been 50 FT ≈ 0.83 s at
+    /// 60 fps, had a guard existed. **issue 054 (F35 — the sanctioned
+    /// deviation):** the port completes the mechanism: the field is
+    /// rebased to MILLISECONDS (the decay runs `ft * 1000.0 / 60.0`
+    /// — `ft` is FT, 60 per second, the C++'s `mFT`'s unit; the writes'
+    /// 50.0 read as 50 ms — the number unchanged, the unit fixed) and
+    /// the 9-zone grid's dispatch (this file's `update()` grid block)
+    /// is gated on it — a held finger re-dispatches its zone at most
+    /// once per 50 ms, so a press acts ONCE and a hold auto-repeats at
+    /// the deliberate 50 ms cadence (the C++'s per-frame dispatch —
+    /// 039's 18-dispatches-per-400-ms measurement — is the parity this
+    /// departs from). The C++'s per-action arms (`= 50.0`, below) stay
+    /// the verbatim mirror; the grid arms the field itself too (the
+    /// uniform-cadence half — a no-op action's early return would
+    /// otherwise leave the gate open). The desktop keyboard path is
+    /// untouched (the grid only acts on `finger_down_count() == 1`;
+    /// desktop feeds `NoopTouch`).
     pub touch_delay: f32,
     /// C++ `shiftHeld`'s port equivalent (29b8c) — the app layer feeds the
     /// per-frame `LShift` / `RShift` state (the C++ `leftRightActionImpl`
@@ -2057,6 +2085,42 @@ impl MenuGame {
             .map(|m| m.get_category().get_name().to_string())
     }
 
+    /// F35 — the `touch_delay` read surface (the 9-zone grid's cadence
+    /// gate's value; the test instrument — see the `Shared.touch_delay`
+    /// field's docs).
+    #[must_use]
+    pub fn touch_delay(&self) -> f32 {
+        self.shared.borrow().touch_delay
+    }
+
+    /// issue 054 (F36) — the touch `Exit` (MENU) affordance's
+    /// menu-side reachability: the states where `exit_action` (the
+    /// `Tid::Exit` bind's body, MenuGame.cpp:2457-2502, with that
+    /// bind's `isEnteringText()` guard, MenuGame.cpp:975-983) is a real
+    /// "back": `LevelSelection` → `SMain`, the options / online /
+    /// profile-selection menus' `go_back()` (the `has_current_profile`
+    /// half — in practice those states are only reachable behind a
+    /// profile), `SLPSelectBoot` → `ETLPNewBoot` (the C++'s own arm,
+    /// MenuGame.cpp:2466-2470). NOT `SMain` (the "main" category's early
+    /// return — MenuGame.cpp:2459-2462: a dead button, not an affordance),
+    /// the entering-text states (the bind's guard), or the boot screens
+    /// (`LoadingScreen` / `EpilepsyWarning` — the beep-only no-op: no
+    /// current menu, no state change). The composition feeds this to the
+    /// overlay's `menu_active` gate (the app layer's
+    /// `MenuSlotAdapter` / `tick_fields` halves — the touch affordance's
+    /// D-034-class sanctioned deviation, the F36 register row).
+    #[must_use]
+    pub fn menu_exit_relevant(&self) -> bool {
+        matches!(
+            self.state(),
+            States::LevelSelection
+                | States::MOpts
+                | States::MOnline
+                | States::SLPSelect
+                | States::SLPSelectBoot
+        )
+    }
+
     #[must_use]
     pub fn shared(&self) -> &Rc<RefCell<Shared>> {
         &self.shared
@@ -2934,7 +2998,16 @@ impl MenuGame {
                 s.focus_held = false;
             }
 
-            s.touch_delay = (s.touch_delay - ft).max(0.0);
+            // F35 — the ms-rebased decay (the field's docs): the C++'s
+            // `mFT` is FT (60 per second — the C++'s `getSecondsToFT`,
+            // TimerBase.hpp:42: seconds × 60), so this tick's wall-clock
+            // milliseconds are `ft * 1000.0 / 60.0` (the runtime's 240 Hz
+            // fixed tick passes 0.25 FT — 4.17 ms — per call): the 50 ms
+            // debounce opens every 12 ticks (20 dispatches per second
+            // while held — the C++'s per-frame grid is the parity
+            // departed from). The writes' values are the C++'s 50, read
+            // in ms — the unit the C++'s dead mechanism never gave it.
+            s.touch_delay = (s.touch_delay - ft * 1000.0 / 60.0).max(0.0);
             s.dialog_box_delay = (s.dialog_box_delay - ft).max(0.0);
             s.difficulty_bump_effect = (s.difficulty_bump_effect - ft * 2.0).max(0.0);
 
@@ -3001,15 +3074,14 @@ impl MenuGame {
         }
 
         // C++ `MenuGame::update` 9-zone touch grid (MenuGame.cpp:2802-2835)
-        // — the phone's touch-only menu control (the port of the C++ block
-        // verbatim): with exactly ONE finger down, the screen thirds
-        // dispatch — the middle band's x-thirds to `leftAction` /
-        // `okAction` / `rightAction` (the port's `ok_action` in the
-        // entering-text states validates the entered name and creates the
-        // profile — the touch submit the system IME's Done key can't
+        // — the phone's touch-only menu control: with exactly ONE finger
+        // down, the screen thirds dispatch — the middle band's x-thirds to
+        // `leftAction` / `okAction` / `rightAction` (the port's `ok_action`
+        // in the entering-text states validates the entered name and creates
+        // the profile — the touch submit the system IME's Done key can't
         // deliver, 025f), the top / bottom bands to `upAction` /
-        // `downAction`. Finger data is the platform's `MenuTouch` seam
-        // (the C++'s `window.getFingerDownCount()` /
+        // `downAction`. Finger data is the platform's `MenuTouch` seam (the
+        // C++'s `window.getFingerDownCount()` /
         // `getFingerDownPositions()` — window coordinates, the C++'s
         // `getWindowWidth()` / `getWindowHeight()` space — the ACTUAL
         // current window size, issue 025g: the C++'s grid thirds run on
@@ -3022,16 +3094,27 @@ impl MenuGame {
         // equivalent), and the desktop MOUSE is deliberately NOT wired to
         // the zones (the `MouseButtonReleased` exec path would
         // double-fire — the operator's later-step parity, seam note, 025f).
-        // Un-gated by state, exactly as the C++ block. Each action sets
-        // `touchDelay = 50` itself (the C++'s debounce, e.g.
-        // MenuGame.cpp:2198). Outside the `borrow_mut` block above: the
-        // action methods re-borrow `shared`.
+        // **issue 054 (F35 — the sanctioned cadence deviation):** the
+        // GEOMETRY (the thirds) is the C++'s verbatim; the CADENCE is not —
+        // the C++ dispatches the zone's action EVERY FRAME while the finger
+        // is down (039 measured 18 dispatches for one 400 ms held press;
+        // the operator judged it unusable twice — "the repeated touch
+        // events are a non starter"), where the port completes the C++'s
+        // dead `touchDelay` mechanism (the field's docs): a dispatch arms
+        // `touch_delay` (the C++'s own 50, now ms) and the gate holds the
+        // next dispatch until it decays — a press acts ONCE, a hold
+        // auto-repeats at the deliberate 50 ms cadence. The arm runs at
+        // the grid site (before the action call, so a no-op action's early
+        // return still arms the uniform cadence — the C++'s per-action
+        // arms inside the methods are the verbatim mirror, unchanged).
+        // Un-gated by STATE, exactly as the C++ block (the gate here is
+        // the cadence's, not a state's). Outside the `borrow_mut` block
+        // above: the action methods re-borrow `shared`.
         let touch = self.shared.borrow().touch().clone();
         // issue 039 s1 — the per-dispatch device diagnostic (the
-        // `adb logcat -s OpenHexagon` half; the C++'s grid is per-frame
-        // — ONE dispatch per frame while `getFingerDownCount() == 1`
-        // holds — so a held finger's dispatch count IS the held-frame
-        // count; the line is the count's instrument, issue 026's
+        // `adb logcat -s OpenHexagon` half; post-F35 the dispatch count is
+        // the cadence's count — at most one per 50 ms while the finger is
+        // held — the line stays the cadence's instrument, issue 026's
         // evidence-path class, the s3 audio-log's twin).
         let grid_log = |zone: &str, p: &oh_math::ssvs::Vec2| {
             eprintln!(
@@ -3045,25 +3128,54 @@ impl MenuGame {
             let w_lt = w - w_third;
             let h_third = h / 3.0;
             let h_lt = h - h_third;
+            // The C++'s thirds, verbatim (the strict inequalities: a
+            // position exactly on a third-line matches no zone) — the
+            // zone under the (single) down finger, or `None` on the
+            // boundaries.
+            let mut zone: Option<(&str, oh_math::ssvs::Vec2)> = None;
             for p in touch.finger_down_positions() {
                 if p.y > h_third && p.y < h_lt {
                     if p.x > 0.0 && p.x < w_third {
-                        grid_log("left", &p);
-                        self.left_action();
+                        zone = Some(("left", p));
                     } else if p.x < w && p.x > w_lt {
-                        grid_log("right", &p);
-                        self.right_action();
+                        zone = Some(("right", p));
                     } else if p.x > w_third && p.x < w_lt {
-                        grid_log("ok", &p);
-                        self.ok_action();
+                        zone = Some(("ok", p));
                     }
                 } else {
                     if p.y < h_third {
-                        grid_log("up", &p);
-                        self.up_action();
+                        zone = Some(("up", p));
                     } else if p.y > h_lt {
-                        grid_log("down", &p);
-                        self.down_action();
+                        zone = Some(("down", p));
+                    }
+                }
+            }
+            // F35 — the touchDelay guard (the C++'s dead mechanism
+            // completed — the `touch_delay` field's docs): dispatch only
+            // when the debounce has decayed to 0, and arm it at the C++'s
+            // own value (50 — ms: the unit the C++'s seconds-decay made
+            // its 50 never be), so a held finger's zone re-fires at most
+            // once per 50 ms. The desktop keyboard path is untouched (this
+            // block only runs on a down finger; desktop feeds `NoopTouch`).
+            if let Some((z, p)) = zone {
+                let armed = {
+                    let mut s = self.shared.borrow_mut();
+                    if s.touch_delay <= 0.0 {
+                        s.touch_delay = 50.0;
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if armed {
+                    grid_log(z, &p);
+                    match z {
+                        "left" => self.left_action(),
+                        "right" => self.right_action(),
+                        "ok" => self.ok_action(),
+                        "up" => self.up_action(),
+                        "down" => self.down_action(),
+                        _ => unreachable!("the zone is the thirds' five"),
                     }
                 }
             }

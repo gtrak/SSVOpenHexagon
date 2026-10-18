@@ -359,23 +359,59 @@ struct MenuTouchSink {
     positions: std::sync::Arc<
         std::sync::RwLock<[Option<oh_math::ssvs::Vec2>; oh_render::input::FINGER_COUNT]>,
     >,
+    /// issue 054 (F36) — the touch overlay's consumed-pointer exclusion
+    /// (the §2b double-count hazard's menu half — the
+    /// `WindowTouchRenderer`'s game-side exclusion's twin): a finger the
+    /// overlay has captured (the `Exit` (MENU) button's menu-state press
+    /// — F36's `menu_active` gate) must NOT also drive the 9-zone grid:
+    /// the button sits in the top-left corner (the grid's `up` zone), so
+    /// without the exclusion a MENU press dispatches `upAction` too — the
+    /// selection drift (up to the main menu's `EXIT` item on a held
+    /// press) the operator's "wonky" complaint is about. The exclusion
+    /// keeps the button's press a SINGLE input: the `exit_action`
+    /// (`MenuSlotAdapter::update_input`'s apply), and nothing else. The
+    /// other action buttons have no menu-side body (their `Down`s are not
+    /// consumed in the menu state — the F36 shape), so only the `Exit`
+    /// capture ever lands in a menu state; the exclusion is uniform over
+    /// `captured_ids()` regardless.
+    overlay: std::sync::Arc<std::sync::RwLock<crate::touch_overlay::TouchOverlay>>,
 }
 
 impl MenuTouch for MenuTouchSink {
     fn finger_down_count(&self) -> usize {
+        let consumed = self.consumed_ids();
         self.positions
             .read()
             .expect("touch sink poisoned")
             .iter()
-            .filter(|slot| slot.is_some())
+            .enumerate()
+            .filter(|(i, slot)| slot.is_some() && !consumed.contains(&(*i as u32)))
             .count()
     }
     fn finger_down_positions(&self) -> Vec<oh_math::ssvs::Vec2> {
+        // issue 054 (F36) — the consumed-pointer exclusion (the field's
+        // docs; the `WindowTouchRenderer::finger_down_positions`'s
+        // consumed set — the §2b pattern's menu half).
+        let consumed = self.consumed_ids();
         self.positions
             .read()
             .expect("touch sink poisoned")
             .iter()
-            .filter_map(|slot| *slot)
+            .enumerate()
+            .filter_map(|(i, slot)| slot.filter(|_| !consumed.contains(&(i as u32))))
+            .collect()
+    }
+}
+
+impl MenuTouchSink {
+    /// The overlay's captured pointer ids (the §2b exclusion's source —
+    /// the `WindowTouchRenderer`'s consumed set's menu twin).
+    fn consumed_ids(&self) -> std::collections::HashSet<u32> {
+        self.overlay
+            .read()
+            .expect("touch overlay poisoned")
+            .captured_ids()
+            .into_iter()
             .collect()
     }
 }
@@ -1849,6 +1885,22 @@ struct MenuSlotAdapter {
     /// `was` latch of the transition edge the `refresh_input` tail
     /// computes — the `refresh_input` docs, below).
     was_entering_text: Cell<bool>,
+    /// issue 054 (F36) — the touch overlay (the menu state's half of the
+    /// F28/F31 seam — the shared state machine the game slot's adapter
+    /// drives): this `update_input` drains the overlay's pending press
+    /// edges EVERY frame (the game slot's take's twin — a menu-side edge
+    /// left untaken would linger in the overlay and fire the game slot's
+    /// `trigger_go_to_menu` on the next game entry, the stale-edge
+    /// hazard) and applies the `Exit` (MENU) button's edge — the menu's
+    /// `Tid::Exit` bind's touch counterpart (the `exit_action` body,
+    /// MenuGame.cpp:2457-2502, under the bind's own `is_entering_text()`
+    /// guard, MenuGame.cpp:975-983 — the `menu_active` gate already
+    /// excludes the entering-text states; the guard is the mirror's
+    /// half). The other action buttons (`Replay` / `Restart` / `Pause`)
+    /// have no menu-side body — their edges are drained, not applied
+    /// (the game slot's take is the apply's home; a `Down` on them in
+    /// the menu is not consumed, so no edge is produced there either).
+    touch_overlay: std::sync::Arc<std::sync::RwLock<crate::touch_overlay::TouchOverlay>>,
 }
 
 impl GameState for MenuSlotAdapter {
@@ -2025,6 +2077,20 @@ impl GameState for MenuSlotAdapter {
         // C++'s in-fire `game.ignoreAllInputs`.
         if let Some(flag) = self.ignore_all_pending.take() {
             self.input_manager.borrow_mut().ignore_all_inputs(flag);
+        }
+        // issue 054 (F36) — the menu state's half of the overlay's press
+        // edges (the field's docs: the drain is every frame — the stale-
+        // edge hazard; the apply is the `Tid::Exit` bind's touch
+        // counterpart, the `exit_action` body under the bind's own guard).
+        {
+            let mut o = self.touch_overlay.write().expect("touch overlay poisoned");
+            let edges = o.take_press_edges();
+            if edges[crate::touch_overlay::Button::Exit.idx()]
+                && o.menu_active()
+                && !self.menu.is_entering_text()
+            {
+                self.menu.exit_action();
+            }
         }
     }
 
@@ -2805,14 +2871,44 @@ impl WindowedClient {
             [None; oh_render::input::FINGER_COUNT],
         ));
         window.set_touch_position_sink(touch_sink.clone());
+        // issue 31 §2b — the gameplay touch overlay's state machine
+        // (the module docs): the platform-neutral pointer-feed machine
+        // shared by the frame's feed + draw halves (the `tick_fields`
+        // halves below), the game slot's per-tick apply (the
+        // bound-input writes — the C++'s touch-controls position), and
+        // the engine's rotation path (the consumed-pointer exclusion —
+        // the §2b double-count hazard). Spec §5's enable flag: the
+        // pointer feed exists on the android target (the winit fold's
+        // touch events) AND the emscripten target (issue 32 — the
+        // canvas's pointer events feed the SAME shared touch sink this
+        // frame's feed diffs, spec §5's "31 and 32 meet here"); the
+        // desktop keeps it off (§4.4: the desktop build has no overlay
+        // and no behavior change — `WindowEvent::Touch` never arrives
+        // there either). issue 054 (F36): created BEFORE the
+        // `MenuTouchSink` below — the menu grid's consumed-pointer
+        // exclusion reads the same overlay (the §2b hazard's menu half).
+        let touch_overlay = std::sync::Arc::new(std::sync::RwLock::new({
+            #[cfg(any(target_os = "android", target_os = "emscripten"))]
+            {
+                let mut overlay = crate::touch_overlay::TouchOverlay::new();
+                overlay.set_enabled(true);
+                overlay
+            }
+            #[cfg(not(any(target_os = "android", target_os = "emscripten")))]
+            crate::touch_overlay::TouchOverlay::new()
+        }));
         // issue 025f: the menu's `MenuTouch` seam (the 9-zone touch grid,
         // MenuGame.cpp:2802-2835) — the SAME shared sink the engine's
         // `WindowTouchRenderer` below reads: the window's touch-event
         // fold's data (the window's CURRENT size coordinates — issue
         // 025g: the raw winit coordinates, the same space the grid's
-        // thirds run in via the `MenuWindow` seam).
+        // thirds run in via the `MenuWindow` seam). issue 054 (F36): the
+        // overlay's captured pointers are excluded (the §2b
+        // double-count hazard's menu half — a MENU-button press must not
+        // also dispatch the grid's `up` zone).
         let menu_touch: std::rc::Rc<dyn MenuTouch> = std::rc::Rc::new(MenuTouchSink {
             positions: touch_sink.clone(),
+            overlay: touch_overlay.clone(),
         });
         // issue 025c: the release-edge sink (the C++
         // `checkCloseBootScreens` event-driven seam — the
@@ -2857,30 +2953,6 @@ impl WindowedClient {
         // the C++'s ctor-time window state).
         let input_state = std::sync::Arc::new(std::sync::RwLock::new(*window.get_input_state()));
         window.set_input_state_sink(input_state.clone());
-        // issue 31 §2b — the gameplay touch overlay's state machine
-        // (the module docs): the platform-neutral pointer-feed machine
-        // shared by the frame's feed + draw halves (the `tick_fields`
-        // halves below), the game slot's per-tick apply (the
-        // bound-input writes — the C++'s touch-controls position), and
-        // the engine's rotation path (the consumed-pointer exclusion —
-        // the §2b double-count hazard). Spec §5's enable flag: the
-        // pointer feed exists on the android target (the winit fold's
-        // touch events) AND the emscripten target (issue 32 — the
-        // canvas's pointer events feed the SAME shared touch sink this
-        // frame's feed diffs, spec §5's "31 and 32 meet here"); the
-        // desktop keeps it off (§4.4: the desktop build has no overlay
-        // and no behavior change — `WindowEvent::Touch` never arrives
-        // there either).
-        let touch_overlay = std::sync::Arc::new(std::sync::RwLock::new({
-            #[cfg(any(target_os = "android", target_os = "emscripten"))]
-            {
-                let mut overlay = crate::touch_overlay::TouchOverlay::new();
-                overlay.set_enabled(true);
-                overlay
-            }
-            #[cfg(not(any(target_os = "android", target_os = "emscripten")))]
-            crate::touch_overlay::TouchOverlay::new()
-        }));
         // issue 025g — the ACTUAL-window-size slot (the `RenderWindowSize`
         // docs): created here (moved up from its former position below —
         // the `WindowTouchRenderer`'s `render_size` seam half, the
@@ -3368,6 +3440,11 @@ impl WindowedClient {
             // text-entry state — `is_entering_text` is false), so the
             // edge latch starts there.
             was_entering_text: Cell::new(false),
+            // issue 054 (F36) — the shared overlay (the game slot's
+            // adapter's twin — the same state machine: the menu state's
+            // `Exit` edge drain + apply, the `menu_active` gate's
+            // per-frame feed below).
+            touch_overlay: touch_overlay.clone(),
         });
         let game_adapter: Rc<dyn GameState> = Rc::new(GameSlotAdapter {
             game: game.clone(),
@@ -4259,6 +4336,23 @@ impl WindowedClient {
             // restart / replay is the C++'s `in_replay`'s skip-and-
             // re-fire and must stay reachable on touch).
             o.set_action_active(engine.current() == GameSlot::Game && status.started);
+            // issue 054 (F36) — the menu-state's half of the `Exit`
+            // (MENU) button's gate (the `Button::Exit`'s F36 half): the
+            // `Tid::Exit` bind's menu-side reachability — ON in the
+            // states where `exit_action` (the bind's body, MenuGame.cpp:
+            // 2457-2502) is a real "back" (the `menu_exit_relevant` set:
+            // level / options / online / profile selection + its boot
+            // arm — NOT `SMain`, the "main" category's no-op; NOT the
+            // entering-text states, the bind's `isEnteringText()` guard,
+            // MenuGame.cpp:975-983; NOT the boot screens' beep-only
+            // no-ops — a dead button is not an affordance), OFF
+            // elsewhere + in the game slot. Deactivation clears the
+            // menu-class capture (the gate-scoped `clear_now_off` — the
+            // game-state `action_active` half is untouched; the feed
+            // order's hand-off semantics, the `TouchOverlay`'s module
+            // docs: the `Exit`'s OR gate clears with the action class
+            // at the game→menu switch and survives the menu→game one).
+            o.set_menu_active(engine.current() == GameSlot::Menu && menu.menu_exit_relevant());
             o.set_view(view_w, view_h);
             for (i, (prev, cur)) in last.iter().zip(positions.iter()).enumerate() {
                 let id = i as u32;
@@ -4350,12 +4444,15 @@ impl WindowedClient {
                 let o = touch_overlay.read().expect("touch overlay poisoned");
                 // The draw's gate = the operational gate (spec §5's
                 // "a pointer feed exists" + an enable flag) + EITHER
-                // class's gate (the F31 half: the game-over screen's
-                // action row draws while the gameplay row does not —
-                // a disabled overlay (the desktop — §4.4: no overlay,
-                // no behavior change) draws nothing even when a gate
-                // alone would pass).
-                if o.enabled() && (o.active() || o.action_active()) {
+                // gate's half (the F31 half: the game-over screen's
+                // action row draws while the gameplay row does not; the
+                // F36 half: the menu's back states' `Exit` (MENU) label
+                // draws while no game-state gate is on — the menu's
+                // "back" affordance, the `Tid::Exit` bind's touch
+                // counterpart) — a disabled overlay (the desktop — §4.4:
+                // no overlay, no behavior change) draws nothing even
+                // when a gate alone would pass.
+                if o.enabled() && (o.active() || o.action_active() || o.menu_active()) {
                     let (view_w, view_h) = render_size.get();
                     touch_overlay_buttons.borrow_mut().draw(
                         &mut target,
@@ -4644,6 +4741,11 @@ mod tests {
             soft_input: Arc::new(NoOpSoftInput),
             ignore_all_pending: Rc::new(Cell::new(None)),
             was_entering_text: Cell::new(false),
+            // F36 — the shared overlay (disabled in the tests — the
+            // boot-screen tests' keyboard / release-edge paths).
+            touch_overlay: std::sync::Arc::new(std::sync::RwLock::new(
+                crate::touch_overlay::TouchOverlay::new(),
+            )),
         };
 
         // The C++ ctor body holds the boot gate (MenuGame.cpp:358).
@@ -4740,6 +4842,11 @@ mod tests {
             soft_input: Arc::new(NoOpSoftInput),
             ignore_all_pending: Rc::new(Cell::new(None)),
             was_entering_text: Cell::new(false),
+            // F36 — the shared overlay (disabled in the tests — the
+            // boot-screen tests' keyboard / release-edge paths).
+            touch_overlay: std::sync::Arc::new(std::sync::RwLock::new(
+                crate::touch_overlay::TouchOverlay::new(),
+            )),
         };
         let mut window = Window::headless(800, 480);
         window.set_released_edges_sink(released_edges.clone());
@@ -4835,6 +4942,11 @@ mod tests {
             soft_input: Arc::new(NoOpSoftInput),
             ignore_all_pending: Rc::new(Cell::new(None)),
             was_entering_text: Cell::new(false),
+            // F36 — the shared overlay (disabled in the tests — the
+            // boot-screen tests' keyboard / release-edge paths).
+            touch_overlay: std::sync::Arc::new(std::sync::RwLock::new(
+                crate::touch_overlay::TouchOverlay::new(),
+            )),
         };
         let mut window = Window::headless(800, 480);
         window.set_released_edges_sink(released_edges.clone());
@@ -4934,6 +5046,11 @@ mod tests {
             soft_input: Arc::new(NoOpSoftInput),
             ignore_all_pending: Rc::new(Cell::new(None)),
             was_entering_text: Cell::new(false),
+            // F36 — the shared overlay (disabled in the tests — the
+            // boot-screen tests' keyboard / release-edge paths).
+            touch_overlay: std::sync::Arc::new(std::sync::RwLock::new(
+                crate::touch_overlay::TouchOverlay::new(),
+            )),
         };
         let mut window = Window::headless(800, 480);
         window.set_wheel_events_sink(wheel_events.clone());
@@ -5051,6 +5168,11 @@ mod tests {
             soft_input,
             ignore_all_pending: Rc::new(Cell::new(None)),
             was_entering_text: Cell::new(false),
+            // F36 — the shared overlay (disabled in the tests — the
+            // boot-screen tests' keyboard / release-edge paths).
+            touch_overlay: std::sync::Arc::new(std::sync::RwLock::new(
+                crate::touch_overlay::TouchOverlay::new(),
+            )),
         };
 
         // The boot state is not a text-entry state — no call (the latch
@@ -5118,5 +5240,116 @@ mod tests {
                 .as_slice(),
             &[true, false, true]
         );
+    }
+
+    /// issue 054 (F36) — the menu state's half of the overlay's press
+    /// edges: a press on the `Exit` (MENU) button in a back-relevant
+    /// menu state drives the `exit_action` body (the `Tid::Exit` bind's
+    /// touch counterpart — MenuGame.cpp:2457-2502 + the bind's
+    /// `isEnteringText()` guard, :975-983 — the `menu_active` gate's
+    /// `menu_exit_relevant` states: level / options / online / profile
+    /// selection + its boot arm; NOT `SMain`'s "main"-category no-op,
+    /// NOT the entering-text guard, NOT the boot screens). The
+    /// every-frame drain (the `MenuSlotAdapter::update_input`'s take,
+    /// the game slot's take's twin) fires it exactly ONCE — the
+    /// stale-edge hazard: a menu-side edge left untaken would linger in
+    /// the shared overlay and fire the game slot's `trigger_go_to_menu`
+    /// on the next game entry (the field's docs).
+    #[test]
+    fn menu_exit_edge_backs_out_of_the_level_selection() {
+        let assets = {
+            let fa = FakeAssets::new();
+            fa.add_profile("P1");
+            fa
+        };
+        let audio = oh_menu::RecordingAudio::new();
+        let menu = Rc::new(MenuGame::new(
+            assets,
+            FakeConfig::new(),
+            Rc::new(NoopNetwork),
+            audio.clone(),
+            Rc::new(NoopTouch),
+            Rc::new(oh_menu::NoMenuJoystick),
+            oh_menu::FakeWindow::new(),
+            None,
+            None,
+            None,
+            None, // `unlock_achievement` — the 29b2/29b8 Steam seam (None in the tests)
+            None,
+            Rc::new(oh_menu::layout::LinearFontHeight),
+        ));
+        let assets_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_RELEASE/Assets");
+        let f = oh_render::font::Font::load(&assets_dir.join("OpenSquare-Regular.ttf"))
+            .expect("OpenSquare-Regular.ttf must load");
+        // The overlay: the menu's back-states' shape (F36's `menu_active`
+        // gate; the game-state gates off) + a `Down` on the `Exit`
+        // (MENU) button — the top-left, the `button_centers`'s layout.
+        let (w, h) = (800.0, 480.0);
+        let overlay = std::sync::Arc::new(std::sync::RwLock::new({
+            let mut o = crate::touch_overlay::TouchOverlay::new();
+            o.set_enabled(true);
+            o.set_menu_active(true);
+            o.set_view(w, h);
+            let c = crate::touch_overlay::button_centers(w, h)
+                [crate::touch_overlay::Button::Exit.idx()];
+            o.pointer_event(&crate::touch_overlay::PointerEvent {
+                id: 0,
+                position: oh_math::ssvs::Vec2::new(c.x, c.y),
+                phase: crate::touch_overlay::Phase::Down,
+            });
+            o
+        }));
+        let adapter = MenuSlotAdapter {
+            menu: menu.clone(),
+            input_manager: Rc::new(RefCell::new(Manager::new())),
+            menu_draw: RefCell::new(crate::menu_draw::MenuDraw::new(&assets_dir, &f, &f)),
+            released_edges: Arc::new(RwLock::new(ReleasedEdges::default())),
+            wheel_events: Arc::new(RwLock::new(Vec::new())),
+            entered_text: Arc::new(RwLock::new(Vec::new())),
+            soft_input: Arc::new(NoOpSoftInput),
+            ignore_all_pending: Rc::new(Cell::new(None)),
+            was_entering_text: Cell::new(false),
+            touch_overlay: overlay,
+        };
+
+        // Boot to the level selection (the operator's stuck state —
+        // "back" had no touch path: the C++'s `exitAction` is the `T`
+        // key / `Escape` / joystick-Exit bind's, and the grid's nine
+        // zones map only left / right / ok / up / down).
+        adapter.menu.advance_boot_screen();
+        adapter.menu.advance_boot_screen();
+        adapter.menu.ok_action(); // SLPSelectBoot → SMain
+        assert_eq!(adapter.menu.state(), States::SMain);
+        adapter.menu.ok_action(); // SMain "LEVEL SELECT" → LevelSelection
+        assert_eq!(adapter.menu.state(), States::LevelSelection);
+
+        let beeps = |a: &oh_menu::RecordingAudio| {
+            a.played
+                .borrow()
+                .iter()
+                .filter(|s| s.as_str() == "beep.ogg")
+                .count()
+        };
+        assert_eq!(beeps(&audio), 0);
+
+        // The per-tick input pass (the loop's `engine.update_input`): the
+        // `Exit` edge applies the `exit_action` body (the LevelSelection
+        // arm: `SMain` + the `beep.ogg`, MenuGame.cpp:2472-2477) — the
+        // menu's "back" on touch.
+        adapter.update_input(&InputState::new(), 0.016);
+        assert_eq!(
+            adapter.menu.state(),
+            States::SMain,
+            "the MENU press backs out of the level selection"
+        );
+        assert_eq!(beeps(&audio), 1, "the exit_action's one beep");
+
+        // The drain: the edge was consumed (the button lifted — the
+        // feed's `Up` is the next frame's diff; here the edge's take
+        // already emptied it) — a second pass fires nothing.
+        adapter.update_input(&InputState::new(), 0.016);
+        assert_eq!(beeps(&audio), 1, "the edge fired exactly once");
+        assert_eq!(adapter.menu.state(), States::SMain);
     }
 }

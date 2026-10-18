@@ -36,6 +36,19 @@
 //!   composition (`windowed.rs`'s `GameSlotAdapter::update_input` — the
 //!   C++'s touch-controls position, after the keyboard binds' per-tick
 //!   re-apply), NOT here: this module only reports held state.
+//! * **The three gates** (spec §2.4/§2.5 + issue 039 F31 + issue 054
+//!   F36): the gameplay buttons answer to `active` (playing only), the
+//!   action buttons to `action_active` (the whole game state) — except
+//!   `Exit`, which additionally answers to `menu_active` (the menu's
+//!   back-relevant states: the C++'s `Tid::Exit` bind's menu-side
+//!   reachability, the `exit_action` body's touch counterpart). A
+//!   button's deactivation clears its capture / held flag / edge only
+//!   while its own gate is off (the gate-scoped `clear_now_off` — the
+//!   feed order (`set_active` → `set_action_active` →
+//!   `set_menu_active`) makes the `Exit`'s OR gate survive the
+//!   menu→game hand-off and clear with the action class at the
+//!   game→menu one — a capture cannot be held across the latter, whose
+//!   switch is the `Exit` press's own effect).
 
 use std::collections::HashMap;
 
@@ -83,7 +96,7 @@ pub struct PointerEvent {
 
 /// The overlay's buttons (spec §2: the bound inputs — focus (the
 /// tutorial's step-2 blocker), swap, rotation left/right — + §2.6: the
-/// pause/exit affordance).
+/// pause/exit affordance; issue 054 F36: the `Exit`'s menu-state half).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Button {
     /// §2.6 — the way OUT of gameplay (the C++'s Escape → `goToMenu()`;
@@ -91,6 +104,19 @@ pub enum Button {
     /// false)` contract — 029d1; the C++'s back key does the same on
     /// Android). Edge-triggered (one fire per physical press), not a
     /// held input.
+    ///
+    /// issue 054 (F36) — the menu-state half of the same affordance: in
+    /// the menu slot's back-relevant states (`menu_exit_relevant` — the
+    /// `menu_active` gate), the button drives the menu's `exit_action()`
+    /// — the C++'s `Tid::Exit` bind's body (MenuGame.cpp:2457-2502),
+    /// with the bind's own `isEnteringText()` guard (MenuGame.cpp:
+    /// 975-983) — the touch counterpart of the `T` key / `Escape` /
+    /// joystick-Exit bind's menu reachability (the C++'s shipped grid
+    /// maps only left / right / ok / up / down — the menu's "back" had
+    /// no touch path at all, the operator's "i never see the menu
+    /// button", the F36 register row). One button, two slots: the game
+    /// state's `Tid::Exit` (the `trigger_go_to_menu`'s contract) and the
+    /// menu state's `exit_action`.
     Exit,
     /// The focus input (the default bind: LShift — the tutorial's
     /// "focused (left shift)" gate, babysteps.lua:167).
@@ -241,11 +267,31 @@ pub struct TouchOverlay {
     /// the C++'s `Tid::Exit` / `Tid::Restart` / `Tid::Replay` /
     /// `Tid::Pause` keyboard binds stay live in every one of those
     /// states (HexagonGame.cpp:385-441), so the touch affordance does
-    /// too. Deactivation clears the ACTION captures / held flags /
-    /// edges (the `active` half's clears never touch this class, and
-    /// vice versa — the two gates' clears are class-scoped, the
-    /// `clear_class` half).
+    /// too. Deactivation clears the class's captures / held flags /
+    /// edges where the button's gate is now off (the gate-scoped
+    /// `clear_now_off` — the `active` half's clears never touch this
+    /// class, and vice versa — the two gates' clears are class-scoped,
+    /// the `clear_now_off` half).
     action_active: bool,
+    /// issue 054 (F36) — the menu-state's half of the `Exit` (MENU)
+    /// button's gate: the C++'s `Tid::Exit` bind's menu-side reachability
+    /// (the `exitAction` body, MenuGame.cpp:2457-2502, with the bind's
+    /// `isEnteringText()` guard, MenuGame.cpp:975-983) — the composition
+    /// feeds it from the `GameSlot::Menu`'s `menu_exit_relevant` states
+    /// (the states where `exit_action` is a real "back": level /
+    /// options / online / profile selection + its boot arm; NOT `SMain`
+    /// — the "main" category's no-op — NOT the entering-text guard, NOT
+    /// the boot screens' beep-only no-ops: a dead button is not an
+    /// affordance). `Button::Exit` answers to `action_active ||
+    /// menu_active` (the game's whole state OR the menu's back states —
+    /// one button, two slots); the other action buttons (`Replay` /
+    /// `Restart` / `Pause`) answer to `action_active` alone (they have
+    /// no menu-side body). Deactivation clears the `Exit` capture / held
+    /// flag / edge only where `action_active` is off too (the gate-
+    /// scoped `clear_now_off`'s menu half — the game→menu transition
+    /// keeps a finger on the MENU button captured while the menu gate
+    /// takes over, the transition's semantics).
+    menu_active: bool,
     view_w: f32,
     view_h: f32,
     /// Pointer capture (spec §5): a `Down` hit on a button binds the
@@ -279,15 +325,20 @@ impl TouchOverlay {
 
     /// The gameplay-only gate's per-frame refresh (spec §2.4/§2.5).
     /// Deactivation clears the GAMEPLAY captures + held flags + pending
-    /// edges (the class-scoped `clear_class` — the action buttons' state
-    /// is the `action_active` gate's, untouched here) — the C++'s
+    /// edges (the gate-scoped `clear_now_off` — the action / menu
+    /// buttons' state is their gates', untouched here) — the C++'s
     /// state-transition semantics (the dead game's held touch must not
     /// leak into the next session's inputs).
     pub fn set_active(&mut self, active: bool) {
-        if self.active && !active {
-            self.clear_class(false);
-        }
+        let was = self.active;
         self.active = active;
+        // The flag moves FIRST: the gate-scoped clear reads the NEW
+        // values (a gate whose deactivation triggered the clear must
+        // read as off in it — the class-scoped `clear_class`'s
+        // unconditional drop is the gate check's post-flip form).
+        if was && !active {
+            self.clear_now_off();
+        }
     }
     #[must_use]
     pub fn active(&self) -> bool {
@@ -296,36 +347,83 @@ impl TouchOverlay {
 
     /// issue 039 (F31) — the action-button gate's per-frame refresh (the
     /// whole game state — the composition's `GameSlot::Game && started`
-    /// feed). Deactivation clears the ACTION captures + held flags +
-    /// pending edges (the class-scoped `clear_class` — the gameplay
-    /// buttons' state is the `active` gate's, untouched here).
+    /// feed). Deactivation clears the class's captures / held flags /
+    /// edges where the button's gate is now off (the gate-scoped
+    /// `clear_now_off` — the gameplay buttons' state is the `active`
+    /// gate's, untouched here; the `Exit`'s capture survives into the
+    /// menu-state half when `menu_active` is on, the gate's own OR).
     pub fn set_action_active(&mut self, active: bool) {
-        if self.action_active && !active {
-            self.clear_class(true);
-        }
+        let was = self.action_active;
         self.action_active = active;
+        // The flag moves FIRST (the `set_active`'s note): the clear reads
+        // the new `action_active` (off) with the other gates' current
+        // values — the `Exit`'s capture survives the hand-off while
+        // `menu_active` holds it (the gate's own OR), the rest of the
+        // action class clears.
+        if was && !active {
+            self.clear_now_off();
+        }
     }
     #[must_use]
     pub fn action_active(&self) -> bool {
         self.action_active
     }
 
-    /// The class-scoped deactivation clear (F31): drop this class's
-    /// captures, clear its held flags where no pointer still holds the
-    /// button (the §2b refcount), and drop its pending edges. A button
-    /// belongs to exactly ONE class, so the "other captured pointer
-    /// still holds it" test is over the whole (post-drop) capture map.
-    fn clear_class(&mut self, action: bool) {
-        self.captured.retain(|_, btn| btn.is_action() != action);
+    /// issue 054 (F36) — the menu-state's gate's per-frame refresh (the
+    /// composition's `GameSlot::Menu && menu_exit_relevant` feed — the
+    /// `Exit` button's menu-side reachability, the `Tid::Exit` bind's
+    /// touch counterpart; the field's docs). Deactivation clears the
+    /// `Exit`'s capture / held flag / edge only where `action_active` is
+    /// off too (the gate-scoped `clear_now_off`'s menu half — leaving
+    /// the game state's `action_active` half untouched).
+    pub fn set_menu_active(&mut self, active: bool) {
+        let was = self.menu_active;
+        self.menu_active = active;
+        // The flag moves FIRST (the `set_active`'s note): the clear reads
+        // the new `menu_active` (off) with `action_active`'s current
+        // value — the `Exit`'s capture survives into the game state
+        // while the action gate holds it (the gate's own OR).
+        if was && !active {
+            self.clear_now_off();
+        }
+    }
+    #[must_use]
+    pub fn menu_active(&self) -> bool {
+        self.menu_active
+    }
+
+    /// The per-button gate (the class split + the F36 menu half): the
+    /// gameplay buttons answer to `active`, the action buttons to
+    /// `action_active` — except `Button::Exit`, which additionally
+    /// answers to `menu_active` (the menu state's `Tid::Exit`
+    /// affordance, F36 — one button, two slots).
+    fn gate_on(&self, btn: Button) -> bool {
+        match btn {
+            Button::Exit => self.action_active || self.menu_active,
+            b if b.is_action() => self.action_active,
+            _ => self.active,
+        }
+    }
+
+    /// The gate-scoped deactivation clear (the F31 class-scoped clear's
+    /// generalization — F36's `Exit` answers to two gates, so "the
+    /// class's clear" is "every button whose gate is now off"): drop
+    /// the button's captures, clear its held flag where no other
+    /// captured pointer still holds it (the §2b refcount), and drop its
+    /// pending edge. A gate's deactivation only clears its own class's
+    /// buttons (a button belongs to exactly ONE class, and a class is
+    /// off only when every gate of its buttons is off — the `Exit`
+    /// survives the action→menu hand-off while `menu_active` holds it).
+    fn clear_now_off(&mut self) {
         for btn in Button::ALL {
-            if btn.is_action() != action {
+            if self.gate_on(btn) {
                 continue;
             }
-            let i = btn.idx();
+            self.captured.retain(|_, b| *b != btn);
             if !self.captured.values().any(|b| *b == btn) {
-                self.held[i] = false;
+                self.held[btn.idx()] = false;
             }
-            self.press_edges[i] = false;
+            self.press_edges[btn.idx()] = false;
         }
     }
 
@@ -354,19 +452,17 @@ impl TouchOverlay {
                 let Some(btn) = Self::hit_test(ev.position, self.view_w, self.view_h) else {
                     return; // no button under the pointer — not consumed
                 };
-                // issue 039 (F31) — the per-class gate: a gameplay
-                // button only while the `active` gate is on (spec
-                // §2.4/§2.5 — "must not fire during menus"), an action
-                // button only while the `action_active` gate is on (the
-                // whole game state — the C++'s keyboard binds'
-                // reachability, HexagonGame.cpp:385-441). A `Down` on
-                // a button whose class is off is NOT consumed.
-                let gated = if btn.is_action() {
-                    self.action_active
-                } else {
-                    self.active
-                };
-                if !gated {
+                // issue 039 (F31) + issue 054 (F36) — the per-button
+                // gate: a gameplay button only while the `active` gate
+                // is on (spec §2.4/§2.5 — "must not fire during menus"),
+                // an action button only while its gate is on (`Exit`: the
+                // whole game state OR the menu's back states, F36's
+                // `menu_active` half; the rest: the whole game state —
+                // the C++'s keyboard binds' reachability, HexagonGame.
+                // cpp:385-441; the menu's `Tid::Exit` reachability,
+                // MenuGame.cpp:2457-2502 + :975-983). A `Down` on a
+                // button whose gate is off is NOT consumed.
+                if !self.gate_on(btn) {
                     return;
                 }
                 self.captured.insert(ev.id, btn);
@@ -542,16 +638,20 @@ impl TouchOverlayButtons {
         };
         let centers = button_centers(view_w, view_h);
 
-        // issue 039 (F31) — the per-class visibility: the gameplay row
-        // (the rotations / focus / swap) only under the `active` gate
-        // (playing only — the spec §2.4/§2.5 half), the action row
-        // (the exit + the replay / restart / pause trio) only under the
-        // `action_active` gate (the whole game state — the game-over
-        // screen's controls stay drawn over the still-rendered game
-        // screen, the C++'s `has_died` state's "the game screen is the
-        // results screen's background" half).
+        // issue 039 (F31) + issue 054 (F36) — the per-gate visibility:
+        // the gameplay row (the rotations / focus / swap) only under the
+        // `active` gate (playing only — the spec §2.4/§2.5 half), the
+        // action row under the action gates — the `Exit` (MENU) label
+        // under EITHER action gate (F36's `menu_active` half: the menu's
+        // back states, the `Tid::Exit` bind's touch counterpart), the
+        // replay / restart / pause trio under the game-state
+        // `action_active` alone (they have no menu-side body — the
+        // game-over screen's controls stay drawn over the
+        // still-rendered game screen, the C++'s `has_died` state's "the
+        // game screen is the results screen's background" half).
         let gameplay = overlay.active();
         let action = overlay.action_active();
+        let exit = action || overlay.menu_active();
 
         let place = |sprite: &mut Sprite, btn: Button| {
             // The C++'s `setOrigin({halfSize, halfSize})` — center
@@ -579,9 +679,11 @@ impl TouchOverlayButtons {
             target.draw_sprite(&self.swap);
         }
 
-        if action {
+        if exit {
             place_label(&mut self.exit, Button::Exit);
             target.draw_text(&self.exit, oh_render::draw::RenderStates::default());
+        }
+        if action {
             // issue 039 (F31) — the action trio's labels (the `Tid`
             // vocabulary the end-of-level hint's Android half reads,
             // F31's "PRESS REPLAY TO REPLAY" line).
@@ -923,6 +1025,128 @@ mod tests {
         o.pointer_event(&up(1));
     }
 
+    /// issue 054 (F36) — the menu-state shape: with `menu_active` on and
+    /// the game-state gates off, the `Exit` (MENU) button captures / holds
+    /// / fires while the rest of the action row (the `Replay` / `Restart`
+    /// / `Pause` — no menu-side body) and the gameplay row do not — a
+    /// stray finger there must not capture, must not hold, must not fire.
+    #[test]
+    fn the_menu_state_shape_consumes_only_the_exit_button() {
+        let mut o = TouchOverlay::new();
+        o.set_enabled(true);
+        o.set_menu_active(true);
+        o.set_view(W, H);
+        // The MENU button answers to its gate.
+        o.pointer_event(&down(1, exit_pos().x, exit_pos().y));
+        assert!(o.held(Button::Exit));
+        assert!(o.take_press_edges()[Button::Exit.idx()]);
+        // The action trio has no menu-side body — not consumed.
+        o.pointer_event(&down(2, replay_pos().x, replay_pos().y));
+        o.pointer_event(&down(3, restart_pos().x, restart_pos().y));
+        o.pointer_event(&down(4, pause_pos().x, pause_pos().y));
+        assert!(!o.held(Button::Replay));
+        assert!(!o.held(Button::Restart));
+        assert!(!o.held(Button::Pause));
+        assert_eq!(o.captured_ids(), vec![1]);
+        // The gameplay row is off in the menu — not consumed.
+        o.pointer_event(&down(5, focus_pos().x, focus_pos().y));
+        assert!(!o.held(Button::Focus));
+        assert_eq!(o.captured_ids(), vec![1]);
+        o.pointer_event(&up(1));
+        assert!(!o.held(Button::Exit));
+    }
+
+    /// issue 054 (F36) — the state hand-offs: the composition's feed
+    /// order is `set_active` → `set_action_active` → `set_menu_active`,
+    /// and the gate-scoped clear reads the post-flip values with the
+    /// other gates' current values. game→menu: the action gate drops
+    /// FIRST — the action class's clear (F31's semantics: the game's
+    /// end clears the action captures) includes the `Exit`; the menu
+    /// gate then takes over fresh (the next MENU press — the operator's
+    /// release is the transition's physical half: the game→menu switch
+    /// is the `Exit` press's own effect, so a finger cannot be held on
+    /// the button across it — re-captures). menu→game: the action gate
+    /// rises BEFORE the menu gate drops (the feed order) — the `Exit`
+    /// gate's OR stays on, the capture survives (a harmless by-product:
+    /// the level-start's ok-tap finger is the middle zone's, not the
+    /// MENU button's). The other action buttons clear on the game's end
+    /// (their single gate drops) and do not re-capture in the menu (no
+    /// menu-side body).
+    #[test]
+    fn the_exit_gate_across_the_state_hand_offs() {
+        // game (playing) → menu: the action gate drops first — the
+        // action class clears (the `Exit` capture included, F31's
+        // semantics), the menu gate then takes over fresh.
+        let mut o = active_overlay();
+        o.pointer_event(&down(1, exit_pos().x, exit_pos().y));
+        o.pointer_event(&down(2, replay_pos().x, replay_pos().y));
+        assert!(o.held(Button::Exit));
+        assert!(o.held(Button::Replay));
+        o.set_active(false);
+        o.set_action_active(false);
+        assert!(
+            !o.held(Button::Exit),
+            "the game's end clears the action class (the menu gate rises after)"
+        );
+        assert!(
+            !o.held(Button::Replay),
+            "the action trio clears at the game's end (no menu-side body)"
+        );
+        assert!(o.captured_ids().is_empty());
+        o.set_menu_active(true);
+        // The physically-still-down fingers' `Up`s are no-ops now (their
+        // captures were cleared with the gates).
+        o.pointer_event(&up(1));
+        o.pointer_event(&up(2));
+        // The next press (the operator's lift + re-press — the
+        // transition's physical half) re-captures cleanly under the menu
+        // gate.
+        o.pointer_event(&down(1, exit_pos().x, exit_pos().y));
+        assert!(o.held(Button::Exit));
+        assert!(o.take_press_edges()[Button::Exit.idx()]);
+        // menu → game: the action gate rises before the menu gate drops
+        // (the feed order) — the gate's OR keeps the capture.
+        o.set_action_active(true);
+        o.set_menu_active(false);
+        assert!(
+            o.held(Button::Exit),
+            "the action gate's rise keeps the OR on: the capture survives"
+        );
+        o.pointer_event(&up(1));
+        assert!(!o.held(Button::Exit));
+    }
+
+    /// issue 054 (F36) — the menu gate's own deactivation: leaving a
+    /// back-relevant menu state for one that is not (`SMain`'s
+    /// "main"-category no-op, the entering-text guard, the boot
+    /// screens) drops the `Exit` capture / held flag / edge (no stale
+    /// MENU press lingers to fire a dead `exit_action`), while the
+    /// action gate's state is untouched.
+    #[test]
+    fn the_menu_gate_deactivation_clears_the_exit_capture() {
+        let mut o = TouchOverlay::new();
+        o.set_enabled(true);
+        o.set_menu_active(true);
+        o.set_view(W, H);
+        o.pointer_event(&down(1, exit_pos().x, exit_pos().y));
+        assert!(o.held(Button::Exit));
+        assert!(o.take_press_edges()[Button::Exit.idx()]);
+        o.set_menu_active(false);
+        assert!(
+            !o.held(Button::Exit),
+            "the back state left: the capture is gone"
+        );
+        assert!(o.captured_ids().is_empty());
+        assert!(!o.take_press_edges().iter().any(|e| *e));
+        // The physically-still-down finger's `Up` is a no-op.
+        o.pointer_event(&up(1));
+        // A re-activation is clean (a fresh press is required).
+        o.set_menu_active(true);
+        assert!(!o.held(Button::Exit));
+        o.pointer_event(&down(1, exit_pos().x, exit_pos().y));
+        assert!(o.held(Button::Exit));
+    }
+
     /// The game-over shape (F31): with the gameplay gate off, a
     /// `Down` on a gameplay button is NOT consumed (the `Focus` / `Swap`
     /// buttons are gone at death — a stray finger there must not
@@ -931,7 +1155,6 @@ mod tests {
     #[test]
     fn the_game_over_shape_consumes_only_the_action_buttons() {
         let mut o = game_over_overlay();
-        o.pointer_event(&down(1, focus_pos().x, focus_pos().y));
         assert!(!o.held(Button::Focus));
         assert!(
             o.captured_ids().is_empty(),
