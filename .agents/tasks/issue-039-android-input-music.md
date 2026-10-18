@@ -249,8 +249,8 @@ the ungated one) and feeds `set_action_active`. The end-of-level hint's Android 
 `cfg(target_os = "android")` override: "PRESS RESTART TO RESTART" / "PRESS REPLAY TO REPLAY";
 the desktop strings stay C++ verbatim — the host test pins them).
 
-**Device status — the input half is CONFIRMED; the draw half is PENDING DEVICE VISUAL
-VERIFICATION.** Confirmed on device (this build, live): the in-game `MENU` (exit) button took
+**Device status — the input half is CONFIRMED; the draw half is CONFIRMED (051, 2026-10-18 —
+see the results paragraph after the check list below).** Confirmed on device (this build, live): the in-game `MENU` (exit) button took
 the game back to the menu mid-level; a level was started (the default tutorial level
 `babysteps`, then the orthoplex pack's `bipolarity`); death was reached (the `death.ogg` +
 `personalBest.ogg` decodes, the replay save — all in logcat); and the ONE image read of the
@@ -273,6 +273,24 @@ hold the left half (400,360) ~4 s) and screenshot — the `MENU` (top-left) / `R
 line re-fires); (4) reach death again and hold `REPLAY` (display (795,44)) → the death
 replay plays; (5) hold `MENU` (display (114,44)) → the main menu; (6) **leave the device at
 the main menu**.
+
+**051 (2026-10-18) — the check list ran, on the operator's device (ADB TCP
+`192.168.10.138:40119`); the draw half is now CONFIRMED.** Step 1: the lane rebuilt the
+release APK from master + 051's instrumentation commit `6fcfe13d` and `adb install -r`'d it
+(same keystore — the pre-existing install's signature matched, no data loss). Steps 2 (draw):
+the ONE image read of the 051 lane (`.agents/evidence/lane-051/oh051_d0.png`, the game-over
+screen after a death on `examplelevel`) shows the action row drawn over the results screen —
+`REPLAY` / `RESTART` (top-middle, flanking the focus/swap x's), `PAUSE` (top-right), the
+`MENU` (Exit, top-left), plus the Android hint line bottom-centre ("swipe left/right =
+CCW/CW", the C++'s `Packs/android.txt` → `android_menu_text` — the row's position oracle). The
+earlier "buttons didn't paint" state (pre-`93d86438`) is gone: at `has_died` the row paints.
+Steps 3–5 (function, held-press tests + text/pixel oracles): RESTART (875,44) held 400 ms →
+the `playLevelMusic` line re-fired for the same level (the level restarted — re-confirmed in
+a second cycle); REPLAY (795,44) → the replay scene played between the death screen and its
+return (temporal brightness series: death 31.5 → replay 173.0 → death 30.8); MENU (114,44) →
+back to the main menu (Level Selection, 0.0% pixel diff vs a known menu capture). The
+`oh-menu` grid-dispatch log lines (the 039 STEP 2 instrument) confirm each held press landed
+in the right zone. Step 6 honored: the device was left at the main menu.
 
 **The C++ default bind table, as a touch-only reachability table** (`Config.cpp:255-288`'s
 key/mouse defaults + `:245-252`'s joystick defaults; "C++ shipped" = the rotation-only touch

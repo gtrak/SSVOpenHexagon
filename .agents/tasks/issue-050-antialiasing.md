@@ -192,12 +192,7 @@ printed reason headless; plus the headless store-half round trip (window.rs).
 
 ### What I could NOT establish (honest negatives)
 
-- **The Android device's `GL_SAMPLES`** — the adb listener is down (hygiene §6: recorded PENDING,
-  not worked around). The standing probe is the create-time log: `[oh-render] context MSAA: …` (the
-  pick + its fallback warning, naming the available sample counts) + `[oh-render] context
-  GL_SAMPLES = N`. On the phone: read logcat after boot; a `GL_SAMPLES = 0` with a requested
-  nonzero level IS the "no matching EGL config" case made real (the fallback worked as designed —
-  the game runs, MSAA off, the warning names why).
+- **The Android device's `GL_SAMPLES`** (probe A — **VERIFIED 2026-10-18, 051, operator's device, ADB TCP `192.168.10.138:40119`):** the standing create-time log read as expected — logcat shows `[oh-render] context MSAA: requested level 4 — config with 4 samples` immediately followed by `[oh-render] context GL_SAMPLES = 4` (tag `RustStdoutStderr`, via the 039 log sink): the device context honors the full requested 4× MSAA, matching the desktop's readback. Raw: `.agents/evidence/lane-051/lane051-session.logcat`. **Both 050 device-side residuals are now closed.**
 - **The browser's `GL_SAMPLES`** — no browser on this box. The standing probe is the emscripten
   create log (`[oh-render] WebGL2 antialias = … — GL_SAMPLES = N`, the browser console / the
   web-boot trace channel); the level's exact value was never claimable there (the boolean mapping).

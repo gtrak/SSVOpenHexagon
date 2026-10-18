@@ -67,3 +67,128 @@ report the numbers you measured, not the numbers you expected.**
 - **Leave the device at the main menu, no app uninstalled, no settings changed.**
 - Update the tracker rows for the three probes with what the device said (`049`'s K2 device half, `039`'s
   pending visual half, `050`'s pending GL_SAMPLES half) and append a `## Report`.
+
+## Report (2026-10-18, operator's device — ADB TCP `192.168.10.138:40119`; the old port
+`41611` refused, this one is live; the device was reachable and idle)
+
+Device: moto g power (2021) (`motorola/borneo`, SD439 / Adreno 610), Android 11, display
+1600x720 (landscape). App: `info.vittorioromeo.openhexagon` (installed 2026-10-16, the 025
+series' install + updates). **APK:** this lane rebuilt the release APK from `lane/dev`
+master (`a861f41c` + the instrumentation commit `6fcfe13d` below — `tools/package-android.sh`
+green: signature verification, keystore match, content hashes, `APK OK`) and `adb install
+-r`'d it — the pre-existing install's signature matched the project's self-distribution
+keystore, so no data was lost (configs/profiles/users survived; the boot screen was skipped
+past with the existing `no_profile` profile). The installed APK is this lane's build
+(`lastUpdateTime 2026-10-18 10:11:47`), same signature as before.
+
+### Probe A — `GL_SAMPLES` on the operator's device: **POSITIVE**
+
+Logcat (tag `RustStdoutStderr` — the 039 STEP 0 sink routes the port's stdout there; the
+`OpenHexagon` tag carries the JNI-callback log half), after boot:
+
+```
+[oh-render] context MSAA: requested level 4 — config with 4 samples
+[oh-render] context GL_SAMPLES = 4
+```
+
+The device context honors the full requested 4× MSAA — no fallback, no
+`GL_SAMPLES = 0` (the "no matching EGL config" case the 050 file described). The 050
+antialiasing device-side residual is closed (the task file's bullet is updated).
+
+### Probe B — the game-over action row: **DRAWN AND FUNCTIONAL**
+
+One deliberate image read of the whole lane (`.agents/evidence/lane-051/oh051_d0.png`, the
+game-over screen after a death on `workshopexample/examplelevel`) confirmed the draw half:
+`REPLAY` / `RESTART` (top-middle, flanking the focus/swap x's), `PAUSE` (top-right), `MENU`
+(Exit, top-left), plus the Android hint line bottom-centre ("swipe left/right = CCW/CW", the
+C++'s `Packs/android.txt` → the port's `android_menu_text`) — the row's position oracle. The
+pre-`93d86438` "buttons didn't paint" state is gone: at `has_died` the row paints.
+
+Function, held-press tests (400 ms `input swipe X Y X Y 400` = a held touch at the button's
+centre; a held press produces ~2–5 `oh-menu` grid-dispatch events at the device's input
+rate — each registers the zone, which is what the text oracle shows) with text/pixel oracles
+(no image reads beyond the one above):
+
+- **RESTART (display 875,44):** the `playLevelMusic` log line re-fires for the same level —
+  the level restarted. Re-confirmed in a second cycle during the sustained run.
+- **REPLAY (display 795,44):** the death replay plays — temporal brightness series across
+  the press: death screen mean 31.5 → during replay 173.0 (the bright replay scene) →
+  death screen again 30.8.
+- **MENU (display 114,44):** back to the main menu (Level Selection) — the final capture is
+  a 0.0% pixel diff vs a known LevelSelection capture.
+- The `oh-menu` grid-dispatch lines (the 039 STEP 2 instrument) confirm each held press
+  landed in the right zone (`zone=restart` / `zone=replay` / the Exit tap).
+
+039's pending visual half is confirmed (the task file's device-status section is updated).
+
+### Probe C — fps / CPU / ANR on the capped build: **CAP ENFORCED; ANR FLAT**
+
+**Instrument (and why the app's own log line is the instrument):** `SurfaceFlinger
+--latency` (the standing 025j probe) saturates at ~16.7 ms in every state — the Adreno 610
+display composites at its own 60 Hz whatever the app submits, so it measures the display,
+not the app's loop. `dumpsys gfxinfo` reports 0 frames (the NativeActivity is not a
+GraphicsStats-tracked app). The K2 row's standing probe names the instrument — "menu fps
+and in-game fps from the port's own log lines (the msDraw/msUpdate-adjacent frame timing
+the 025j session used)" — so this lane added one android-gated log line to
+`crates/oh-render/src/window.rs` (commit `6fcfe13d`): `RunHandler::log_frame_period`
+accumulates the per-frame period at the `pace_display` point (after the frame — the swap —
+ran) and every 500 frames logs the average:
+
+```
+[oh-render] loop period 5.31 ms over 500 frames (~188 fps; limit in force: 200)
+```
+
+Pure instrumentation: no pacing behaviour changed (049's `pace_display` is untouched),
+desktop/wasm byte-unchanged (cfg-gated), host gate + android-target check/clippy + the
+release APK build all green. **It is kept** as a standing device diagnostic (the 039
+log-sink class) — the next K2 re-measure needs it.
+
+**Config in force — no config change was needed (the least-invasive option of STEP 3, zero
+edits):** the shipped config (`limit_fps=true, max_fps=200, vsync=false`,
+`antialiasing_level=4`, `show_fps=true`) was already in force on the device — the line's
+"limit in force: 200" proves `limit_fps=true` + `max_fps=200` effective, and the 5.3 ms
+period (not 16.7 ms) proves vsync off. (The options menu was not touched; the on-device
+`config.json` was left exactly as found.)
+
+**Measurements (loop line + whole-process `utime+stime` from `/proc/<pid>/stat`, 12 s
+windows; the process = the app, `android_main` = the game-loop thread):**
+
+| state | loop period | fps | process CPU | android_main CPU | K2 free-run baseline (2026-10-16) |
+|---|---|---|---|---|---|
+| menu (SMain) | 5.27–5.34 ms | **187–190** | 56.8% | 54.1% | ~500 fps / 71% |
+| in-game, light tutorial level (babysteps, active) | 5.34–5.54 ms | **181–187** | 69.3% | 61.8% | ~360 fps / 76% |
+| in-game (examplelevel, active) | 5.54 ms | ~180 | — | — | — |
+| death screen (examplelevel) | 5.25 ms | ~190 | 69.8% | 65.6% | — |
+
+The cap is **enforced**: every state sits at ≈200 fps (the shortfall from the 5.0 ms pace
+is ~0.3–0.5 ms of per-frame work + scheduling jitter), and no state approaches the
+pre-fix free-run (menu ~500, in-game ~360 on this very light level). CPU **settled from
+the K2 free-run's 76–71% to 69–57%** — but the drop is milder than the fps ratio suggests:
+at ~188 fps the per-frame render work dominates (≈2.9 ms menu / ≈3.4 ms in-game of GL
+command submission + driver work on the Adreno 610), and that is work the C++ pays per
+frame too at 200 fps. "The C++'s paced lower burn" at EQUAL fps cannot be pinned without
+the C++ APK on this device — that comparison remains open (noted in the K2 row); what the
+measurement proves is the cap's enforcement (the divergence the K2 row was about) and a
+real CPU reduction.
+
+**ANR dropbox count (the 025i non-regression): 10 before, 10 after — FLAT.** The ~9-minute
+session covered a boot, the main menu, three level starts, three deaths, two restarts and
+one replay — zero new `data_app_anr` entries; the ten existing entries are the pre-session
+records (the K3-era 2026-10-17 08:19:47 record is still the newest).
+
+### Raw evidence
+
+- `.agents/evidence/lane-051/lane051-session.logcat` — the session's logcat (boot, GL
+  context lines, every loop-period line, the grid-dispatch lines, the `playLevelMusic`
+  re-fires, the `death.ogg` decodes).
+- `.agents/evidence/lane-051/oh051_d0.png` — the one image read (the game-over screen with
+  the action row).
+- `.agents/evidence/lane-051/` — the remaining captures (menu/level-select/death/replay
+  pixel-diff references; not read, used only by the pixel oracles).
+
+### Device state on return
+
+Left at the **main menu** (Level Selection; the final capture is a 0.0% pixel diff vs the
+known menu capture). App alive (pid 23270, the lane's install), no app uninstalled, the
+on-device config untouched, the /sdcard temp screenshots removed, the old mDNS port 41611
+is dead (the listener moved to 40119 — recorded for the next lane).

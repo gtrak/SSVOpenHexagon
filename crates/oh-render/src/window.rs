@@ -2123,6 +2123,8 @@ impl Window {
             window: &mut self,
             on_event,
             on_frame: &mut on_frame,
+            #[cfg(target_os = "android")]
+            frame_log: (None, 0.0, 0),
         };
         let _ = event_loop.run_app(&mut handler);
     }
@@ -2335,6 +2337,16 @@ struct RunHandler<'a, F> {
     window: &'a mut Window,
     on_event: Option<Box<EventHook>>,
     on_frame: &'a mut F,
+    /// issue 051 (the K2 device half) — the android loop-rate diagnostic
+    /// that implements the K2 row's standing probe ("menu fps and in-game
+    /// fps from the port's own log lines"): `(the last frame's
+    /// `Instant`, the accumulated period in seconds, the frame count)
+    /// since the last log line. `SurfaceFlinger --latency` cannot see it
+    /// (the Adreno display composites at its own 60 Hz regardless of the
+    /// app's submission rate), so the app's own loop period is the fps
+    /// instrument (the 039 STEP 0 sink-class device diagnostic).
+    #[cfg(target_os = "android")]
+    frame_log: (Option<Instant>, f64, u64),
 }
 
 #[cfg(not(target_os = "emscripten"))]
@@ -2455,7 +2467,10 @@ impl<F: FnMut(&mut Window)> ApplicationHandler<()> for RunHandler<'_, F> {
         // redraw-pending short-circuit in the desktop backends); the web
         // is paced by rAF.
         #[cfg(target_os = "android")]
-        self.window.pace_display();
+        {
+            self.window.pace_display();
+            self.log_frame_period();
+        }
         // Pace the next frame: the C++ SFML `setFramerateLimit` sleep (the
         // shipped `_RELEASE/config.json` has `limit_fps=true`, `max_fps=200`,
         // `vsync=false`). `WaitUntil` when a framerate limit is in force,
@@ -2492,6 +2507,45 @@ impl<F: FnMut(&mut Window)> ApplicationHandler<()> for RunHandler<'_, F> {
         if let Some(gl) = self.window.gl.as_ref() {
             gl.winit_window().request_redraw();
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// issue 051 (the K2 device half) — the android loop-rate diagnostic (the
+// standing probe's "the port's own log lines"): `SurfaceFlinger --latency`
+// cannot measure the app's loop rate (the display composites at its own
+// 60 Hz whatever the app submits), so the loop period is logged from the
+// app itself, every 500 frames (the 039 STEP 0 sink-class device
+// diagnostic).
+#[cfg(target_os = "android")]
+impl<F> RunHandler<'_, F> {
+    /// The once-per-frame loop-period accumulator (called after the frame
+    /// — the swap — has run, the `pace_display` point): every 500 frames
+    /// it logs the average loop period + the fps + the limit in force, so
+    /// a device session reads the menu / in-game fps straight out of
+    /// logcat (the K2 row's standing probe — `~200` under the shipped
+    /// `limit_fps=true, max_fps=200`, `~500/360` free-run when the cap is
+    /// not enforced).
+    fn log_frame_period(&mut self) {
+        let now = Instant::now();
+        let (last, acc, count) = &mut self.frame_log;
+        if let Some(prev) = *last {
+            *acc += (now - prev).as_secs_f64();
+            *count += 1;
+            if *count >= 500 {
+                let avg_s = *acc / *count as f64;
+                eprintln!(
+                    "[oh-render] loop period {:.2} ms over {} frames (~{} fps; limit in force: {:.0})",
+                    avg_s * 1000.0,
+                    *count,
+                    (1.0 / avg_s).round() as u32,
+                    self.window.effective_framerate_limit(),
+                );
+                *acc = 0.0;
+                *count = 0;
+            }
+        }
+        *last = Some(now);
     }
 }
 
