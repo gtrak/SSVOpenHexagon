@@ -132,11 +132,27 @@ cmd_remove() {
   [ -d "$wt" ] || die "no worktree at $wt"
   git -C "$wt" diff --quiet && git -C "$wt" diff --cached --quiet \
     || die "$wt has uncommitted changes — commit them first (persistent: nothing is force-deleted)"
-  git -C "$REPO" merge-base --is-ancestor "$br" master \
-    || die "$br is NOT merged into master — refusing (this is the discipline that prevents lost commits)"
+  # D-025 lands a lane by SQUASH, so the branch tip is never an ancestor of master and the
+  # plain ancestor test refuses every correctly-landed lane. Accept a squash landing too:
+  # every path the branch touched must be byte-identical between master and the branch tip.
+  local how
+  if git -C "$REPO" merge-base --is-ancestor "$br" master; then
+    how="ancestor"
+  elif [ "${LANE_FORCE:-0}" = "1" ]; then
+    how="FORCED by LANE_FORCE=1"
+  else
+    local base paths
+    base="$(git -C "$REPO" merge-base master "$br")"
+    paths="$(git -C "$REPO" diff --name-only "$base" "$br")"
+    if [ -n "$paths" ] && git -C "$REPO" diff --quiet master "$br" -- $paths; then
+      how="squash landing (all $(echo "$paths" | wc -l) touched paths byte-identical in master)"
+    else
+      die "$br is NOT merged into master - no ancestor, and its touched paths differ. Refusing (this is the discipline that prevents lost commits). If you already landed it as a squash and master has since moved under it, re-run with LANE_FORCE=1."
+    fi
+  fi
   git -C "$REPO" worktree remove "$wt"
-  git -C "$REPO" branch -d "$br"
-  echo "removed $wt and $br (was merged)"
+  git -C "$REPO" branch -D "$br" >/dev/null
+  echo "removed $wt and $br (merged: $how)"
 }
 
 case "${1:-}" in
