@@ -103,14 +103,23 @@
 //! (MenuGame.cpp:821-828); `draw` then applies the C++'s per-frame
 //! `creditsBar2` cycle (MenuGame.cpp:2848-2850, the ids at
 //! MenuGame.hpp:135-137 = `oh_menu::menu_game::CREDITS_BAR_IDS`) from the
-//! frame id it borrows before the refresh (29w1). The remaining sprite
-//! textures (`titleBar.png`, `onlineIcon*.png`, `epilepsyWarning.png`) are
-//! still the 1×1 placeholders (the `oh-assets` texture table is the 15c
-//! gap); the bridge emits the full C++ layout either way, and issue-025c's
-//! GL sprite pass renders them (the 1×1 placeholder texture uploads as-is —
-//! the placeholder *size* still shifts the `getGlobalBottom`-relative
-//! transforms (the "CURRENT PROFILE" line) by the real-texture-size
-//! delta until the texture table lands).
+//! frame id it borrows before the refresh (29w1).
+//!
+//! **The remaining menu sprite textures are the real `Assets/` PNGs
+//! too (043).** `titleBar.png` / `epilepsyWarning.png` (C++ ctor
+//! :169 / :172; smoothed in `initAssets`, :822 / :824) and
+//! `onlineIcon.png` / `onlineIconFail.png` (ctor :173; smoothed in
+//! `initOnlineIcons`, :141-142) load through the same
+//! `load_texture_or_null` path, and `draw_online_status` applies the
+//! C++'s per-frame `sOnline` icon swap (MenuGame.cpp:6078-6084 — the
+//! `stateGood` branch), materializing only when `stateGood` flips
+//! (issue 36, as `credits_bar2`: the C++ `setTexture` is a zero-copy
+//! shared-pointer assign, the port's takes ownership). `bottomBar.png`
+//! is in the C++ `initAssets` smooth list (:824) but is never drawn by
+//! the C++ (no `bottomBar` sprite anywhere in MenuGame), so the port
+//! does not load it either. A missing file falls back to the 1×1
+//! `nullTexture` for each (the C++'s `getTextureOrNullTexture`
+//! semantics — `bridge::load_texture_or_null`).
 
 use std::path::Path;
 use std::rc::Rc;
@@ -233,7 +242,8 @@ pub struct MenuDraw {
     txt_entering_text: Text,
 
     // ---- C++ sprite / shape members (MenuGame.cpp:169-174) --------------
-    /// C++ `titleBar` (`titleBar.png`).
+    /// C++ `titleBar` (`titleBar.png` — the real asset texture since
+    /// 043; smoothed, `initAssets` :822).
     title_bar: Sprite,
     /// C++ `creditsBar1` (`creditsBar1.png`, MenuGame.cpp:170 — the real
     /// asset texture since 29w1).
@@ -254,11 +264,25 @@ pub struct MenuDraw {
     /// `creditsBar2b.png` / `creditsBar2c.png`) — 29w1.
     credits_bar2_frames: [Texture; 3],
     /// C++ `sOnline` (starts on `onlineIconFail.png`; the online-status
-    /// pass re-points it to `onlineIcon.png` when connected — in the port
-    /// both are the 1×1 placeholder, see the module docs).
+    /// pass re-points it to `onlineIcon.png` when connected — 043: both
+    /// the real `Assets/` PNGs, the C++'s :6078-6084 swap).
     s_online: Sprite,
-    /// C++ `epilepsyWarning` (`epilepsyWarning.png`; the EpilepsyWarning
-    /// arm draws it — the transform is set on refresh, :3157-3160).
+    /// C++ `assets.getTexture("onlineIcon.png")` — the `stateGood` icon
+    /// (smoothed in `initOnlineIcons`, MenuGame.cpp:141); 043.
+    online_icon: Texture,
+    /// C++ `assets.getTexture("onlineIconFail.png")` — the initial
+    /// `sOnline` texture (ctor :173; smoothed, :142); 043.
+    online_icon_fail: Texture,
+    /// The `stateGood` value last materialized on `s_online`. The C++
+    /// sets the icon texture every frame (:6078-6084), but its
+    /// `setTexture` is a zero-copy shared-pointer assign; the port's
+    /// `set_texture` takes ownership, so the port materializes only on a
+    /// flip (issue 36, as `credits_bar2_frame`).
+    s_online_is_good: bool,
+    /// C++ `epilepsyWarning` (`epilepsyWarning.png` — the real asset
+    /// texture since 043; smoothed, `initAssets` :824; the
+    /// EpilepsyWarning arm draws it — the transform is set on refresh,
+    /// :3157-3160).
     epilepsy_warning: Sprite,
     /// C++ `rsOnlineStatus` (default size `{128, 32}`).
     rs_online_status: RectangleShape,
@@ -357,16 +381,19 @@ impl MenuDraw {
     /// load through the same asset decode path as 29e1's HUD/particle
     /// textures — the C++ ctor's `creditsBar1` / `creditsBar2`
     /// `assets.getTexture` (MenuGame.cpp:170-171) + `initAssets`'
-    /// `setSmooth(true)` (MenuGame.cpp:821-828); the 1×1 `nullTexture`
-    /// fallback on a missing file (the pre-29w1 look, now only on a
-    /// broken install).
+    /// `setSmooth(true)` (MenuGame.cpp:821-828); 043 adds the rest of
+    /// the C++ ctor's texture list (`titleBar` / `epilepsyWarning`,
+    /// :169 / :172; `onlineIcon` / `onlineIconFail`, :173 / :141-142).
+    /// The 1×1 `nullTexture` fallback on a missing file (the pre-29w1
+    /// look, now only on a broken install) applies to each.
     #[must_use]
     pub fn new(assets_dir: &Path, font: &Font, font_bold: &Font) -> Self {
-        let placeholder = Texture::create(1, 1);
-        // C++ ctor (MenuGame.cpp:170-171) + `initAssets` (MenuGame.cpp:
-        // 821-828 — the `setSmooth(true)` set; the credits textures only
-        // load here — `titleBar` / `epilepsyWarning` / the online icons
-        // stay the 1×1 placeholders, module docs).
+        // C++ ctor (MenuGame.cpp:169-173) + `initAssets` /
+        // `initOnlineIcons` (the `setSmooth(true)` sets: MenuGame.cpp:
+        // 819-828 for `titleBar` / the credits / `bottomBar` / `epilepsyWarning`,
+        // :141-142 for the online icons). 043: `titleBar` /
+        // `epilepsyWarning` / the online icons load through the same asset
+        // decode path as the 29w1 credits bars (module docs).
         let mut credits_bar1 = load_texture_or_null(assets_dir, "creditsBar1.png");
         credits_bar1.set_smooth(true);
         let mut credits_bar2_frames: [Texture; 3] =
@@ -374,6 +401,14 @@ impl MenuDraw {
         for frame in &mut credits_bar2_frames {
             frame.set_smooth(true);
         }
+        let mut title_bar = load_texture_or_null(assets_dir, "titleBar.png");
+        title_bar.set_smooth(true);
+        let mut epilepsy_warning = load_texture_or_null(assets_dir, "epilepsyWarning.png");
+        epilepsy_warning.set_smooth(true);
+        let mut online_icon = load_texture_or_null(assets_dir, "onlineIcon.png");
+        online_icon.set_smooth(true);
+        let mut online_icon_fail = load_texture_or_null(assets_dir, "onlineIconFail.png");
+        online_icon_fail.set_smooth(true);
         let char_sizes = layout::char_sizes(false); // refined on refresh
         let mut rs = RectangleShape::default();
         rs.set_size(Vec2::new(128.0, 32.0)); // C++ `rsOnlineStatus{128, 32}`
@@ -431,13 +466,16 @@ impl MenuDraw {
             txt_instructions_medium: Text::new(font.clone(), String::new(), 30),
             txt_instructions_small: Text::new(font.clone(), String::new(), 20),
             txt_entering_text: Text::new(font.clone(), String::new(), 54),
-            title_bar: Sprite::new(placeholder.clone()),
+            title_bar: Sprite::new(title_bar),
             credits_bar1: Sprite::new(credits_bar1),
             credits_bar2: Sprite::new(credits_bar2_frames[0].clone()),
             credits_bar2_frame: 0, // the sprite starts on `CREDITS_BAR_IDS[0]`
             credits_bar2_frames,
-            s_online: Sprite::new(placeholder.clone()),
-            epilepsy_warning: Sprite::new(placeholder),
+            s_online: Sprite::new(online_icon_fail.clone()), // the field keeps the canonical texture
+            online_icon,
+            online_icon_fail,
+            s_online_is_good: false, // ctor :173 — `onlineIconFail.png`
+            epilepsy_warning: Sprite::new(epilepsy_warning),
             rs_online_status: rs,
             h_menu_big: 0.0, // probed on the first refresh
             h_menu_small: 0.0,
@@ -3896,11 +3934,23 @@ fn draw_online_status(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn Draw
     let txt_height = app.txt_online_status.get_global_bounds().get_height();
     let sprite_scale = (txt_height + 2.0 * padding) / 64.0;
 
-    // C++ `txtOnlineStatus.font.setString(stateString);` (+ the texture
-    // swap — both textures are placeholders in the port, module docs; the
-    // `stateGood` branch picks `onlineIcon` vs `onlineIconFail`).
-    let _ = state_good;
+    // C++ `txtOnlineStatus.setString(stateString);` then
+    // `sOnline.setTexture(stateGood ? getTexture("onlineIcon.png") :
+    // getTexture("onlineIconFail.png"))` (MenuGame.cpp:6076-6084). The
+    // C++'s `setTexture` is a shared-pointer assign (zero-copy, every
+    // frame); the port's `set_texture` takes ownership (a deep RGBA copy
+    // of the 64×64 icon), so the port materializes only on a `stateGood`
+    // flip (issue 36, as `credits_bar2`) — the visible icon is the same
+    // either way.
     app.txt_online_status.set_string(&state_string);
+    if state_good != app.s_online_is_good {
+        app.s_online.set_texture(if state_good {
+            app.online_icon.clone()
+        } else {
+            app.online_icon_fail.clone()
+        });
+        app.s_online_is_good = state_good;
+    }
     app.s_online
         .set_scale(Vec2::new(sprite_scale, sprite_scale));
     app.s_online.set_origin(Vec2::new(0.0, 0.0)); // C++ `getLocalSW` = (0, 0)
@@ -4257,6 +4307,196 @@ mod tests {
         for frame in app.credits_bar2_frames.iter() {
             assert_eq!(frame.get_size(), (1, 1));
         }
+    }
+
+    // -----------------------------------------------------------------
+    // 043: the remaining menu sprite textures are the real `Assets/`
+    // PNGs (the 29e1/29w1 class, closed for the whole table) — the
+    // dimension guard: a 1×1 placeholder regression fails here. The C++:
+    // ctor `titleBar` / `epilepsyWarning` / `sOnline` getTexture
+    // (MenuGame.cpp:169 / :172 / :173) + `initAssets` /
+    // `initOnlineIcons` `setSmooth(true)` (:822 / :824 / :141-142) + the
+    // online-status `sOnline` icon swap (:6078-6084).
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn menu_bar_and_icon_textures_are_the_real_assets_pngs_not_placeholders() {
+        let f = font();
+        let app = MenuDraw::new(&credits_assets_dir(), &f, &f);
+        let title = app.title_bar.get_texture();
+        assert_ne!(
+            title.get_size(),
+            (1, 1),
+            "titleBar regressed to the 1×1 placeholder"
+        );
+        assert_eq!(title.get_size(), (1024, 279), "titleBar.png is 1024×279");
+        assert!(
+            title.is_smooth(),
+            "C++ initAssets setSmooth (MenuGame.cpp:822)"
+        );
+        let warning = app.epilepsy_warning.get_texture();
+        assert_ne!(
+            warning.get_size(),
+            (1, 1),
+            "epilepsyWarning regressed to the 1×1 placeholder"
+        );
+        assert_eq!(
+            warning.get_size(),
+            (1600, 1600),
+            "epilepsyWarning.png is 1600×1600"
+        );
+        assert!(
+            warning.is_smooth(),
+            "C++ initAssets setSmooth (MenuGame.cpp:824)"
+        );
+        assert_eq!(
+            app.online_icon.get_size(),
+            (64, 64),
+            "onlineIcon.png is 64×64"
+        );
+        assert!(
+            app.online_icon.is_smooth(),
+            "C++ initOnlineIcons setSmooth (:141)"
+        );
+        assert_eq!(
+            app.online_icon_fail.get_size(),
+            (64, 64),
+            "onlineIconFail.png is 64×64"
+        );
+        assert!(
+            app.online_icon_fail.is_smooth(),
+            "C++ initOnlineIcons setSmooth (:142)"
+        );
+        // The ctor starts `sOnline` on `onlineIconFail.png` (MenuGame.cpp:
+        // 173) — as the credits bar starts on `CREDITS_BAR_IDS[0]`.
+        assert_eq!(
+            app.s_online.get_texture().pixels().get_pixels(),
+            app.online_icon_fail.pixels().get_pixels(),
+        );
+        // Self-check: the two icons are genuinely distinct decodes (the
+        // swap below only matters if they differ).
+        assert_ne!(
+            app.online_icon.pixels().get_pixels(),
+            app.online_icon_fail.pixels().get_pixels(),
+            "onlineIcon.png and onlineIconFail.png must differ"
+        );
+    }
+
+    #[test]
+    fn menu_bar_and_icon_missing_assets_fall_back_to_the_placeholders() {
+        // The C++'s `nullTexture` half: a broken install still runs, on
+        // the 1×1 white pixel — for the whole 043 table.
+        let f = font();
+        let app = MenuDraw::new(Path::new("/nonexistent-oh-043/assets"), &f, &f);
+
+        assert_eq!(app.title_bar.get_texture().get_size(), (1, 1));
+        assert_eq!(app.epilepsy_warning.get_texture().get_size(), (1, 1));
+        assert_eq!(app.s_online.get_texture().get_size(), (1, 1));
+        assert_eq!(app.online_icon.get_size(), (1, 1));
+        assert_eq!(app.online_icon_fail.get_size(), (1, 1));
+    }
+
+    /// C++ `stateGood == true` (the `hexagonClient.getState()` pair:
+    /// `Connected` + rt keys — MenuGame.cpp:6076-6077's `stateGood`
+    /// branch).
+    struct GoodNetwork;
+
+    impl oh_menu::seams::NetworkClient for GoodNetwork {
+        fn state(&self) -> oh_menu::seams::ConnectionState {
+            oh_menu::seams::ConnectionState::Connected
+        }
+        fn has_rt_keys(&self) -> bool {
+            true
+        }
+        fn connect(&self) {}
+        fn disconnect(&self) {}
+        fn try_login(&self, _username: &str, _password: &str) {}
+        fn try_register(&self, _username: &str, _password: &str) {}
+        fn try_logout(&self) {}
+        fn try_delete_account(&self, _password: &str) {}
+        fn poll_event(&self) -> Option<oh_menu::seams::NetEvent> {
+            None
+        }
+        fn update(&self) {}
+    }
+
+    fn menu_with_network<N: oh_menu::seams::NetworkClient + 'static>(
+        network: N,
+    ) -> (Rc<MenuGame>, MenuDraw) {
+        let assets = FakeAssets::new();
+        let config = FakeConfig::new();
+        let audio = oh_menu::RecordingAudio::new();
+        let menu = Rc::new(MenuGame::new(
+            assets,
+            config,
+            Rc::new(network),
+            audio,
+            Rc::new(oh_menu::NoopTouch),
+            Rc::new(oh_menu::NoMenuJoystick),
+            oh_menu::FakeWindow::new(),
+            None,
+            None,
+            None,
+            None, // `unlock_achievement` — the 29b2/29b8 Steam seam
+            None, // `ignore_inputs` — the 010b seam; not exercised by these draw tests
+            Rc::new(oh_menu::layout::LinearFontHeight),
+        ));
+        let f = font();
+        let app = MenuDraw::new(&credits_assets_dir(), &f, &f);
+        (menu, app)
+    }
+
+    #[test]
+    fn online_status_stays_on_the_fail_icon_when_state_good_is_false() {
+        // C++ `sOnline.setTexture(...)` (:6078-6084): `stateGood == false`
+        // keeps `onlineIconFail.png` — the ctor's initial texture
+        // (MenuGame.cpp:173).
+        let (menu, mut app) = menu_and_app(); // `NoopNetwork` → Disconnected
+        {
+            let mut s = menu.shared().borrow_mut();
+            s.state = States::SMain;
+        }
+        let mut rec = Recording::default();
+        draw(&menu, &mut app, &mut rec);
+        assert!(!app.s_online_is_good);
+        assert_eq!(
+            app.s_online.get_texture().pixels().get_pixels(),
+            app.online_icon_fail.pixels().get_pixels(),
+            "Disconnected keeps the ctor's onlineIconFail.png"
+        );
+    }
+
+    #[test]
+    fn online_status_picks_the_good_icon_when_state_good_is_true() {
+        // C++ `sOnline.setTexture(assets.getTexture("onlineIcon.png"))`
+        // (MenuGame.cpp:6078) — the `stateGood` branch. The port
+        // materializes only on the flip (issue 36): the ctor texture is
+        // `onlineIconFail`, the first draw's `stateGood` re-points the
+        // sprite at `onlineIcon.png`, and the second draw (same state)
+        // must not re-copy.
+        let (menu, mut app) = menu_with_network(GoodNetwork);
+        {
+            let mut s = menu.shared().borrow_mut();
+            s.state = States::SMain;
+        }
+        let mut rec = Recording::default();
+        draw(&menu, &mut app, &mut rec);
+        assert!(app.s_online_is_good, "Connected + rt keys → stateGood");
+        assert_eq!(
+            app.s_online.get_texture().pixels().get_pixels(),
+            app.online_icon.pixels().get_pixels(),
+            "stateGood picks onlineIcon.png"
+        );
+        let mut rec2 = Recording::default();
+        draw(&menu, &mut app, &mut rec2);
+        assert!(
+            app.s_online_is_good,
+            "no flip on the second draw (issue 36)"
+        );
+        assert_eq!(
+            app.s_online.get_texture().pixels().get_pixels(),
+            app.online_icon.pixels().get_pixels(),
+        );
     }
 
     #[test]
