@@ -1147,6 +1147,71 @@ pub struct Window {
     #[cfg(target_os = "emscripten")]
     fullscreen_click_slot:
         Option<std::sync::Arc<std::sync::RwLock<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>>>,
+    // issue 055 — the canvas element's clone (the emscripten `create`'s
+    // `canvas`): the frame pump's SETTLE re-measure's + the DPR sensor's
+    // target (the `resize_settle_pending` / `last_real_size_dpr` fields'
+    // docs). `None` = the headless fallback / no canvas (the pump's
+    // re-measure arms no-op on it — the headless `run` runs one frame
+    // without a queue anyway).
+    #[cfg(target_os = "emscripten")]
+    canvas: Option<web_sys::HtmlCanvasElement>,
+    // issue 055 — the settle re-measure's flag (the field's docs): a
+    // `Resized` folded by the frame pump's drain (the `resize` listener's
+    // push) was measured at the `resize` event's time — possibly BEFORE
+    // the viewport's layout settled (the canvas's 100vw/100vh box + the
+    // `devicePixelRatio` settle in the frame's LAYOUT pass, which runs
+    // AFTER the rAF callback the event was drained in; the probe's
+    // reslog's event-time vs settled reading is the diagnostic). The
+    // pump re-measures on the NEXT tick (post-layout) and pushes the
+    // correction when the size moved — the close of the operator's "the
+    // scaling gets out of sync and NEVER recovers": nothing re-fires the
+    // `resize` once the layout settles, so a pre-settle measurement
+    // sticks forever without this re-measure. Also set at creation
+    // (the boot measurement's twin: a not-yet-laid-out canvas fell back
+    // to the requested size — the `create`'s zero-rect arm — and no
+    // event follows when the viewport never changes, the headless
+    // probe's observed boot edge: the first tick's re-measure corrects
+    // it post-layout, the dedup makes a settled boot a no-op).
+    #[cfg(target_os = "emscripten")]
+    resize_settle_pending: bool,
+    // issue 055 — the `devicePixelRatio` the last real-size measurement
+    // used (the `create`'s initial measurement's DPR): the pump's PER-
+    // FRAME DPR sensor (the field's docs — the browser delivers NO event
+    // for a `devicePixelRatio` change that leaves the CSS box unchanged,
+    // the probe's measured fact: a DPR-only viewport change fires no
+    // `resize`, no `matchMedia` change — the Android DPR change across a
+    // fullscreen transition, the task's second suspect; the desktop's
+    // winit twin is the WM's monitor-DPR-change `Resized`, which the
+    // browser simply does not deliver on the web). A passive sensor read
+    // (one DOM getter + one compare per frame — no side effect, no
+    // event, the house pattern's "edge, never per frame" is about
+    // state-mutating per-frame work; this is the missing event's
+    // replacement): when the live DPR drifts from `last_real_size_dpr`,
+    // the real size (the CSS box × the DPR) has moved WITHOUT any event,
+    // and the re-measure's push restores the invariant (the canvas
+    // backing store == its CSS box × the DPR) in the next frame.
+    #[cfg(target_os = "emscripten")]
+    last_real_size_dpr: f64,
+    // issue 055 — the `fullscreenchange` re-sync slot (the
+    // `set_fullscreen_change_sink` docs): the `oh-app`'s callback (the
+    // ported `fullscreen` config's RE-SYNC to the browser's ACTUAL state
+    // — `document.fullscreenElement` — the task's "the config, the
+    // button's appearance and the browser cannot disagree": every
+    // browser-side fullscreen transition — the `requestFullscreen` /
+    // `exitFullscreen`'s verdicts AND the external exits (Esc / the
+    // Android back) the game did not ask for — fires the `Document`'s
+    // `fullscreenchange`, and the installed callback writes the config
+    // from the browser THERE (the pre-055 click sink toggled the config's
+    // VALUE — the C++'s LAlt+Enter semantics — so after an external exit
+    // the config still said `true` and the next tap set it `false` +
+    // called `exitFullscreen()`, a no-op: the operator's "i can no longer
+    // reach the button" desync). The `Document`'s `fullscreenchange`
+    // listener (the `Window::create`'s emscripten half) calls it when
+    // set. `None` = the headless fallback / no canvas (no listener
+    // attached; the setter no-ops).
+    #[cfg(target_os = "emscripten")]
+    fullscreen_change_slot:
+        Option<std::sync::Arc<std::sync::RwLock<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>>>,
     // Android (issue 25b SG2): the `ensure_android_gl` once-only flag —
     // a GL creation failure (no GLES context) degrades to the headless
     // frames permanently (the C++'s no-GL `window == nullptr` equivalent),
@@ -1306,10 +1371,30 @@ impl Window {
         > = fs_button
             .as_ref()
             .map(|_| std::sync::Arc::new(std::sync::RwLock::new(None)));
+        // issue 055 — the `fullscreenchange` re-sync slot (the
+        // `fullscreen_change_slot` field's docs): present with the canvas
+        // (the `Document` is the event's target — the fullscreen state is
+        // the document's, the `documentElement` merely the fullscreened
+        // node; the headless fallback's `return base` above carries the
+        // `new_inner`'s `None`).
+        let fullscreen_change_slot: Option<
+            std::sync::Arc<std::sync::RwLock<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>>,
+        > = web_sys::window()
+            .and_then(|w| w.document())
+            .is_some()
+            .then(|| std::sync::Arc::new(std::sync::RwLock::new(None)));
         // The REAL size (the CSS box × the DPR — `web_canvas_real_size`):
         // the window's size bookkeeping + the GL canvas both start in the
         // real size (a zero rect — not laid out yet — keeps the requested
-        // size; the `resize` listener catches the layout when it lands).
+        // size; the `resize` listener catches the layout when it lands,
+        // and issue 055: the frame pump's SETTLE re-measure — the
+        // `resize_settle_pending` field's docs, primed `true` below —
+        // corrects a pre-settle boot measurement on the first tick
+        // post-layout, so the zero-rect fallback (the headless probe's
+        // observed boot edge: module init before the first layout, a
+        // viewport that never changes again) recovers instead of
+        // sticking at the requested size).
+        let last_real_size_dpr = web_device_pixel_ratio();
         let (real_w, real_h) = {
             let rect = canvas.get_bounding_client_rect();
             if rect.width() > 0.0 && rect.height() > 0.0 {
@@ -1344,6 +1429,34 @@ impl Window {
                     }
                 });
             }
+            // issue 055 — the `Document`'s `fullscreenchange` (the
+            // re-sync's listener — the `fullscreen_change_slot` field's
+            // docs): the browser's ACTUAL fullscreen state's authoritative
+            // signal — every transition (our API's grant/exit AND the
+            // external exits the game did not ask for) fires it, and the
+            // `oh-app`'s installed callback writes the config from the
+            // browser there (the task's "reconcile, do not abandon": the
+            // config stays the SETTING's single source of truth — the
+            // options menu's + the LAlt+Enter bind's writes ride the SAME
+            // shared `Arc<RwLock<Config>>` unchanged — the browser's state
+            // stays the button's appearance's source (the `html:fullscreen`
+            // CSS flip), and the two cannot disagree because the config is
+            // written ONCE, from the browser). On the `document` (the
+            // event's target — the `documentElement` is the fullscreened
+            // node, the event fires on the document either way).
+            if let Some(slot) = fullscreen_change_slot.as_ref() {
+                let s = slot.clone();
+                let document = web_sys::window()
+                    .and_then(|w| w.document())
+                    .expect("document (the canvas is present in this half)");
+                add_dom_listener(&document, "fullscreenchange", &mut listeners, move |_e| {
+                    if let Ok(guard) = s.read() {
+                        if let Some(cb) = guard.as_ref() {
+                            cb();
+                        }
+                    }
+                });
+            }
             listeners
         };
         // The WebGL2 context (`gl.rs` — the emscripten C API + the glow
@@ -1365,6 +1478,18 @@ impl Window {
             // issue 046 (F33) — the `#fs`'s click sink slot (the field's
             // docs).
             fullscreen_click_slot,
+            // issue 055 — the `fullscreenchange` re-sync slot (the
+            // field's docs).
+            fullscreen_change_slot,
+            // issue 055 — the canvas's clone (the settle re-measure's +
+            // the DPR sensor's target — the `canvas` field's docs) + the
+            // settle flag's initial value (the `resize_settle_pending`
+            // field's docs — the boot measurement's post-settle
+            // correction) + the DPR the boot measurement used (the
+            // sensor's baseline, the `last_real_size_dpr` field's docs).
+            canvas: Some(canvas.clone()),
+            resize_settle_pending: true,
+            last_real_size_dpr,
             // The real-size bookkeeping (the requested-size `base` above
             // is only the canvas-missing / not-laid-out fallback).
             width_px: real_w,
@@ -1511,6 +1636,14 @@ impl Window {
             ime_input: None,
             #[cfg(target_os = "emscripten")]
             fullscreen_click_slot: None,
+            #[cfg(target_os = "emscripten")]
+            canvas: None,
+            #[cfg(target_os = "emscripten")]
+            resize_settle_pending: false,
+            #[cfg(target_os = "emscripten")]
+            last_real_size_dpr: 1.0,
+            #[cfg(target_os = "emscripten")]
+            fullscreen_change_slot: None,
             #[cfg(target_os = "android")]
             ensure_android_gl_failed: false,
             #[cfg(target_os = "android")]
@@ -2159,26 +2292,66 @@ impl Window {
         self.ime_input.clone()
     }
 
-    /// issue 046 (F33) — install the fullscreen button's (`#fs`) click
-    /// callback (the `fullscreen_click_slot` field's docs): the `oh-app`
-    ///'s `WindowedClient::build`'s emscripten half — the config's
-    /// `fullscreen` toggle (the SAME shared `Arc<RwLock<Config>>` the
-    /// LAlt+Enter bind's `MenuConfig` seam writes through — so the
-    /// button and the menu's own toggle cannot disagree) + the browser
-    /// Fullscreen API's apply (the `documentElement`'s
+    /// issue 046 (F33, issue 055) — install the fullscreen button's
+    /// (`#fs`) click callback (the `fullscreen_click_slot` field's
+    /// docs): the `oh-app`'s `WindowedClient::build`'s emscripten half —
+    /// the browser Fullscreen API's apply (the `documentElement`'s
     /// `requestFullscreen` / the `document`'s `exitFullscreen` — the
     /// `documentElement` so the button stays visible IN the fullscreen;
     /// the Promise's rejection routes to the page's `[oh-web-fs]`
     /// console line — the task's honest limit: a `requestFullscreen`
     /// needs a transient user activation; a CDP probe MAY grant it
     /// (an immediate click after a CDP key input) or not (the operator's
-    /// real tap always does on Android Chrome)). No-op when the `#fs`
-    /// was absent at creation (the headless fallback — no button, no
+    /// real tap always does on Android Chrome)). issue 055: the DIRECTION
+    /// is the browser's ACTUAL state (`document.fullscreenElement`), NOT
+    /// the config's value — the pre-055 config-toggle's desync (after an
+    /// external exit — Esc / the Android back — the config still said
+    /// `true`, so the next tap called `exitFullscreen()` on a
+    /// windowed browser: a no-op, the operator's "first tap after an
+    /// external exit does nothing visible"); the config's write for the
+    /// transition is the `fullscreenchange`'s RE-SYNC (the
+    /// `set_fullscreen_change_sink`'s docs — the browser's own
+    /// authoritative signal writes the config ONCE, from the browser:
+    /// the config stays the SETTING's single source of truth — the SAME
+    /// shared `Arc<RwLock<Config>>` the LAlt+Enter bind's `MenuConfig`
+    /// seam writes through — while the browser stays the state's source
+    /// of truth: they cannot disagree). No-op when the `#fs` was
+    /// absent at creation (the headless fallback — no button, no
     /// click).
     #[cfg(target_os = "emscripten")]
     pub fn set_fullscreen_click_sink(&mut self, cb: std::sync::Arc<dyn Fn() + Send + Sync>) {
         if let Some(slot) = &self.fullscreen_click_slot {
             *slot.write().expect("fullscreen click slot poisoned") = Some(cb);
+        }
+    }
+
+    /// issue 055 (F33's re-sync) — the browser's `fullscreenchange`'s
+    /// callback (the `fullscreen_change_slot` field's docs): the `oh-app`'
+    /// install — the ported `fullscreen` config's RE-SYNC to the browser's
+    /// ACTUAL state (`document.fullscreenElement`), the task's "reconcile,
+    /// do not abandon": the config stays the SETTING's single source of
+    /// truth (the options menu's + the LAlt+Enter bind's writes are
+    /// unchanged — F33's rule), the browser's state stays the button's
+    /// appearance's source (the `html:fullscreen` CSS flip — the
+    /// `fullscreenchange`'s declarative half), and the re-sync keeps them
+    /// equal after EVERY transition — our API's grant/exit AND the
+    /// external exits (Esc / the Android back) the game did not ask for.
+    /// The pre-055 click sink toggled the config's VALUE (the C++'s
+    /// LAlt+Enter semantics) instead: after an external exit the config
+    /// still said `true`, so the next tap set it `false` + called
+    /// `exitFullscreen()` — a no-op — and the FIRST tap after an external
+    /// exit did nothing visible (the operator's report). The re-sync
+    /// writes the config ONCE, from the browser — and a REJECTED request
+    /// (no transient user activation — the headless CDP's honest limit,
+    /// the operator's real tap always grants it) fires no event, writes
+    /// nothing: the config, the button's appearance and the browser all
+    /// stay on the browser's actual state. No-op when the canvas (the
+    /// DOM) was absent at creation (the headless fallback — no document,
+    /// no event).
+    #[cfg(target_os = "emscripten")]
+    pub fn set_fullscreen_change_sink(&mut self, cb: std::sync::Arc<dyn Fn() + Send + Sync>) {
+        if let Some(slot) = &self.fullscreen_change_slot {
+            *slot.write().expect("fullscreen change slot poisoned") = Some(cb);
         }
     }
 
@@ -2401,6 +2574,64 @@ impl Window {
                 // A plain `&mut Runner` (not the `RefMut` smart pointer) so
                 // the disjoint field borrows below are place projections.
                 let r = &mut *r;
+                // issue 055 — the SETTLE re-measure (the `resize_settle_pending`
+                // field's docs): the previous tick folded a `Resized` (or this
+                // is the first tick, the boot measurement's correction) —
+                // that measurement was taken at the `resize` event's time, and
+                // the frame's LAYOUT pass (the 100vw/100vh box + the DPR's
+                // settle) ran AFTER it, so re-measure NOW (post-layout) and
+                // push the correction before this tick's drain (the same tick
+                // folds it). The dedup (the compare against the folded
+                // bookkeeping) makes a settled-already measurement a no-op —
+                // the event stream never carries a duplicate `Resized`.
+                if r.window.resize_settle_pending {
+                    r.window.resize_settle_pending = false;
+                    if let Some(canvas) = r.window.canvas.as_ref() {
+                        let (w, h) = web_canvas_real_size(canvas);
+                        if (w, h) != (r.window.width_px, r.window.height_px) {
+                            r.window.last_real_size_dpr = web_device_pixel_ratio();
+                            r.queue.borrow_mut().push(Event::Resized {
+                                width: w,
+                                height: h,
+                            });
+                        }
+                    }
+                }
+                // issue 055 — the PER-FRAME DPR sensor (the `last_real_size_dpr`
+                // field's docs): the browser delivers NO event for a
+                // `devicePixelRatio` change that leaves the CSS box unchanged
+                // (the probe's measured fact — a DPR-only viewport change fires
+                // no `resize`, no `matchMedia` change: the Android DPR change
+                // across a fullscreen transition, the task's second suspect —
+                // the desktop's winit twin, the WM's monitor-DPR-change
+                // `Resized`, is simply not delivered on the web). A passive
+                // read (one DOM getter + one compare per frame — no side
+                // effect, no event while the DPR holds): when the live DPR
+                // drifts, the real size (the CSS box × the DPR) moved WITHOUT
+                // any event — re-measure (the layout box is unchanged in the
+                // DPR-only case, so this reads the settled box) and push the
+                // correction; the flag arms the post-settle re-measure too
+                // (the DPR's own settle is the frame's layout pass — the
+                // re-measure lands one tick later, the correction's
+                // self-correcting shape).
+                let dpr_now = web_device_pixel_ratio();
+                if dpr_now != r.window.last_real_size_dpr {
+                    // The baseline is the live DPR from here on (the sensor
+                    // fired — whatever the re-measure's outcome, the next
+                    // drift detection is against THIS value, not a stale
+                    // one — no per-frame re-fire while the DPR holds).
+                    r.window.last_real_size_dpr = dpr_now;
+                    if let Some(canvas) = r.window.canvas.as_ref() {
+                        let (w, h) = web_canvas_real_size(canvas);
+                        if (w, h) != (r.window.width_px, r.window.height_px) {
+                            r.window.resize_settle_pending = true;
+                            r.queue.borrow_mut().push(Event::Resized {
+                                width: w,
+                                height: h,
+                            });
+                        }
+                    }
+                }
                 // Drain the DOM event batch into a local (the SFML
                 // `runEvents` batch — `apply_event` per event, the winit
                 // path's same fold).
@@ -2411,6 +2642,17 @@ impl Window {
                 // `InputState`'s `Copy`).
                 let presses = BatchPresses::from_events(&events);
                 let saved_input = r.window.input;
+                // issue 055 — the SETTLE re-measure's arm (the
+                // `resize_settle_pending` field's docs): a `Resized` in
+                // this tick's batch was measured at the `resize` event's
+                // time (pre-layout) — the re-measure runs NEXT tick
+                // (post-layout) and corrects it when the layout moved the
+                // size (the operator's "never recovers" close: nothing
+                // re-fires the `resize` once the layout settles, so the
+                // correction is scheduled, not polled-for-an-event). The
+                // scan is BEFORE the apply (the loop moves the `events`
+                // into the fold).
+                let had_resized = events.iter().any(|e| matches!(e, Event::Resized { .. }));
                 for event in events {
                     Window::apply_event(&mut r.window, event);
                 }
@@ -2426,6 +2668,9 @@ impl Window {
                     let on_frame = &mut r.on_frame;
                     let window = &mut r.window;
                     on_frame(window);
+                }
+                if had_resized {
+                    r.window.resize_settle_pending = true;
                 }
                 // The restoration (the docs): the TRUE post-drain state
                 // is the window's state after the frame (the next
@@ -3268,7 +3513,14 @@ fn attach_web_listeners(
     // ALSO resizes the GL canvas (the `GlParts::resize` — the C++
     // `recreateWindow`'s render-window half: the desktop's creation-frozen
     // GL surface stays the documented deviation, the web canvas resizes
-    // cheaply, so the web window tracks the real size 1:1). ----
+    // cheaply, so the web window tracks the real size 1:1). issue 055 —
+    // the measurement is the EVENT-TIME one (the layout MAY still be
+    // pre-settle — the 100vw/100vh box + the DPR settle in the frame's
+    // layout pass, after this event): the frame pump's SETTLE re-measure
+    // (the `Window::run`'s rAF closure — the `resize_settle_pending`
+    // field's docs) post-layout-corrects it, and the pump's DPR sensor
+    // catches the DPR changes that fire NO `resize` at all (the field's
+    // docs — the measured no-event dimension). ----
     let c = canvas.clone();
     let q = queue.clone();
     add_dom_listener(&window, "resize", &mut listeners, move |_e| {
@@ -3347,19 +3599,24 @@ fn web_ime_input_get_or_create(document: &web_sys::Document) -> Option<web_sys::
     Some(el)
 }
 
-/// issue 046 (F33) — the fullscreen button's (`#fs`) get-or-create (the
-/// `Window` field's twin's `#ime` half — the `web_ime_input_get_or_create`
-/// docs): the config's `fullscreen` value's web applier's button (the
-/// `oh-app`'s click sink's target — the `set_fullscreen_click_sink` docs).
+/// issue 046 (F33, relocated by issue 055) — the fullscreen button's
+/// (`#fs`) get-or-create (the `Window` field's twin's `#ime` half — the
+/// `web_ime_input_get_or_create` docs): the config's `fullscreen` value's
+/// web applier's button (the `oh-app`'s click sink's target — the
+/// `set_fullscreen_click_sink` docs).
 ///
 /// The committed shell declares it (the page's `<button id="fs">` + its
-/// stylesheet's contract: the bottom-right corner, the 44px touch
-/// target, the translucent / subtle look, `touch-action: manipulation`,
-/// `pointer-events: auto` on itself only, `display: none` by default —
-/// the shell's `ohstatechange` gate shows it in the menu states and
-/// HIDES it — not merely makes it transparent — in the game state,
-/// where the gameplay touch overlay's RotateCW owns that corner: a
-/// hidden element is the only variant that cannot swallow a touch). A
+/// stylesheet's contract: the TOP-RIGHT corner (issue 055 — the
+/// operator's "on top right and stay present", overriding 046's
+/// bottom-right + the game-state `display: none`: losing the button is
+/// exactly what stranded the operator after the browser's own fullscreen
+/// exit), the 44px touch target, the translucent / subtle look,
+/// `touch-action: manipulation`, `pointer-events: auto` on itself only,
+/// `display: none` by DEFAULT — the shell's gate JS shows it (in EVERY
+/// state, below the F31 action row's 12..76 REAL-px band — the collision
+/// resolution: the row's REPLAY / RESTART / PAUSE are the game's own
+/// top-right buttons, a DOM button over them would swallow their
+/// touches — the exact failure 046 avoided)). A
 /// found element is left AS-IS (its styling is the shell stylesheet's —
 /// the committed shell is the supported page; unlike the `#ime`'s
 /// text contract, a stale `#fs` cannot corrupt the input, only look
@@ -3378,10 +3635,15 @@ fn web_fs_button_get_or_create(document: &web_sys::Document) -> Option<web_sys::
     el.set_attribute("aria-label", "Toggle fullscreen").ok()?;
     // The style contract (the committed shell's `#fs` rule — the
     // fallback page's inline twin; the `display` is deliberately ABSENT
-    // — the shell's gate JS owns it, the fallback's button works).
+    // — the shell's gate JS owns it, the fallback's button works). The
+    // TOP offset is the FALLBACK's fixed collision resolution (the shell
+    // computes 76/devicePixelRatio + 12 live — its gate JS re-scales it
+    // on a DPR change; a page WITHOUT the gate JS gets the dpr = 1 worst
+    // case — the F31 row's band bottom (76 REAL px) in CSS px + the 12px
+    // gap — which clears the band at EVERY dpr ≥ 1, the safe constant).
     el.set_attribute(
         "style",
-        "position: fixed; right: 12px; bottom: 12px; width: 44px; height: 44px; padding: 0; border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 10px; background: rgba(255, 255, 255, 0.10); color: #ddd; opacity: 0.55; font-size: 20px; line-height: 1; cursor: pointer; touch-action: manipulation; pointer-events: auto; z-index: 10;",
+        "position: fixed; right: 12px; top: 88px; width: 44px; height: 44px; padding: 0; border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 10px; background: rgba(255, 255, 255, 0.10); color: #ddd; opacity: 0.55; font-size: 20px; line-height: 1; cursor: pointer; touch-action: manipulation; pointer-events: auto; z-index: 10;",
     )
     .ok()?;
     el.set_text_content(Some("⛶"));

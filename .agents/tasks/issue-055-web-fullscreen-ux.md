@@ -57,3 +57,103 @@ one-off (tools/web-probe.mjs already has `--phone`).
   click sink in `windowed.rs`. Do NOT touch the touch overlay or the menu grid (lane 054 owns those).
 - Host gate before each commit, the wasm build in the emsdk container (§4 — this is web code), explicit
   paths, `timeout` everywhere, and a `## Report`.
+
+## Report
+
+All three items done, all three proven by `tools/web-fs-probe.mjs` (the 046
+`tools/web-probe.mjs`'s sibling — CDP headless Chrome, `--phone 390x844@3`,
+per-PID port/user-data-dir/cleanup). Evidence: BEFORE `/tmp/fs-probe-055-before-
+scale.log`, AFTER `/tmp/fs-probe-055-after-full3.log` (scale / hit / wiring all
+PASS on the post-fix package).
+
+### Item 1 — top-right, present everywhere, out of the way (proved by hit-tests, BOTH states)
+
+- `crates/oh-web/site/index.html`: `#fs` moved bottom-right -> top-right
+  (`right: 12px; top: 12px` pre-JS fallback); the 046 `ohstatechange` gate
+  (game-state `display: none` — the state that stranded the operator) replaced
+  by the `placeFs()` gate: `top = 76 / devicePixelRatio + 12` px in EVERY
+  state (below the F31 row's 12..76 REAL-px band — `touch_overlay.rs`'s
+  `button_centers` top row, PAD 12 + BUTTON_HALF 32; the collision resolved by
+  the OFFSET per the spec — the row is lane 054's, a DOM button over REPLAY /
+  RESTART / PAUSE would swallow the PAUSE touches — the exact failure 046
+  avoided by hiding), `display: block` in every state, re-applied on the
+  `resize` edge (the DPR re-scales the band; event-driven, no poll).
+  `display: none` stays the PRE-JS default (046's invariant). `#status` stays
+  top-right, above the button at every DPR.
+- `crates/oh-render/src/window.rs`: the `#fs` fallback's inline style follows
+  (`top: 88px` — the dpr = 1 worst case of the 76 real-px band + 12 px gap,
+  which clears the band at every dpr >= 1).
+- PROOF (probe `--hit`, post-fix package): game state — the F31 row's REPLAY /
+  RESTART / PAUSE centers hit-test to the canvas (`f31Hits: ["c","c","c"]`)
+  with `#fs` present-but-below (`belowRow: true`) + `selfHit: "fs"`; menu
+  state — `#fs` `display:block`, `inTopRight`, `selfHit: "fs"`; the
+  bottom-right RotateCW corner stays a canvas hit (046's property, re-asserted).
+
+### Item 2 — the desync (reconcile, do not abandon)
+
+- `crates/oh-app/src/windowed.rs`: the `#fs` click sink now derives the
+  direction from `document.fullscreenElement` (NOT the config's value — the
+  pre-055 config-toggle left the config `true` after an external Esc/back exit,
+  so the next tap set it `false` + called `exitFullscreen()`, a no-op: the
+  operator's "i can no longer reach the button"). A rejected request (no
+  transient user activation) fires no event and writes nothing.
+- NEW: the `fullscreenchange` RE-SYNC — `Window::set_fullscreen_change_sink`
+  (`crates/oh-render/src/window.rs`; the `Document`'s `fullscreenchange`
+  listener in `Window::create`), the `oh-app`'s callback writes
+  `Config::set_fullscreen` from the browser's ACTUAL state on EVERY transition
+  (our API's grant/exit AND the external exits). F33's rule kept: the config
+  stays the SETTING's single source of truth (the options menu's + the
+  LAlt+Enter bind's writes unchanged — same shared `Arc<RwLock<Config>>`), the
+  browser stays the STATE's source of truth (the `html:fullscreen` flip), and
+  they cannot disagree — the config is written ONCE, from the browser.
+- PROOF (probe `--wiring`, CDP-granted run): `[oh-web-fs] fullscreen -> true
+  (browser: requestFullscreen() called (fullscreen_enabled=false))` +
+  `[oh-web-fs] fullscreenchange -> true (config false -> true)` + CDP `Escape`
+  (the external exit) -> `[oh-web-fs] fullscreenchange -> false (config true
+  -> false)` — the pre-055 stale-`true` desync closed; the next tap's direction
+  is correct in every case (the fast double-tap included).
+
+### Item 3 — the scaling that never recovers (reproduced headlessly, BEFORE + AFTER pair)
+
+- REPRO (pre-fix package, `--scale`, the log kept): the DPR-only viewport
+  change (800x600 @3 -> @2.5, CSS box unchanged) fires NO `resize` and NO
+  `matchMedia` change (the page-side `__reslog` event-time diagnostic is the
+  measured fact — the browser delivers no event for a `devicePixelRatio`
+  change that leaves the CSS box unchanged: the Android DPR change across a
+  fullscreen transition, the task's second suspect), so the backing store
+  stayed stuck at 2940x2205 vs expected 2450x1837 at +20/+150/+1200 ms —
+  "never recovers" (no event re-fires the `resize` once the layout settles).
+  The boot edge reproduced too (zero-rect at module init -> the requested
+  640x480 fallback x3 = 1920x1440, no correcting event).
+- FIX (`crates/oh-render/src/window.rs`, emscripten-only, in the rAF pump's
+  closure): (a) the SETTLE re-measure — a folded `Resized` (or the boot) primes
+  a post-layout re-measure on the next tick (the event-time measurement may be
+  pre-settle — the 100vw/100vh box + the DPR settle in the frame's layout
+  pass; the dedup against the folded bookkeeping makes a settled-already
+  measurement a no-op — the event stream never carries a duplicate `Resized`);
+  (b) the PER-FRAME DPR sensor — a passive `devicePixelRatio` read (one DOM
+  getter + one compare per frame, no event, no side effect while the DPR
+  holds) re-measures on drift (the layout box is unchanged in the DPR-only
+  case, so the read is the settled box).
+- AFTER (post-fix package, same probe): the invariant (canvas backing store ==
+  its CSS box x DPR) holds at +20/+150/+1200 ms at every trigger — boot, the
+  windowed resize, the DPR-only, the DPR-return — and in the CDP-granted
+  fullscreen size.
+
+### Gate, build, limits
+
+- Host gate 5/5 green on the final tree (fmt / build / clippy / test 1033
+  passed / lua-parity); wasm build in the emsdk container green (the
+  `tools/package-web.sh` recipe, `CARGO_TARGET_DIR` in-lane); the post-build
+  probe re-run PASSes.
+- Real-gesture fullscreen is the operator's to confirm: headless CDP grants
+  the transient user activation run-dependently (046/041's recorded limit —
+  the operator's real tap on Android Chrome always does). The wiring, the
+  re-sync and the external-exit path are proven by the CDP-granted run above;
+  the on-device feel of the transition is the operator's confirmation.
+- Register: the F33 row amended (the 055 overrides — the relocation, the
+  re-sync, the scaling fix, the probe's acceptance — marked as 055
+  amendments; the row's original 046 text kept, superseded clauses marked).
+- Commits: `9cd9476b` the probe; `986bbf4a` the window layer (items 2 + 3 +
+  the fallback style); `9aa58dac` the shell (item 1); this report + the
+  register follow.

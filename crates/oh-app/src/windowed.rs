@@ -3191,13 +3191,12 @@ impl WindowedClient {
         // issue 046 (F33) — the fullscreen button's (`#fs`) click sink
         // (the `Window::set_fullscreen_click_sink` docs — the `oh-render`
         // emscripten half attached the listener; this installs the
-        // callback): the config's `fullscreen` toggle + the browser
-        // Fullscreen API's apply. The `config` here is the SAME shared
-        // `Arc<RwLock<Config>>` the `MenuConfig` seam wraps (the
-        // LAlt+Enter bind's `cfg.set_fullscreen(!cfg.fullscreen())` —
-        // `register_menu_binds`'s) — the button and the menu's own
-        // toggle cannot disagree (the task's "single source of truth").
-        // The C++ applied this config at the window's creation /
+        // callback): the browser Fullscreen API's apply. The `config` here
+        // is the SAME shared `Arc<RwLock<Config>>` the `MenuConfig` seam
+        // wraps (the LAlt+Enter bind's `cfg.set_fullscreen(!cfg
+        // .fullscreen())` — `register_menu_binds`'s) — the button and the
+        // menu's own toggle cannot disagree (the task's "single source of
+        // truth"). The C++ applied this config at the window's creation /
         // recreation (`Config::setFullscreen`'s `recreateWindow` —
         // `sf::Style::Fullscreen`, GameWindow.hpp:90; the port's FINDING —
         // the register row — never applied it anywhere: the winit window
@@ -3210,18 +3209,30 @@ impl WindowedClient {
         {
             let cfg = config.clone();
             window.set_fullscreen_click_sink(std::sync::Arc::new(move || {
-                // The toggle (the LAlt+Enter bind's twin — the config's
-                // value decides the direction, the browser's state does
-                // NOT: an Esc / back-exit leaves the config as the
-                // source of truth, the C++'s LAlt+Enter's semantics —
-                // it toggles the config regardless of the window's
-                // actual state).
-                let next = {
-                    let mut c = cfg.write().expect("config poisoned");
-                    let n = !c.get_fullscreen();
-                    c.set_fullscreen(n);
-                    n
-                };
+                // issue 055 — the direction is the BROWSER's ACTUAL state
+                // (`document.fullscreenElement`), NOT the config's value
+                // (the pre-055's desync — its own comment's record of the
+                // hole): an Esc / the Android back leaves fullscreen
+                // without the game asking, and a config-value toggle then
+                // set the config `false` + called `exitFullscreen()` — a
+                // no-op: the FIRST tap after an external exit did nothing
+                // visible (the operator's "i can no longer reach the
+                // button"). The browser's state makes the tap's direction
+                // correct in EVERY case (a fast double-tap included: the
+                // second tap re-reads the browser, not a half-written
+                // config). The config write happens in the
+                // `fullscreenchange` re-sync (below) — the browser's own
+                // authoritative signal for the transition — so a REJECTED
+                // request (no transient user activation — the headless
+                // CDP's honest limit, the operator's real tap always
+                // grants it) fires no event, writes nothing: the config,
+                // the button's appearance (the `html:fullscreen` CSS flip)
+                // and the browser all stay on the browser's actual state —
+                // they cannot disagree.
+                let in_fullscreen = web_sys::window()
+                    .and_then(|w| w.document())
+                    .is_some_and(|d| d.fullscreen_element().is_some());
+                let next = !in_fullscreen;
                 // The browser Fullscreen API's apply (the FINDING's
                 // applier half — the port never applied the config
                 // anywhere; this is the first path that does, on the
@@ -3262,6 +3273,47 @@ impl WindowedClient {
                 oh_game::log_sink::emit_log(
                     "web",
                     &format!("[oh-web-fs] fullscreen -> {next} (browser: {browser})"),
+                );
+            }));
+            // issue 055 — the `fullscreenchange` re-sync (the
+            // `Window::set_fullscreen_change_sink` docs): the ported
+            // `fullscreen` config's WRITER for the browser's transitions
+            // — ONCE, from the browser's own signal (the task's
+            // "reconcile, do not abandon"): every transition (our API's
+            // grant/exit AND the external exits — Esc / the Android back —
+            // the game did not ask for) fires it, and the config tracks
+            // the browser's ACTUAL state there: the operator's desync (the
+            // external exit's stale `true`) is closed, the config stays
+            // the SETTING's single source of truth (the options menu's +
+            // the LAlt+Enter bind's writes ride the SAME shared
+            // `Arc<RwLock<Config>>` unchanged — F33's rule), and a
+            // rejected request (no state change, no event) writes nothing
+            // — the config, the button's appearance (the `html:fullscreen`
+            // CSS flip) and the browser cannot disagree.
+            window.set_fullscreen_change_sink(std::sync::Arc::new(move || {
+                let in_fullscreen = web_sys::window()
+                    .and_then(|w| w.document())
+                    .is_some_and(|d| d.fullscreen_element().is_some());
+                let prev = { cfg.read().expect("config poisoned").get_fullscreen() };
+                if prev != in_fullscreen {
+                    cfg.write()
+                        .expect("config poisoned")
+                        .set_fullscreen(in_fullscreen);
+                }
+                // The wiring-evidence line (the 041's `[oh-audio]`'s
+                // console-visible diagnostic's pattern — the Rust stdio's
+                // black hole, the `oh-game` log sink's browser-console
+                // route): the transition's own account (the probe's grep
+                // target) — the `no write` half marks the event that
+                // found the config already in sync (an LAlt+Enter /
+                // options-menu write ahead of the transition).
+                oh_game::log_sink::emit_log(
+                    "web",
+                    &format!(
+                        "[oh-web-fs] fullscreenchange -> {in_fullscreen} (config {prev} -> {in_fullsync}{no_write})",
+                        in_fullsync = in_fullscreen,
+                        no_write = if prev == in_fullscreen { " (no write — already in sync)" } else { "" },
+                    ),
                 );
             }));
         }
@@ -3732,19 +3784,20 @@ impl WindowedClient {
             // the composition's single-threaded frame — the store is the
             // current representative state: the menu's `States`
             // discriminant, or `10` for the game state).
-            // issue 046 (F33) — the menu <-> game transition EDGE (the
-            // port's house pattern — edge, never per frame: the 025f's
-            // `is_entering_text` edge's twin): the `ohstatechange` DOM
-            // event the shell's `#fs` visibility gate listens for (the
-            // fullscreen button's `display: none` in the game state —
-            // the gameplay touch overlay's RotateCW owns that corner
-            // while playing: a HIDDEN element is the only variant that
-            // cannot swallow a touch — the F33 register row's
-            // hit-test property). Dispatched ONCE per transition (the
+            // issue 046 (F33, issue 055) — the menu <-> game transition
+            // EDGE (the port's house pattern — edge, never per frame: the
+            // 025f's `is_entering_text` edge's twin): the `ohstatechange`
+            // DOM event, dispatched ONCE per transition (the
             // discriminant's change — zero lag, unlike a page-side poll;
             // the store's `Relaxed` order is the probe slot's, the
             // edge's correctness is the value compare's, not the
-            // atomics').
+            // atomics'). issue 055: the shell's 046 gate (the `#fs`
+            // visibility — the game-state `display: none`) is GONE with
+            // the operator's "stay present" override (the button is now
+            // top-right + always visible, below the F31 row's band — the
+            // 055 probe's hit-test property); the event stays the
+            // port's own state-transition signal (the probe's `__keylog`
+            // edge observable) — a future page gate can listen for it.
             #[cfg(target_os = "emscripten")]
             {
                 let state_now = match engine.current() {
