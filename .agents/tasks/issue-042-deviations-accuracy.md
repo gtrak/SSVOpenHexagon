@@ -64,3 +64,30 @@ landed, that is the most important finding in this task.
 - If the sweep turns out to be larger than you can honestly finish, **stop and report** with the
   counts you did verify, the method, and the remainder — a precise partial sweep with the
   prioritisation stated beats a claimed complete one.
+
+## Report
+
+**All 295 rows verdicted** (260 numbered + 29 F-section closures + 6 K-section), 4 commits, doc-only
+(`deviations.md`), clean tree, explicit paths.
+
+Method: the triage baseline `01cdbd51` (2026-10-16) was confirmed an ancestor of the sweep HEAD; the
+260 numbered rows were bucketed by `git log --since=<triage> -- <path>` into 184 changed-file and 76
+unchanged-file (no dead paths). Changed-file rows were verified first (loc.py fragment mapping, code
+inspection, dead-C++ claims re-checked against `cpp-original/`); the 76 unchanged-since-triage rows
+were spot-checked by comment-fragment presence - **76/76 present, 0 gone**.
+
+Distribution: **STILL TRUE 211** (incl. all 76 spot-checks) · **NOW FIXED 33** (31 full + 2 partial;
+one of them a mechanism DELETION - `oh-android/build.rs`, D-037) · **CLOSED/HOLDS 30** (29 F + K6) ·
+**STALE-class 20** (8 stale, 7 partially stale, 5 stale-wrong: the `TODO(issue-009-wiring)` relics in
+`oh-render/src/graphics.rs`, the pre-triage-stale windowed claims, stale C++-dead claims) ·
+**UNVERIFIABLE 1** (K3's device re-measurement half - no ADB here; 034's report stands).
+
+Load-bearing closures re-verified at HEAD: K3/K4 by D-037 (`ce588866`) - `oh-android` is
+Cargo.toml+src only, no `cshim.c` anywhere, `oh-lua` is mlua-luau only; **K6 by execution** - `cargo
+test -p oh-app --test pack_shaders` 9/9, and the GL half under `xvfb-run` reproduced 029n1's exact
+7359/7500 differing pixels. K2/K5/K7 confirmed still open.
+
+**Answer to the operator's question - "is the deviations-register accurate?":** substantially yes
+(211/260 numbered rows still true, and 76/76 of the untouched ones spot-check clean), but not
+entirely: 20 rows had gone stale in one of three ways, and they are now annotated with the code as
+the authority. The register is now swept as of `0161c037`.

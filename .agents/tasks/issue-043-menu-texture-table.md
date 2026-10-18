@@ -36,6 +36,29 @@ All three are initialised from the same `let placeholder = Texture::create(1, 1)
 29w1 the credits; both added "is this the real PNG?" tests, e.g.
 `credits_bar_textures_are_the_real_assets_pngs_not_placeholders` at `:4218`).
 
+## VERIFIED SYMPTOM in a real browser (orchestrator, against the CI-deployed page)
+
+The diagnosis above came from reading code. It is now confirmed at the *symptom* level against the
+build GitHub Actions published, using the new durable probe `tools/web-probe.mjs`:
+
+```
+node tools/web-probe.mjs https://gtrak.github.io/SSVOpenHexagon/ 24 --keys=Enter
+  requests      : <base>/ . oh-web.js . oh_web.data . oh_web.wasm   (all 200; the ONLY 404 is /favicon.ico)
+  state timeline: menu:LoadingScreen -> [Enter] -> menu:EpilepsyWarning -> [Enter] -> menu:ETLPNewBoot
+```
+
+So the port DOES enter `States::EpilepsyWarning`, ticks there at ~60/s, and draws nothing visible.
+Combined with the code read (the draw arm and the transform are already C++-faithful), the sprite's
+1x1 placeholder texture is what makes the screen blank - a player sees black and has to guess that a
+key advances it. That is the whole bug, so do not go looking for a missing state or a missing case.
+
+ACCEPTANCE, in those terms: with a browser available, `node tools/web-probe.mjs <url> 30 --keys=Enter`
+against either the deployed page or a local serve of `target/package/web`, and confirm (a) the
+timeline reaches `menu:EpilepsyWarning`, and (b) the screenshot at that moment shows the real
+epilepsyWarning.png AND the "PRESS ANY KEY OR BUTTON TO CONTINUE" prompt. Compare against the actual
+PNG in the original tree rather than a memory of it. (The favicon 404 is not yours; the probe
+tolerates it.) The probe is a manual tool - it needs a browser - so do NOT wire it into the gate.
+
 ## What to do
 
 1. **Load the real PNGs through the same asset path the credits/key textures already use** (the
