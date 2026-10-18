@@ -77,3 +77,162 @@ is a fact and not a promise.
 - Gates: the host gate before each commit, the wasm build in the emsdk container (§4), and
   `cargo check --target aarch64-linux-android` if you touch shared code. Commit with explicit paths,
   bound everything with `timeout`, and append a `## Report`.
+
+## Report (lane 048, 2026-10-18)
+
+**Answer to the operator's question, now:** yes — and it is IndexedDB, not
+`localStorage`. The wasm build persists its user data (profiles, config,
+replays) in **IndexedDB** across reloads, through emscripten's **IDBFS**
+(the IndexedDB-backed filesystem). `localStorage` is the wrong tool and was
+not used: it is ~5 MB, synchronous, and string-only — and nothing in the
+port uses it. IDBFS instead keeps the port's existing `std::fs` code path
+intact (D-036's "MEMFS preload, NOT a VFS refactor" decision still holds):
+the engine writes exactly where it always did (`/RELEASE/config.json`,
+`/RELEASE/Profiles/`, `/RELEASE/Replays/`); the page re-points those three
+paths at the IDBFS mount with symlinks, and emscripten's own IDBFS layer
+persists them to IndexedDB.
+
+**What persists — the writable-path census (from the code, not assumed):**
+under the web base dir (`/RELEASE`) exactly THREE paths are ever written:
+`config.json` (the `ConfigSaveGuard`, `crates/oh-app/src/client.rs:128` —
+`save_config` is a direct `std::fs::write`, no tmp+rename), `Profiles/`
+(`Assets::profile_create` / `profile_save_current` / `profile_save_all`,
+`crates/oh-assets/src/assets.rs:790-1007` — direct `std::fs::write` through
+the `root`-joined `Profiles/<name>.json`), and `Replays/`
+(`RealReplayStore`). Confirmed desktop-only (absent on web):
+`workshopCache.json` (oh-steam's `load_workshop_data` cache) and
+`ohdb.sqlite` (oh-net's online stack). `scores.json` / `users.json` are C++
+leftovers no Rust code writes. Each of the three is symlinked into the
+`/userdata` IDBFS mount; first run seeds `/userdata/config.json` from the
+shipped `_RELEASE` copy (the C++'s user-config-shadows-shipped shape).
+
+**What deliberately does NOT persist: the 22 MB read-only `_RELEASE`
+content.** IDBFS is never mounted over `/RELEASE` — a persisted copy would
+be STALE after the next deployment (a returning player running an old
+`_RELEASE` against a new `oh_web.wasm`). The probe's IDB inventory proves
+this as a fact: after a full session the durable store holds EXACTLY 4
+entries — `/userdata/config.json` (7952 B), `/userdata/Profiles/probe.json`
+(123 B), and the `Profiles` + `Replays` directory entries. Nothing else.
+(IndexedDB database `/userdata` — IDBFS names the DB after the mountpoint —
+store `FILE_DATA`, version 21; emscripten 6.0.12 `src/lib/libidbfs.js`.)
+
+**The design, per the three constraints:**
+1. *Ordering at boot* — IndexedDB is asynchronous, so `main` no longer runs
+   the composition synchronously. It calls the page's `ohWebPersistBoot`
+   glue (`crates/oh-web/site/index.html`, defined in the page's module
+   script before the factory is called), which mounts the IDBFS at
+   `/userdata` (`autoPersist: true` — emscripten's own
+   persist-after-each-write), runs the `FS.syncfs(true)` LOAD (the
+   persisted user data in place BEFORE the composition reads
+   `config.json` / `Profiles`), seeds the symlinks, and then invokes the
+   callback. The callback is a `dyn Fn` `Closure` (wasm-bindgen has no
+   `FnOnce` JS closures) with a `BOOT_GATE_FIRED` one-shot latch, its
+   ownership transferred to the JS GC (`into_js_value`), so the composition
+   boots exactly once, when the load settles. A load FAILURE (missing glue,
+   no IndexedDB) degrades to the session-only MEMFS — the game still boots
+   (the C++ has no durable storage either; this is a platform addition,
+   not a transcription).
+2. *Sync after writes + on the way out* — two layers: the mount's
+   `autoPersist` (every write under `/userdata` persists to IndexedDB at
+   the end of the frame — the profile reaches the durable store the moment
+   it is created) AND the page's `pagehide` / `visibilitychange` glue: it
+   calls the new `save_session` wasm export — the C++ `mainClient`
+   exit-save (the `pSaveAll` + `saveConfig` pair, main.cpp:285-291 /
+   :382-388) RE-FIRED in its LIFO guard order through
+   `oh_app::windowed::web_session_save` (the stow at `build`'s composition
+   point) — then flushes the mount with `FS.syncfs(false)`. The re-fire is
+   the D-029 gap-closer: on web the rAF loop returns, so the C++'s exit
+   guards drop at composition (with the boot-time values) and an in-session
+   config change (the menu's options) would never have reached
+   `config.json`. The operator tests on **Android Chrome, which discards
+   backgrounded tabs** — `visibilitychange(hidden)` fires before the
+   discard, so a "sync at the end of main" design would have silently lost
+   the data on a phone.
+3. *The link flag* — `-lidbfs.js` + `-sEXPORTED_RUNTIME_METHODS=FS,IDBFS`
+   in the root `.cargo/config.toml`'s wasm rustflags. Verified applied:
+   `Module["IDBFS"]` is present in the generated `oh-web.js` and
+   `FS.syncfs` / `FS.mount` run at runtime (the probe's boot lines:
+   `oh-web: user data restored from IndexedDB (IDBFS /userdata, autoPersist
+   on)`).
+
+**The acceptance — `tools/web-persist-probe.mjs`** (a headless-Chrome CDP
+driver, the same recipe as `tools/web-probe.mjs`: SwiftShader GL, a fresh
+`--user-data-dir` = a fresh user; exit 0 only when every checkpoint
+passes). Probe output, verbatim (final run):
+
+```
+PHASE 1 (fresh IndexedDB):
+  [PASS] boot to LoadingScreen (fresh profile) — 3s
+  [PASS] advance to EpilepsyWarning
+  [PASS] fresh user → profile creation (ETLPNewBoot)
+  [PASS] profile "probe" created (→ SMain)
+  [PASS] open MOpts (options category)
+  [PASS] dispatch pagehide (the way-out glue) — synthetic pagehide dispatched
+  [PASS] IndexedDB durable store reachable — 4 entries: /userdata/Profiles, /userdata/Profiles/probe.json, /userdata/Replays, /userdata/config.json
+  [PASS] profile persisted to IndexedDB — key=/userdata/Profiles/probe.json, bytes=123
+  [PASS] config persisted with the changed setting (auto_restart: true) — config.json 7952B in the durable store
+
+PHASE 2 (Page.reload — MEMFS re-preloaded, only IndexedDB survives):
+  [PASS] reboot: module up
+  [PASS] reboot to LoadingScreen — 3s (the 22 MB _RELEASE re-preload + the FS.syncfs load)
+  [PASS] boot SKIPS name entry (→ SLPSelectBoot, not ETLPNewBoot) — landed on menu:SLPSelectBoot — a persisted profile must put the boot on the profile list
+  [PASS] changed setting survived the reload (auto_restart: true via the engine path) — config.json 7952B
+  [PASS] profile still in IndexedDB after the reload — key=/userdata/Profiles/probe.json
+
+persistence gate log : oh-web: user data restored from IndexedDB (IDBFS /userdata, autoPersist on) | oh-web: persisted user data ready (IDBFS /userdata) - booting the composition | …(×2, once per load)…
+console errors        : none (4 known [oh-audio] volume diagnostics excluded)
+
+web-persist-probe: 14/14 checkpoints passed
+```
+
+Phase 2's screenshot (`/tmp/persist-reload-selectboot.png`) shows the boot
+on `SELECT LOCAL PROFILE / PRESS ESC TO CREATE A NEW PROFILE` with the
+persisted `PROBE` profile listed — the boot skipped name entry. Phase 1's
+(`/tmp/persist-mopts-gameplay.png`) shows `CURRENT PROFILE: probe` on the
+MOpts GAMEPLAY page (captured before the `autorestart` toggle; the IDB
+read proves the post-toggle `"auto_restart": true` reached IndexedDB). The
+changed setting is read back through the ENGINE'S OWN PATH in Phase 2
+(`ohWebModule.FS.readFile('/RELEASE/config.json')` — the module's FS, the
+page's symlink into IDBFS — not a side channel).
+
+**Changed files:** `crates/oh-web/src/web.rs` (the boot's persistence gate
++ the `save_session` export), `crates/oh-web/site/index.html` (the page
+glue — ADDITIVE inside the existing module script: `ohWebPersistBoot`,
+the `cfg`/`globalThis.ohWebModule` hook, the way-out listeners; also the
+`Module()` call now passes `cfg` — that line is the factory-call 046's
+work will touch too, noted below), `crates/oh-app/src/windowed.rs`
+(emscripten-only `web_session_stow` / `web_session_save` + the stow call
+in `build`), the root `.cargo/config.toml` (the two wasm rustflags),
+`tools/web-persist-probe.mjs` (new), `.agents/plans/001-rust-port/`
+(F34 + D-039). Web-only in effect: the `oh-app` additions are
+`#[cfg(target_os = "emscripten")]` (zero desktop/Android effect —
+`tools/check-android.sh` green); no on-disk format touched.
+
+**Lane 046 coordination (per the task's boundary):** 046's IME element +
+fullscreen button are NOT in the working tree yet (its commits are
+spec-only at this HEAD; the last `index.html` commit is 032's). This
+lane's page change is additive inside the module script and keeps the
+canvas/status lines untouched; the ONE shared line is the factory call
+(`const mod = await Module(cfg)` — was `Module()`), which 046's glue may
+also want to carry its config object through. If 046 lands first, its
+module-script additions and this lane's `ohWebPersistBoot` block must both
+be kept (a merge of the module script, not a last-writer-wins).
+
+**Gates:** host gate `tools/gate.sh` 5/5 green (fmt / build / clippy
+`-D warnings` / test / lua-parity); the wasm build in the emsdk container
+(`tools/package-web.sh` — the single source of truth for the recipe, incl.
+`CXXFLAGS=-fwasm-exceptions` for the Luau link) + staging green;
+`tools/check-android.sh` green; the probe 14/14, exit 0 (run twice).
+
+**Probe input notes (recorded in the probe's comments so the next driver
+doesn't re-learn them):** the CDP taps are HELD across frames (120 ms) —
+the C++'s menu binds are the SSVStart Manager's per-frame trigger POLLING
+(`game.addInput`, MenuGame.cpp:912-1018), so a key tapped entirely inside
+one frame leaves no trace in the per-frame input snapshot — the port's 025c
+documented finding, faithful to the C++. And the boot-screen-close key is
+`Space`, never a letter: the C++'s `playLocally()` clears only
+`enteredStr` (MenuGame.cpp:1783-1789), so a `w` close types a `w` into the
+fresh profile name (`"WPROBE"` — observed in the first probe run; the C++
+leaks it too, the `isEnteringText`-gated accumulation at MenuGame.cpp:
+2862-2878); `Space` is dropped by the accumulation's
+alphanumeric/punctuation filter and has no menu bind in the boot states.

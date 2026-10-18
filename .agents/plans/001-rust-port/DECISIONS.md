@@ -1037,3 +1037,78 @@ configuration has no `jit` table left to disable. The Android `__clear_cache` sh
   out"). Windows-runner symlink materialisation for the two root symlinks:
   UNVERIFIED (no Windows checkout exercised).
 - **Landed by:** issue 038 (lane 038, branch `lane/038`).
+
+## D-039 — Web persistence: user data in IndexedDB through a small IDBFS mount, never over `/RELEASE` (issue 048)
+
+- **Question:** the operator asked "is data persisted in localstorage on the
+  wasm build?" — the verified answer before writing the issue was **no,
+  nothing persists at all** (the base dir `/RELEASE` is the `_RELEASE` tree
+  preloaded into emscripten MEMFS; every profile, score and replay died on
+  reload).
+- **Decision:**
+  1. The tool is emscripten **IDBFS** (the IndexedDB-backed filesystem),
+     NOT `localStorage` (~5 MB, synchronous, string-only — and not what
+     anything here uses). IDBFS keeps the port's existing `std::fs` code
+     path intact — D-036's "MEMFS preload, NOT a VFS refactor" decision
+     still holds.
+  2. The mount is a small `/userdata` directory, **NOT `/RELEASE`**: the 22
+     MB read-only `_RELEASE` content stays in MEMFS. A persisted `_RELEASE`
+     would be STALE after the next deployment (a returning player would run
+     an old `_RELEASE` against a new `oh_web.wasm`) — a real hazard, not a
+     theoretical one.
+  3. What persists: the base dir's THREE writable paths — `config.json`,
+     `Profiles/`, `Replays/` (the full write-census of the base dir; the
+     desktop-only `workshopCache.json` / `ohdb.sqlite` are absent on web) —
+     each re-pointed at the mount with one `FS.symlink`. The on-disk FORMATS
+     are untouched (pinned by parity; persistence re-points the paths, never
+     the bytes). First run: the shipped `config.json` seeds `/userdata` — a
+     later deploy's shipped config never clobbers the user's own (the C++'s
+     user-config-shadows-shipped shape).
+  4. Boot ordering: IndexedDB is ASYNCHRONOUS — `main` calls the page's
+     `ohWebPersistBoot` glue (mount + the `FS.syncfs` LOAD + the symlinks)
+     and boots the composition FROM THE GLUE'S CALLBACK (a `dyn Fn`
+     `Closure` + one-shot latch — wasm-bindgen has no `FnOnce` JS closures;
+     ownership transfers to the JS GC via `into_js_value`). A load FAILURE
+     degrades to the session-only MEMFS (the game still boots — the C++ has
+     no durable storage either; this is a platform addition, not a
+     transcription).
+  5. The way-out: the page's `pagehide` / `visibilitychange` glue calls the
+     `save_session` export — the C++ `mainClient` exit-save (the `pSaveAll`
+     + `saveConfig` pair, main.cpp:285-291 / :382-388) RE-FIRED at the
+     session's real end — and flushes the mount with `FS.syncfs(false)`.
+     The re-fire closes the D-029 gap: on web the rAF loop returns, so the
+     C++'s exit guards drop at composition (with the boot-time values) and
+     an in-session config change would never reach `config.json`. The
+     operator tests on ANDROID CHROME, which discards backgrounded tabs —
+     `visibilitychange(hidden)` fires before the discard, so a "sync at the
+     end of main" design would have lost the data on a phone.
+- **Evidence (2026-10-18, at `lane/048`):** `tools/web-persist-probe.mjs`
+  (a headless-Chrome CDP driver; the task's acceptance): PHASE 1 — a fresh
+  user boots to the C++'s own first-run state (`menu:ETLPNewBoot`), creates
+  profile `probe`, toggles `autorestart` in MOpts→GAMEPLAY, dispatches a
+  synthetic `pagehide` — the IndexedDB inventory (database `/userdata`,
+  store `FILE_DATA`, the emscripten 6.0.12 IDBFS names) holds EXACTLY 4
+  entries: the profile (123 B), `config.json` (7952 B,
+  `"auto_restart": true`), the `Profiles` + `Replays` dirs — NO `_RELEASE`
+  content (the NOT-mounting-`/RELEASE` property as a fact, not a promise).
+  PHASE 2 (`Page.reload` — the MEMFS is re-preloaded, only IndexedDB
+  survives): the boot lands on `menu:SLPSelectBoot` (NOT `ETLPNewBoot` —
+  the profile persisted and the boot skipped name entry; the screenshot
+  shows `SELECT LOCAL PROFILE` + `PROBE`) and `config.json` read through
+  the engine's own symlinked path still says `"auto_restart": true`.
+  14/14 checkpoints, exit 0. Host gate 5/5; the wasm build (emsdk
+  container, the root `.cargo/config.toml`'s recipe + `-lidbfs.js` +
+  `-sEXPORTED_RUNTIME_METHODS=FS,IDBFS`) and `tools/check-android.sh`
+  green.
+- **Known consequences (recorded, not papered over):** the probe's input
+  must look HUMAN (a tap held across frames — the C++'s menu binds are the
+  SSVStart Manager's per-frame trigger polling, so a single-frame tap
+  leaves no trace, the C++'s own 025c-documented behavior; and the
+  boot-screen-close key must not be a typeable letter — the C++'s
+  `playLocally()` clears only `enteredStr`, so a `w` close leaks a `w` into
+  the fresh profile name — the C++ leaks it too). Lane 046 (the web IME +
+  the operator's fullscreen button) also works on `site/index.html`: this
+  lane's page change is ADDITIVE inside the existing module script (the
+  `ohWebPersistBoot` glue + the `globalThis.ohWebModule` hook + the way-out
+  listeners); if 046's lines land, the merge must keep both.
+- **Landed by:** issue 048 (lane 048, branch `lane/048`).

@@ -2447,6 +2447,71 @@ pub fn web_state() -> &'static str {
     }
 }
 
+/// issue 048 (F34 / D-039) — the web session's exit-save (the C++
+/// `mainClient`'s two scope guards, main.cpp:285-291 + :382-388 — the
+/// `pSaveAll` + `saveConfig` pair). D-029's web loop is a
+/// `request_animation_frame` the browser owns: `main_client` RETURNS after
+/// `client.run()` schedules the first frame, so the C++'s exit guards —
+/// which in the C++ live for the whole session inside the BLOCKING
+/// `window->run()` — drop at composition time on web, with the boot-time
+/// values: an in-session config change (the menu's options) would never
+/// reach `config.json`. The page's way-out hooks (issue 048's `pagehide` /
+/// `visibilitychange` glue, `crates/oh-web/site/index.html`) call
+/// [`web_session_save`] instead — the C++'s exit-save at the moment the web
+/// session actually ends (a backgrounded tab is `hidden` BEFORE Android
+/// Chrome can discard it; a closed tab fires `pagehide`). The stow is
+/// `build`'s composition point (the one place config + assets + the base
+/// dir meet); `OnceLock` makes a re-stow a no-op (one composition per
+/// page — the same single-init discipline as the rAF loop).
+#[cfg(target_os = "emscripten")]
+struct WebSessionSave {
+    config: Arc<RwLock<Config>>,
+    assets: Arc<oh_assets::Assets>,
+    config_path: std::path::PathBuf,
+}
+
+#[cfg(target_os = "emscripten")]
+static WEB_SESSION_SAVE: std::sync::OnceLock<WebSessionSave> = std::sync::OnceLock::new();
+
+/// issue 048 (F34 / D-039) — the stow half (called from `build`, the
+/// composition point: the shared config + the shared `HGAssets` profile
+/// store + the C++'s `config.json` path rooted at `base_dir` — the same
+/// path the `ConfigSaveGuard` gets in `client.rs`).
+#[cfg(target_os = "emscripten")]
+pub fn web_session_stow(
+    config: Arc<RwLock<Config>>,
+    assets: Arc<oh_assets::Assets>,
+    config_path: std::path::PathBuf,
+) {
+    let _ = WEB_SESSION_SAVE.set(WebSessionSave {
+        config,
+        assets,
+        config_path,
+    });
+}
+
+/// issue 048 (F34 / D-039) — the C++'s `mainClient` exit-save at the web
+/// session's end: `pSaveAll` (main.cpp:382-388) THEN `saveConfig`
+/// (main.cpp:285-291) — the C++'s LIFO guard order. Reached through
+/// oh-web's `#[wasm_bindgen]` `save_session` export from the page's
+/// `pagehide` / `visibilitychange` glue. Pre-stow (a failed boot) it is a
+/// no-op — nothing is composed, nothing to save.
+#[cfg(target_os = "emscripten")]
+pub fn web_session_save() {
+    let Some(s) = WEB_SESSION_SAVE.get() else {
+        return;
+    };
+    // The C++ pSaveAll guard (fires FIRST in the C++'s LIFO drop order).
+    s.assets.profile_save_all();
+    // The C++ ConfigSaveGuard's save (fires LAST): the guard's own
+    // poisoned-lock discipline (lifecycle.rs's `ConfigSaveGuard::drop` —
+    // a poisoned lock skips the save; the config is main-thread-only in
+    // the binary, so this is unreachable, the C++ line shape kept).
+    if let Ok(mut config) = s.config.write() {
+        let _ = config.save_config(&s.config_path);
+    }
+}
+
 pub struct WindowedClient {
     pub window: Window,
     pub engine: Rc<GameEngine>,
@@ -3092,6 +3157,21 @@ impl WindowedClient {
                 flag.store(if error { 2 } else { 1 }, Ordering::SeqCst);
             }));
         }
+
+        // issue 048 (F34 / D-039) — the web session's exit-save stow (the
+        // `WEB_SESSION_SAVE` docs above): on web the C++'s `mainClient`
+        // exit guards (the pSaveAll + saveConfig pair) drop at composition
+        // (D-029's rAF loop returns), so the page's way-out glue re-fires
+        // them at the session's real end (pagehide / visibilitychange)
+        // through `web_session_save` — the stow holds the shared config +
+        // assets + the C++'s `config.json` path (base_dir-rooted — the
+        // same path the `ConfigSaveGuard` gets in `client.rs`).
+        #[cfg(target_os = "emscripten")]
+        crate::windowed::web_session_stow(
+            config.clone(),
+            assets.clone(),
+            base_dir.join("config.json"),
+        );
 
         Ok(Self {
             window,

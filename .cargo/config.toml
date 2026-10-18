@@ -100,6 +100,22 @@ rustflags = [
   "-Clink-arg=-sMIN_WEBGL_VERSION=2",
   "-Clink-arg=--preload-file=_RELEASE@/RELEASE",
   "-Clink-arg=-sFORCE_FILESYSTEM=1",
+  # Web user-data persistence (issue 048 / F34 / D-039): IDBFS - the
+  # IndexedDB-backed filesystem the PAGE mounts at /userdata (site/index.html's
+  # `ohWebPersistBoot` glue, which the Rust boot's `main` awaits through
+  # `FS.syncfs(true, ...)` BEFORE the composition reads config.json /
+  # Profiles). `-lidbfs.js` links the IDBFS implementation (without it
+  # `FS.mount(IDBFS, ...)` has nothing to mount - the runtime `FS.syncfs`
+  # check in `tools/web-persist-probe.mjs` is the acceptance, not this
+  # flag's presence); `-sEXPORTED_RUNTIME_METHODS=FS,IDBFS` puts `Module.FS`
+  # / `Module.IDBFS` on the factory's config object so the page's glue can
+  # mount / symlink / sync. The read-only `_RELEASE` content STAYS in MEMFS -
+  # IDBFS is never mounted over /RELEASE (a persisted copy would serve a
+  # STALE `_RELEASE` to returning players after the next deployment); only
+  # the writable paths (`config.json`, `Profiles/`, `Replays/`) are
+  # symlinked into the mount.
+  "-Clink-arg=-lidbfs.js",
+  "-Clink-arg=-sEXPORTED_RUNTIME_METHODS=FS,IDBFS",
   # Memory (issue 36): emcc's default is a FIXED heap with ALLOW_MEMORY_GROWTH
   # OFF, so any allocation that outgrows it is a FATAL ABORT rather than a
   # growth - observed as `memory allocation of 8388608 bytes failed` +

@@ -33,8 +33,11 @@
   setPointerCapture) is the input story (issue 32).
 
   Expected browser console (the W5 real-composition boot - lane 026
-  re-verified 2026-10-17):
+  re-verified 2026-10-17; lane 048 adds the persistence gate's lines):
       oh-web: boot started (after __wasm_call_ctors)
+      oh-web: awaiting the IndexedDB load (the page's FS.syncfs) before the composition boots
+      oh-web: user data restored from IndexedDB (IDBFS /userdata, autoPersist on)
+      oh-web: persisted user data ready (IDBFS /userdata) - booting the composition
       [web] main_client entry (t=0)
       [web] config loaded
       [web] assets loaded
@@ -94,8 +97,101 @@
       // the Module factory; it resolves once the wasm + the wasm-bindgen
       // glue (including Rust main via addOnInit) have initialized.
       import Module from "./oh-web.js";
-      const mod = await Module();
+
+      // issue 048 (F34 / D-039) - durable user data (IndexedDB, via
+      // emscripten IDBFS): the Rust boot (oh-web's `main`) does NOT run
+      // the composition synchronously - it calls `ohWebPersistBoot` and
+      // waits for this glue to finish, so the persisted user data is in
+      // place BEFORE the composition reads config.json / Profiles. The
+      // factory's config object IS the Module (the generated loader does
+      // `var Module = moduleArg`), so `cfg` carries `Module.FS` /
+      // `Module.IDBFS` (the -sEXPORTED_RUNTIME_METHODS=FS,IDBFS exports,
+      // the root .cargo/config.toml's wasm flags) by the time `main` runs.
+      // WHAT PERSISTS: the three writable paths under the base dir -
+      // config.json + Profiles/ + Replays/ - symlinked into the /userdata
+      // IDBFS mount (the C++'s CWD-relative names, the engine's std::fs
+      // writes land in IndexedDB unchanged). WHAT DOES NOT: the preloaded
+      // _RELEASE read-only content (22 MB) stays MEMFS - IDBFS is NEVER
+      // mounted over /RELEASE, or a returning player would run a STALE
+      // _RELEASE (persisted at deploy N) against a new oh_web.wasm (deploy
+      // N+1). First run: /userdata is seeded from the shipped
+      // config.json (the C++'s "the user starts from the shipped config"
+      // shape) - a later deploy's shipped config does NOT clobber the
+      // user's own (exactly the C++'s user-config-shadows-shipped shape).
+      const cfg = {};
+      globalThis.ohWebPersistBoot = (done) => {
+        const fail = (why) => {
+          console.warn("oh-web: persistence OFF (" + why + ") - session-only MEMFS");
+          done();
+        };
+        const FS = cfg.FS;
+        const IDBFS = cfg.IDBFS;
+        if (!FS || !IDBFS) return fail("FS/IDBFS not on the module (the -lidbfs.js / -sEXPORTED_RUNTIME_METHODS flags)");
+        const exists = (p) => { try { FS.stat(p); return true; } catch { return false; } };
+        try {
+          // 1. The ONE IDBFS mount: /userdata (the small user-data dir).
+          //    autoPersist: emscripten's own persist-after-writes (every
+          //    write under the mount queues a sync to IndexedDB at the
+          //    end of the frame - profiles / replays reach IndexedDB as
+          //    they are made; the flushSession below is the deterministic
+          //    way-out flush, the autoPersist's setTimeout(0) may never
+          //    run on a killed tab).
+          FS.mkdirTree("/userdata");
+          FS.mount(IDBFS, { autoPersist: true }, "/userdata");
+          // 2. The load direction (IndexedDB -> /userdata) is ASYNC: the
+          //    callback fires only when it settles (success OR failure -
+          //    the failure degrades to session-only storage, the game
+          //    still boots).
+          FS.syncfs(true, () => {
+            try {
+              // 3. First-run seed + the writable-path symlinks (the
+              //    engine's writes under /RELEASE land in /userdata):
+              //    /RELEASE/config.json is a PRELOADED file (the shipped
+              //    default) - seed /userdata with it when the user has no
+              //    persisted one yet, then unlink + symlink; Profiles/ +
+              //    Replays/ are NOT in the _RELEASE tree (the composition
+              //    creates them - through the symlinks, into /userdata).
+              if (!exists("/userdata/Profiles")) FS.mkdir("/userdata/Profiles");
+              if (!exists("/userdata/Replays")) FS.mkdir("/userdata/Replays");
+              if (!exists("/userdata/config.json"))
+                FS.writeFile("/userdata/config.json", FS.readFile("/RELEASE/config.json"));
+              FS.unlink("/RELEASE/config.json");
+              FS.symlink("/userdata/config.json", "/RELEASE/config.json");
+              FS.symlink("/userdata/Profiles", "/RELEASE/Profiles");
+              FS.symlink("/userdata/Replays", "/RELEASE/Replays");
+              console.log("oh-web: user data restored from IndexedDB (IDBFS /userdata, autoPersist on)");
+              done();
+            } catch (e) { fail("setup: " + e); }
+          }, (e) => fail("syncfs load: " + e));
+        } catch (e) { fail(String(e)); }
+      };
+
+      const mod = await Module(cfg);
+      // issue 048 — the probe hook (tools/web-persist-probe.mjs reads the
+      // persisted user data through the module's own FS, the same path the
+      // engine writes through): the module factory's return carries the
+      // #[wasm_bindgen] exports (status / save_session) + the runtime
+      // methods (FS / IDBFS, the -sEXPORTED_RUNTIME_METHODS exports).
+      globalThis.ohWebModule = mod;
       console.log("oh-web: module loaded");
+      // issue 048 (F34 / D-039) - the web session's way-out persist: D-029's
+      // rAF loop means the C++'s exit-save guards already dropped at
+      // composition (the boot-time config), so the page re-fires them at the
+      // session's REAL end (the in-session config / a run's scores reach
+      // /userdata - `save_session` = the C++ pSaveAll + saveConfig pair,
+      // the C++'s LIFO guard order) and flushes the IDBFS mount to
+      // IndexedDB. The operators' Android Chrome discards BACKGROUNDED tabs:
+      // `visibilitychange` (hidden) fires before the discard, `pagehide` on
+      // close - a "sync at the end of main" design would have lost the data
+      // on a phone.
+      const flushSession = () => {
+        try { mod.save_session(); } catch (e) { console.warn("oh-web: save_session failed", e); }
+        const F = cfg.FS;
+        if (F) F.syncfs(false, () => {}, (e) => console.warn("oh-web: final syncfs failed", e));
+      };
+      document.addEventListener("visibilitychange", () => { if (document.hidden) flushSession(); });
+      window.addEventListener("pagehide", flushSession);
+
       // Poll the #[wasm_bindgen] status() probe into the page + console.
       setInterval(() => {
         const s = mod.status();
