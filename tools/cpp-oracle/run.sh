@@ -6,11 +6,17 @@
 #   tools/cpp-oracle/run.sh seed              # fetch every CPM pin by SHA into $BUILD/*-src
 #   tools/cpp-oracle/run.sh instrument        # apply fingerprint.patch to the tree (the instrumented build)
 #   tools/cpp-oracle/run.sh deinstrument      # reverse it (the reference tree back to pristine)
-#   tools/cpp-oracle/run.sh configure         # cmake configure  (VERIFIED GREEN 2026-10-17)
+#   tools/cpp-oracle/run.sh configure         # cmake configure  (VERIFIED GREEN 2026-10-17; re-verified at the 038 cpp-original/ source path 2026-10-18)
 #   tools/cpp-oracle/run.sh build             # configure + build (LONG: SFML+LuaJIT+the game)
 #   tools/cpp-oracle/run.sh shell             # interactive shell in the image
 #   tools/cpp-oracle/run.sh run -- <args>     # run the built binary from _RELEASE
 #   tools/cpp-oracle/run.sh run [-e KEY=VAL ...] -- ARGS...   (run the built binary)
+#
+# 038 REORG: the C++ tree (src/, include/, extlibs/, CMakeLists.txt, ...) now
+# lives in cpp-original/; the CMake source dir is /src/cpp-original. The repo
+# is still mounted at /src, and _RELEASE/ still sits at the repo root (the
+# moved CMakeLists.txt reaches it through the committed cpp-original/_RELEASE
+# pointer — C++-side build glue, see DECISIONS D-038).
 #
 # WHY THIS EXISTS (learned the hard way):
 #  * The C++ fetches SFML/luajit/zlib/imgui/imgui-sfml/libsodium/boostpfr via CPM,
@@ -83,9 +89,12 @@ case "$CMD" in
   init)
     # The extlibs submodules the C++ build actually needs (pinned SHAs are the
     # repo's state — `git submodule update --init` checks exactly those out).
+    # 038: the submodules moved with the tree into cpp-original/ (the
+    # .gitmodules paths follow; the orphan extlibs/SFML entry has no gitlink).
     ( cd "$REPO" && timeout 900 git submodule update --init \
-        extlibs/SSVUtils extlibs/SSVStart extlibs/SSVMenuSystem \
-        extlibs/vrm_cmake extlibs/vrm_pp )
+        cpp-original/extlibs/SSVUtils cpp-original/extlibs/SSVStart \
+        cpp-original/extlibs/SSVMenuSystem cpp-original/extlibs/vrm_cmake \
+        cpp-original/extlibs/vrm_pp )
     ;;
 
   instrument)
@@ -97,12 +106,19 @@ case "$CMD" in
     # seven files against master (all byte-identical).
     # The container mounts $REPO READ-ONLY at /src, so the patch cannot be
     # applied from inside: do it here, on the host, before `build`.
-    git -C "$REPO" apply "$REPO/tools/cpp-oracle/fingerprint.patch" \
+    # 038: the tree moved into cpp-original/. `git apply` refuses to follow
+    # the root `src`/`include` citation symlinks ("beyond a symbolic link"),
+    # so the prefix is explicit here (--directory=cpp-original). The patch
+    # itself is 030b's untouched artifact (written against the pre-reorg
+    # src/... and include/... paths; its hunk content is unchanged).
+    git -C "$REPO" apply --directory=cpp-original \
+      "$REPO/tools/cpp-oracle/fingerprint.patch" \
       && echo "instrumented (-fingerprint hook in the tree) — remember: deinstrument"
     ;;
 
   deinstrument)
-    git -C "$REPO" apply -R "$REPO/tools/cpp-oracle/fingerprint.patch" \
+    git -C "$REPO" apply -R --directory=cpp-original \
+      "$REPO/tools/cpp-oracle/fingerprint.patch" \
       && echo "pristine (the reference tree is back to master)"
     ;;
 
@@ -135,11 +151,11 @@ case "$CMD" in
         if [ "$CMD" = configure ]; then
           # shellcheck disable=SC2046
           docker run "${DOCKER_ARGS[@]}" "$IMAGE" sh -lc \
-            "cmake -S /src -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS='-include cstdint' $(fc_flags)"
+            "cmake -S /src/cpp-original -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS='-include cstdint' $(fc_flags)"
         else
           # shellcheck disable=SC2046
           docker run "${DOCKER_ARGS[@]}" "$IMAGE" sh -lc \
-            "cmake -S /src -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS='-include cstdint' $(fc_flags) && cmake --build /build -j $(nproc)"
+            "cmake -S /src/cpp-original -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS='-include cstdint' $(fc_flags) && cmake --build /build -j $(nproc)"
         fi
         ;;
       shell)

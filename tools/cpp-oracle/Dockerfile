@@ -38,6 +38,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# The repo is mounted at /src; the build dir is a separate host mount (/build) so
-# the checkout stays clean and incremental builds survive between runs.
+# The repo is mounted at /src (038: the CMake source dir is /src/cpp-original;
+# _RELEASE stays at the repo root, reached through the committed
+# cpp-original/_RELEASE pointer); the build dir is a separate host mount
+# (/build) so the checkout stays clean and incremental builds survive between runs.
 WORKDIR /src

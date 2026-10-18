@@ -21,6 +21,8 @@
 #   4. runs the parity crate's tests (the Rust build vs the corpus).
 #
 # Exit 0 = corpus stable + parity green. Never pipe this to tail.
+# 038: the C++ tree lives in cpp-original/ (the probes use the canonical
+# paths; the root src/include symlinks are for the citation corpus only).
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HERE="$ROOT/tools/oracle"
@@ -29,18 +31,19 @@ OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 CXX="${CXX:-g++}"
 FLAGS=(-std=c++20 -O0
-  -I"$HERE/shim" -I"$ROOT/include" -I"$ROOT"
-  -I"$ROOT/extlibs/vrm_pp/include" -I"$ROOT/extlibs/SSVUtils/include"
-  -I"$ROOT/extlibs/SSVStart/include")
+  -I"$HERE/shim" -I"$ROOT/cpp-original/include" -I"$ROOT/cpp-original"
+  -I"$ROOT/cpp-original/extlibs/vrm_pp/include"
+  -I"$ROOT/cpp-original/extlibs/SSVUtils/include"
+  -I"$ROOT/cpp-original/extlibs/SSVStart/include")
 
 echo "=== build the parity probe (real C++ sources + shims) ==="
 if ! "$CXX" "${FLAGS[@]}" -o "$OUT/parity" "$HERE/parity_probe.cpp" \
   "$HERE/stubs.cpp" \
-  "$ROOT/src/SSVOpenHexagon/Core/RandomNumberGenerator.cpp" \
-  "$ROOT/src/SSVOpenHexagon/Core/Replay.cpp" \
-  "$ROOT/src/SSVOpenHexagon/Utils/BuildPackId.cpp" \
-  "$ROOT/src/SSVOpenHexagon/Utils/LevelValidator.cpp" \
-  "$ROOT/src/SSVOpenHexagon/Utils/Timestamp.cpp" -lz; then
+  "$ROOT/cpp-original/src/SSVOpenHexagon/Core/RandomNumberGenerator.cpp" \
+  "$ROOT/cpp-original/src/SSVOpenHexagon/Core/Replay.cpp" \
+  "$ROOT/cpp-original/src/SSVOpenHexagon/Utils/BuildPackId.cpp" \
+  "$ROOT/cpp-original/src/SSVOpenHexagon/Utils/LevelValidator.cpp" \
+  "$ROOT/cpp-original/src/SSVOpenHexagon/Utils/Timestamp.cpp" -lz; then
     echo "PROBE BUILD FAILED (need g++/c++ and libz; see the probe header)"
     exit 1
 fi

@@ -20,6 +20,12 @@ library (vendored C++, third-party C++ dependency, or Rust crate), written from
    correction to the skill file, listed in the report under "skill corrections".
 5. **One file per library**, named `lib-<name>.md`. Keep it dense and greppable.
 
+> **038 layout note:** the C++ tree's root is now `cpp-original/` (issue 038
+> reorg, D-038). The root symlinks `src` and `include` into `cpp-original/`
+> keep pre-reorg citation paths resolving — cite through them or through
+> `cpp-original/…`; both reach the same pristine files. Submodule paths are
+> `cpp-original/extlibs/…` (see `.gitmodules`).
+
 ## Index
 
 | Skill | Library | Source of truth | Written by |

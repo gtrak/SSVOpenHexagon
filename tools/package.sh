@@ -56,7 +56,7 @@
 #     `.agents/skills/lib-steamworks.md` §4).
 #   * NO Windows `.bat` launchers / Linux launcher script — those wrap
 #     the C++ binary's own args; the Rust binary takes the same CLI
-#     (see release/README.md).
+#     (see cpp-original/release/README.md).
 #   * NO `scores.json`/`users.json` seeds — user/leaderboard DATA the
 #     runtime manages (the C++ server DB is `ohdb.sqlite`, issue 17-18;
 #     the C++ prepared releases do not ship them either).
@@ -87,7 +87,7 @@
 # `_RELEASE` (the binary writes `Profiles/`, `Replays/` and saves
 # `config.json` into its CWD on every run — main.cpp:275-291 — so it
 # must never run inside the staged dir itself), replaying the committed
-# fixture `test/fixtures/cube_1_apeirogon.ohr.z`. That fixture is a
+# fixture `cpp-original/test/fixtures/cube_1_apeirogon.ohr.z`. That fixture is a
 # compressed replay of the harness's `alwaysSpinRight` live run on
 # `cube_1`/`apeirogon` (the exact ids the C++ test names — D-018),
 # generated once by the issue-24 lane and committed: the replay carries
@@ -109,7 +109,7 @@ cd "$(dirname "$0")/.."
 
 REPO_ROOT="$(pwd)"
 RELEASE_SRC="${REPO_ROOT}/_RELEASE"
-FIXTURE="${REPO_ROOT}/test/fixtures/cube_1_apeirogon.ohr.z"
+FIXTURE="${REPO_ROOT}/cpp-original/test/fixtures/cube_1_apeirogon.ohr.z"
 PINNED_FINAL_TIME="1.725"   # the fixture's replayed score (module docs)
 
 PLATFORM="linux"

@@ -1,18 +1,18 @@
 [submodule "extlibs/SSVMenuSystem"]
-	path = extlibs/SSVMenuSystem
+	path = cpp-original/extlibs/SSVMenuSystem
 	url = https://github.com/SuperV1234/SSVMenuSystem.git
 [submodule "extlibs/SSVUtils"]
-	path = extlibs/SSVUtils
+	path = cpp-original/extlibs/SSVUtils
 	url = https://github.com/SuperV1234/SSVUtils.git
 [submodule "extlibs/vrm_pp"]
-	path = extlibs/vrm_pp
+	path = cpp-original/extlibs/vrm_pp
 	url = https://github.com/SuperV1234/vrm_pp.git
 [submodule "extlibs/vrm_cmake"]
-	path = extlibs/vrm_cmake
+	path = cpp-original/extlibs/vrm_cmake
 	url = https://github.com/SuperV1234/vrm_cmake.git
 [submodule "extlibs/SFML"]
-	path = extlibs/SFML
+	path = cpp-original/extlibs/SFML
 	url = https://github.com/LaurentGomila/SFML.git
 [submodule "extlibs/SSVStart"]
-	path = extlibs/SSVStart
+	path = cpp-original/extlibs/SSVStart
 	url = https://github.com/SuperV1234/SSVStart

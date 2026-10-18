@@ -43,7 +43,8 @@ report**.
   one checkout *and one index*. An orchestrator `git add -A` once swept a lane's
   in-progress edits and committed a deletion of `build/copyArtifacts.bash` (an
   upstream C++ reference file) — the C++ tree is this repo's citation reference
-  and must stay pristine.
+  and must stay pristine. (038: the C++ root is now `cpp-original/`; the root
+  symlinks `src`/`include` into it keep the citation corpus resolving — D-038.)
 - Run **`cargo fmt --all`** before committing. An unformatted `format!` left a
   lane's work at gate 3/4.
 

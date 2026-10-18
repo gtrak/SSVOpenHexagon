@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # C++ oracle probes
 # Builds and runs the C++ oracle probes; prints the golden values.
+# 038: the C++ tree lives in cpp-original/ (root `src`/`include` symlinks
+# exist for the citation corpus; the probes use the canonical paths).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HERE="$ROOT/tools/oracle"
 OUT="$(mktemp -d)"
 CXX="${CXX:-g++}"
 FLAGS=(-std=c++20 -O0
-  -I"$HERE/shim" -I"$ROOT/include" -I"$ROOT"
-  -I"$ROOT/extlibs/vrm_pp/include" -I"$ROOT/extlibs/SSVUtils/include"
-  -I"$ROOT/extlibs/SSVStart/include")
+  -I"$HERE/shim" -I"$ROOT/cpp-original/include" -I"$ROOT/cpp-original"
+  -I"$ROOT/cpp-original/extlibs/vrm_pp/include"
+  -I"$ROOT/cpp-original/extlibs/SSVUtils/include"
+  -I"$ROOT/cpp-original/extlibs/SSVStart/include")
 # The net probe links the real libsodium + boost.pfr (the CMake CPM pins);
 # on this machine: cached 1.0.18 headers, the system 1.0.18 runtime, and the
 # CPM-pinned pfr checkout.
@@ -27,12 +30,12 @@ echo "=== pcg state position (030b fingerprint field 15) ==="
 
 echo "=== replay ==="
 "$CXX" "${FLAGS[@]}" -o "$OUT/replay" "$HERE/replay_probe.cpp" "$HERE/stubs.cpp" \
-  "$ROOT/src/SSVOpenHexagon/Core/Replay.cpp" "$ROOT/src/SSVOpenHexagon/Utils/Timestamp.cpp" -lz
+  "$ROOT/cpp-original/src/SSVOpenHexagon/Core/Replay.cpp" "$ROOT/cpp-original/src/SSVOpenHexagon/Utils/Timestamp.cpp" -lz
 "$OUT/replay"
 
 echo "=== concat/buildPackId/validator ==="
 "$CXX" "${FLAGS[@]}" -o "$OUT/concat" "$HERE/concat_probe.cpp" "$HERE/stubs.cpp" \
-  "$ROOT/src/SSVOpenHexagon/Utils/BuildPackId.cpp" "$ROOT/src/SSVOpenHexagon/Utils/LevelValidator.cpp"
+  "$ROOT/cpp-original/src/SSVOpenHexagon/Utils/BuildPackId.cpp" "$ROOT/cpp-original/src/SSVOpenHexagon/Utils/LevelValidator.cpp"
 "$OUT/concat"
 
 echo "=== ostream float formatting (hg::Utils::concat) ==="
@@ -46,10 +49,10 @@ echo "=== timepoint formatting (hg::Utils::formatTimepoint) ==="
 echo "=== gameplay geometry (CWall/CPlayer/line-circle) ==="
 "$CXX" "${FLAGS[@]}" -include "$HERE/pch.hpp" -o "$OUT/gameplay" \
   "$HERE/gameplay_probe.cpp" "$HERE/stubs.cpp" \
-  "$ROOT/src/SSVOpenHexagon/Components/CWall.cpp" \
-  "$ROOT/src/SSVOpenHexagon/Components/CPlayer.cpp" \
-  "$ROOT/src/SSVOpenHexagon/Utils/Geometry.cpp" \
-  "$ROOT/src/SSVOpenHexagon/Utils/Ticker.cpp"
+  "$ROOT/cpp-original/src/SSVOpenHexagon/Components/CWall.cpp" \
+  "$ROOT/cpp-original/src/SSVOpenHexagon/Components/CPlayer.cpp" \
+  "$ROOT/cpp-original/src/SSVOpenHexagon/Utils/Geometry.cpp" \
+  "$ROOT/cpp-original/src/SSVOpenHexagon/Utils/Ticker.cpp"
 "$OUT/gameplay"
 
 echo "=== net (Online/Shared + Sodium wire vectors) ==="
@@ -59,9 +62,9 @@ echo "=== net (Online/Shared + Sodium wire vectors) ==="
 "$CXX" "${FLAGS[@]}" -include cstdint \
   -I"$SODIUM_DEV/usr/include" -I"$PFR/include" \
   -o "$OUT/net" "$HERE/net_probe.cpp" "$HERE/stubs.cpp" \
-  "$ROOT/src/SSVOpenHexagon/Online/Shared.cpp" \
-  "$ROOT/src/SSVOpenHexagon/Online/Sodium.cpp" \
-  "$ROOT/src/SSVOpenHexagon/Core/Replay.cpp" \
-  "$ROOT/src/SSVOpenHexagon/Utils/Timestamp.cpp" \
+  "$ROOT/cpp-original/src/SSVOpenHexagon/Online/Shared.cpp" \
+  "$ROOT/cpp-original/src/SSVOpenHexagon/Online/Sodium.cpp" \
+  "$ROOT/cpp-original/src/SSVOpenHexagon/Core/Replay.cpp" \
+  "$ROOT/cpp-original/src/SSVOpenHexagon/Utils/Timestamp.cpp" \
   -lz "$SODIUM_LIB"
 "$OUT/net"

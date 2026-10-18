@@ -972,3 +972,68 @@ the VM probes and the prelude tests. The ground truth becomes the C++ column.
 "hangs non-responsive") and **K4** (LuaJIT version skew) become moot BY CONSTRUCTION, and
 deviation **F29** (the `jit.off()` mitigation) is deleted with them: the shipping
 configuration has no `jit` table left to disable. The Android `__clear_cache` shim goes too.
+
+## D-038 — The C++ tree lives in `cpp-original/`; root `src`/`include` symlinks keep the citation corpus resolving (038 reorg)
+
+- **Question:** the operator asked to "move all the c++ folder structure into a
+  cpp-original subfolder" — while (a) the C++ tree is the citation reference
+  (D-014; `.agents/audits/*.md` are IMMUTABLE, so the paths they cite must keep
+  resolving), (b) the oracle builds it in a container from the mounted tree, and
+  (c) `_RELEASE/` is shared game data the Rust tests / `tools/package.sh` / the
+  release layout read at the ROOT.
+- **Decision (the layout):**
+  1. Every upstream/C++ entry moved into `cpp-original/`: `src/`, `include/`,
+     `extlibs/` (git submodules; the `.gitmodules` paths moved with the gitlinks
+     in the same commit), `CMakeLists.txt`, `build.sh`, `build/`, `buildlx/`,
+     `buildrel/`, `clangformat_everthing.sh`, `prepare_release*.sh`,
+     `run_prepared_release_test.sh`, `test/` (CMake `add_subdirectory`),
+     `public/` (CMake source glob), `art/` (CMake icon `.res`), `old/`, `misc/`,
+     `release/`, `server/`, `vbox/`, `webpage/`, `.clang-format`, and the
+     upstream `README.md`. `ISSUE-019-REPORT.md` is port-authored: it lives
+     under `.agents/`.
+  2. **TWO root citation symlinks — `src -> cpp-original/src` and
+     `include -> cpp-original/include` — and only those** (the orchestrator
+     ruled the set minimal; a third for the legacy C++ CI was declined). The
+     ~344 live `src/SSVOpenHexagon/…` / `include/SSVOpenHexagon/…` citations
+     (plans 133, crates 117, audits 52, tasks 42 at this HEAD) keep resolving —
+     that is the load, and it includes the 52 audit citations that cannot be
+     rewritten (hygiene §7).
+  3. **`cpp-original/_RELEASE -> ../_RELEASE` is C++-SIDE BUILD GLUE, not a
+     citation symlink and NOT a second source of truth for the game data.** The
+     real `_RELEASE/` is the root directory, untouched; the moved
+     `CMakeLists.txt` links `${CMAKE_SOURCE_DIR}/_RELEASE/libsteam_api.so` (+
+     `libdiscord_game_sdk.so`, `libsdkencryptedappticket.so` — the tracked
+     loader stubs) on every non-Android build, so the moved tree cannot link
+     without the pointer, and the CMakeLists content may not be edited (move,
+     not edit). Writes through it land in the real root `_RELEASE/`
+     (write-through verified); the C++-installed binary set
+     (`SSVOpenHexagon`, `SSVOpenHexagonLinux`, `OHWorkshopUploader*`,
+     `OHServerControl*`) is gitignored, so a C++ build cannot leave
+     commit-able artifacts in the data dir.
+- **Evidence (all at the new path, 2026-10-18):** gate green (5/5 stages);
+  `tools/parity.sh` green (probe compiles the real moved sources; C++ corpus
+  byte-identical); the oracle end to end — `init` (5 submodules at
+  `cpp-original/extlibs/*`), `seed` (6 CPM pins), `configure`
+  (`cmake -S /src/cpp-original`), `instrument` (`git apply` gains
+  `--directory=cpp-original`: it refuses to follow the root symlinks,
+  "beyond a symbolic link" — so `fingerprint.patch` stays 030b's untouched
+  artifact), full instrumented build, and all six fingerprint replays:
+  **3627/3627 frames match the committed C++ column**
+  (`.agents/plans/001-rust-port/parity/cpp_fingerprints.json`), then
+  deinstrumented back to pristine. Symlinks verified for a plain read,
+  `grep -r`, and from inside the oracle container's mount
+  (`readlink -f /src/cpp-original/_RELEASE` = `/src/_RELEASE`;
+  `grep -rln "namespace hg" /src/include` = 79 files = the real path's count).
+  A 20-citation random sample (116 distinct citation-form files, `shuf -n 20`,
+  `test -f` from the root) resolves 20/20.
+- **Known consequences (recorded, not papered over):** citations of other
+  forms no longer resolve from the root — `extlibs/…` (63), `public/…` (16),
+  `test/*.t.cpp|hpp` (28), `CMakeLists.txt` (25), `prepare_release*.sh` (2),
+  `build/copyArtifacts.bash` (1) — every such file exists under
+  `cpp-original/` (the census method is in the task report). The upstream C++
+  CI (`.github/workflows/ci_linux.yml`, `ci_windows.yml` — the C++ project's
+  own workflows, not the port's) assumes a root `CMakeLists.txt` + `cd build`;
+  that is lane 037's territory and the operator's to fix ("actions should work
+  out"). Windows-runner symlink materialisation for the two root symlinks:
+  UNVERIFIED (no Windows checkout exercised).
+- **Landed by:** issue 038 (lane 038, branch `lane/038`).

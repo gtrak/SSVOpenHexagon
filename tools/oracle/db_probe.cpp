@@ -13,16 +13,18 @@
 //
 // Build + run (from the repo root; the extlibs submodules must be checked
 // out at $ROOT — the probe needs the vrm_pp + SSVUtils headers; the
-// worktrees keep them in the main checkout):
+// worktrees keep them in the main checkout; 038: the C++ tree is in
+// cpp-original/):
 //
 //   EXTLIBS=/home/gary/dev/SSVOpenHexagon   # main checkout (submodules)
 //   g++ -std=c++20 -O0 -include cstdint \
-//     -Iinclude -I. \
-//     -Ipublic/sqlite -Ipublic/sqlite_orm \
-//     -I$EXTLIBS/extlibs/vrm_pp/include -I$EXTLIBS/extlibs/SSVUtils/include \
+//     -Icpp-original/include -Icpp-original \
+//     -Icpp-original/public/sqlite -Icpp-original/public/sqlite_orm \
+//     -I$EXTLIBS/cpp-original/extlibs/vrm_pp/include \
+//     -I$EXTLIBS/cpp-original/extlibs/SSVUtils/include \
 //     -o /tmp/ohdb_probe tools/oracle/db_probe.cpp tools/oracle/stubs.cpp \
-//     src/SSVOpenHexagon/Online/Database.cpp \
-//     src/SSVOpenHexagon/Utils/Timestamp.cpp \
+//     cpp-original/src/SSVOpenHexagon/Online/Database.cpp \
+//     cpp-original/src/SSVOpenHexagon/Utils/Timestamp.cpp \
 //     -lsqlite3
 //
 //   /tmp/ohdb_probe /tmp/ohdb_probe_dir
