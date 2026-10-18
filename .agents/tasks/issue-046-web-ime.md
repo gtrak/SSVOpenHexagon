@@ -83,3 +83,49 @@ genuinely needs it. Do NOT touch the Android path (025f works — the operator i
 do not change the C++-faithful semantics for non-text states, build the wasm in the emsdk container
 (§4: the host gate is not a web gate) plus the host gate before each commit, commit with explicit
 paths, bound everything with `timeout`, and append a `## Report`.
+
+## ADDED BY THE OPERATOR WHILE THIS LANE RUNS: a fullscreen overlay button ("kind of out of the way")
+
+Context they gave: the IME target is **Android Chrome**, and they also want a **fullscreen toggle
+button on the web build, placed out of the way**. Same lane, same files (`crates/oh-web/site/
+index.html` + the web layer), so it rides with the IME rather than starting a second lane that would
+collide on those files.
+
+**Parity status, checked before writing this:** the C++ HAS fullscreen, but only as *config* —
+`fullscreen`, `fullscreen_auto_resolution`, `fullscreen_width/height` (Config.cpp:320-324, defaults
+false/1920/1080) applied once at window creation via `sf::Style::Fullscreen` (GameWindow.hpp:90), with
+`Config::setFullscreen(GameWindow&, bool)` (Config.hpp:38) as the setter. There is **no runtime
+fullscreen bind** in the bind table, so an emscripten C++ would show no browser fullscreen either.
+This is therefore a **second deliberate platform addition** and needs its own register row — **F33**,
+beside the IME's F32.
+
+**The shape that keeps the config as the single source of truth:** the button toggles the ported
+`fullscreen` config value (`oh-config`'s `fullscreen` LinkedValue, which the C++'s own settings menu
+writes) and the WEB applies it through the browser Fullscreen API. Do not introduce a second state
+that the config does not know about; if the port's settings menu can already flip that value, the
+button and the menu must agree.
+
+**Placement — "out of the way", and the port's own furniture says where:** the gameplay overlay's
+buttons are bottom-middle (`BUTTON_HALF 32`, `PAD 12`, `MIDDLE_GAP 80` in `touch_overlay.rs`) and 039's
+F31 action row is along the TOP (y≈44), while the online-status sprite is top-right. So a small
+translucent button in a corner — bottom-right preferred — is the one place that collides with nothing.
+Make it a real touch target (≈44 px), keep it subtle, and give it `pointer-events: auto` on itself
+only, so it cannot swallow the game's drags outside its own box.
+
+**Two things to get right rather than discover later:**
+- `fullscreenchange` must update the button's state, because Esc (and Android's back gesture) can leave
+  fullscreen without the game asking.
+- Entering or leaving fullscreen RESIZES the page, so the canvas must come back at the right size —
+  032's real-size path (`Resized` → the canvas backing store + GL viewport) should handle it; VERIFY
+  that rather than assuming, since a stale canvas size in fullscreen is exactly the 025g class of bug.
+
+**Honest limit to state, not paper over:** `requestFullscreen()` requires a transient user activation,
+and the CDP probe's synthetic input does NOT provide one (the same reason 041 could not prove
+audibility headlessly). So the probe can verify the button exists, is reachable and is out of the way,
+and that the wiring calls the API — but the fullscreen transition itself is confirmed by the
+operator's real tap on their phone, exactly like the IME's soft keyboard.
+
+Also note in the report, as a finding rather than a fix: the port never APPLIES the fullscreen config
+anywhere (a grep finds it only in `oh-config`), whereas the C++ applies it at window creation. That is
+a pre-existing desktop gap, out of this lane's scope — say so and leave it, unless honoring it on the
+web (which is in scope) makes the desktop half a one-liner.
