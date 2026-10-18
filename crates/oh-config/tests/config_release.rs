@@ -29,7 +29,10 @@ fn temp_dir(tag: &str) -> PathBuf {
         "oh-config-test-{}-{}-{}",
         tag,
         std::process::id(),
-        std::thread::current().name().unwrap_or("t")
+        std::thread::current()
+            .name()
+            .unwrap_or("t")
+            .replace(|c: char| !c.is_ascii_alphanumeric(), "_")
     ));
     std::fs::create_dir_all(&dir).unwrap();
     dir

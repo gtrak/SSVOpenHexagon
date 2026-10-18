@@ -104,6 +104,18 @@ jobs:
         run: |
           pkg-config --exists libudev || sudo apt-get install -y libudev-dev
 
+      # 044 — the audio backend (rodio -> cpal -> alsa-sys on LINUX only)
+      # links the system ALSA library; alsa-sys's build script needs
+      # `alsa.pc`. It is NOT on the ubuntu-latest image — the gate's
+      # `cargo build --workspace` failed exactly here (run 39088375527:
+      # "Package 'alsa' was not found in the pkg-config search path").
+      # The windows leg does not need it (cpal's ALSA backend is
+      # Linux-only).
+      - name: ALSA for the audio backend (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          pkg-config --exists alsa || sudo apt-get install -y libasound2-dev
+
       - name: Run the gate
         # git-bash on the windows runner / the default bash on ubuntu.
         run: bash tools/gate.sh
@@ -121,12 +133,15 @@ jobs:
         run: |
           command -v x86_64-w64-mingw32-gcc || sudo apt-get install -y mingw-w64
 
-      # cargo check --workspace --target x86_64-pc-windows-gnu — the fast
-      # cross signal (incl. the libsodium cross-prebuild; see the
-      # script). The Windows-target regression catcher — never drop this
-      # job (see the file header).
+      # cargo check --workspace --all-targets --target x86_64-pc-windows-gnu —
+      # the fast cross signal (incl. the libsodium cross-prebuild; see the
+      # script). --all-targets (the script's own flag): the LIB targets alone
+      # miss the test-only platform code — issue 044's windows-msvc leg died
+      # on `std::os::unix::fs::symlink` in oh-app's TEST targets (E0433),
+      # invisible to the lib-only check. The Windows-target regression
+      # catcher — never drop this job (see the file header).
       - name: Cross check
-        run: bash tools/build-windows.sh --check
+        run: bash tools/build-windows.sh --check --all-targets
 
   android:
     name: Android (aarch64 check, NDK r27c)

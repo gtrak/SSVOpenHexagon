@@ -543,7 +543,7 @@ fn gpu_smoke() {
         std::thread::current()
             .name()
             .unwrap_or("t")
-            .replace('-', "_")
+            .replace(|c: char| !c.is_ascii_alphanumeric(), "_")
     ));
     assert!(
         parts.save_screenshot(shot.to_str().expect("temp path")),

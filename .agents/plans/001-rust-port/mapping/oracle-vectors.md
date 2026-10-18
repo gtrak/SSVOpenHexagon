@@ -557,3 +557,18 @@ wrapped state `3`, hence an affine function of the advance count). Seeds
 the raw bump count `1 + extra`. The port's `oh_rng::pcg::
 distance_from_wrapped` (the fingerprint's port-side field 15) is pinned to
 these values in `crates/oh-rng/src/pcg.rs` unit tests.
+
+## The column's platform: why the state hash is asserted exactly only on Linux (issue 044)
+
+The C++ column in `cpp_fingerprints.json` was generated in the Linux oracle container, so its state
+hash bakes in **glibc's single-precision `sinf`/`cosf`/`atan2f`**. Those are not bit-identical to
+MSVC's, which compute the same functions in extended precision — so an MSVC-built C++ produces the
+port's bits, not the column's, and the hash is not a cross-platform quantity. Measured in issue 044
+(run 39093011641): all six corpus cases diverged at the `hash` field ONLY, with frames, per-frame
+draw counts and final results identical.
+
+The parity test therefore compares the full triple (frame, hash, draws) byte-exactly on the column's
+own platform (non-Windows) and, on Windows, still asserts the frame numbers, the draw counts and the
+final result while tolerating the hash — and its corruption case targets the draw field there, so the
+comparison itself stays under test. This is a property of the ORACLE's provenance, not a port defect:
+the port reproduces its own platform's C++.

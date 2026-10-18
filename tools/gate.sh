@@ -11,7 +11,11 @@
 #      the prelude tests, over N separate VM processes; ~6-8 min)
 #
 # Stage output goes to a log under target/ (gitignored); GATE_EXIT=<rc> is
-# printed per stage. Exits non-zero if any stage fails.
+# printed per stage, and a FAILING stage's tail (last 200 lines) is printed
+# to the terminal too — the raw log dies with the runner, so without the
+# tail a red CI run showed only GATE_EXIT=101 and the compiler error was
+# invisible (issue 044: 8 red runs taught nobody anything). Exits non-zero
+# if any stage fails.
 # Never pipe the gate output to tail (keeps the exit codes honest).
 
 set -u
@@ -33,6 +37,13 @@ run_stage() {
     printf 'GATE_EXIT=%s\n' "$rc"
     if [ "$rc" -ne 0 ]; then
         overall=1
+        # The stage output went to the log, not the terminal — print its tail
+        # here so the failing stage's actual error is visible in CI and
+        # locally (issue 044, step 1: make the failure visible). The log is
+        # appended stage-by-stage, so at a failure the log tail IS the
+        # failing stage's output.
+        printf -- '--- failing stage: %s (last 200 lines of %s) ---\n' "$name" "$LOG"
+        tail -n 200 "$LOG"
     fi
 }
 

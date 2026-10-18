@@ -229,7 +229,8 @@ fn windowed_client() -> WindowedClient {
 /// the "LEVEL SELECT" item, the pre-29b4 tests' `-p -l` boot's equivalent
 /// menu state) writes to the data root's `Profiles/`, so it must never
 /// run against the tracked `_RELEASE` (the `headless_replay.rs` sandbox
-/// invariant: symlinks the read-only subtrees, copies `config.json`).
+/// invariant: link-or-copy the read-only subtrees via the shared
+/// `common::sandbox_link`, copy `config.json`).
 struct TestSandbox {
     dir: PathBuf,
 }
@@ -242,12 +243,12 @@ impl TestSandbox {
             std::thread::current()
                 .name()
                 .unwrap_or("t")
-                .replace('-', "_")
+                .replace(|c: char| !c.is_ascii_alphanumeric(), "_")
         ));
         std::fs::create_dir_all(&dir).expect("sandbox dir");
         let release = common::release_dir();
         for name in ["Packs", "Assets", "ConfigOverrides"] {
-            std::os::unix::fs::symlink(release.join(name), dir.join(name)).expect("sandbox link");
+            common::sandbox_link(&release.join(name), &dir.join(name));
         }
         std::fs::copy(release.join("config.json"), dir.join("config.json"))
             .expect("sandbox config copy");
@@ -958,7 +959,7 @@ fn create_window_without_an_icon_file_keeps_the_platform_default() {
         std::thread::current()
             .name()
             .unwrap_or("t")
-            .replace('-', "_")
+            .replace(|c: char| !c.is_ascii_alphanumeric(), "_")
     ));
     std::fs::create_dir_all(&missing).expect("sandbox dir");
     let window = oh_app::windowed::create_window(&Config::default(), &missing);
