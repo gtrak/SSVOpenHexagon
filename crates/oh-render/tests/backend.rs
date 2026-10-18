@@ -593,3 +593,45 @@ fn set_vsync_round_trips_and_applies_on_a_live_context() {
     win.set_vsync(false);
     assert!(!win.get_vsync());
 }
+
+// 047 — the fullscreen wiring (the config's `fullscreen` value → the C++
+// `GameWindow::setFullscreen`'s observable half, `GameWindow.hpp:90`
+// `fullscreen ? sf::Style::Fullscreen : sf::Style::Default`). `Window::
+// set_fullscreen` now applies the style to the live winit window (desktop;
+// `Borderless(None)` = borderless fullscreen on the current monitor, the
+// `sf::Style::Fullscreen` equivalent) instead of only recording the flag.
+// winit's `fullscreen()` reads the window's own state (the pre-`run`
+// `desired_fullscreen` store, applied on the first visibility notify), NOT
+// the WM's live state, so the read-back is reliable in a headless CI —
+// unlike a real WM round trip (the device/manual lane verifies the
+// observable fullscreen window). Skips when there is no display/GPU
+// (headless path: the flag is still recorded, `get_fullscreen` round-trips).
+#[cfg(not(target_os = "android"))]
+#[test]
+fn set_fullscreen_round_trips_and_requests_the_winit_window() {
+    let mut win = Window::create(64, 64, "oh-render-fullscreen");
+    // The store half always round-trips (headless or not).
+    win.set_fullscreen(true);
+    assert!(win.get_fullscreen());
+    if win.gl().is_none() {
+        println!(
+            "SKIP: no display/GPU in this environment (winit/GL bootstrap failed or is unavailable); headless path active"
+        );
+        return;
+    }
+    // The apply half: the live winit window carries the borderless request
+    // (the `desired_fullscreen` store pre-`run`, applied on visibility).
+    let fs = win.gl().as_ref().unwrap().winit_window().fullscreen();
+    assert!(
+        matches!(fs, Some(winit::window::Fullscreen::Borderless(_))),
+        "expected a borderless-fullscreen request on the winit window, got {fs:?}"
+    );
+    // Back to windowed: the request is cleared (a `None` fullscreen).
+    win.set_fullscreen(false);
+    assert!(!win.get_fullscreen());
+    let fs = win.gl().as_ref().unwrap().winit_window().fullscreen();
+    assert!(
+        fs.is_none(),
+        "expected a cleared (windowed) fullscreen state, got {fs:?}"
+    );
+}

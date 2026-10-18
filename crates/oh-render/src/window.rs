@@ -1191,9 +1191,43 @@ impl Window {
         &self.title
     }
 
-    /// `setFullscreen`.
+    /// `setFullscreen` — and (desktop, issue 047) the C++ `GameWindow::
+    /// setFullscreen`'s OBSERVABLE half. The C++ picks the window style at
+    /// render-window creation (`GameWindow.hpp:90`, `fullscreen ?
+    /// sf::Style::Fullscreen : sf::Style::Default`), driven by the flag
+    /// `mainClient` sets from the config (`main.cpp:306`,
+    /// `window->setFullscreen(hg::Config::getFullscreen())`); a
+    /// `fullscreen = true` config therefore STARTS the C++ window
+    /// fullscreen. The port creates the winit window in [`Self::create`]
+    /// (windowed) and only recorded the flag here — so a `fullscreen =
+    /// true` config was inert (the flag was read into the bookkeeping but
+    /// the window never went fullscreen; the issue 047 finding). Apply the
+    /// style to the live winit window when one exists: `Borderless(None)`
+    /// = borderless fullscreen on the current monitor, the
+    /// `sf::Style::Fullscreen` equivalent (not exclusive). A pre-`run`
+    /// request is safe: winit stores a not-yet-visible window's request as
+    /// `desired_fullscreen` and applies it on the first visibility notify
+    /// (winit 0.30 X11 `set_fullscreen_inner` / `visibility_notify`). This
+    /// is the creation-time application: the sole desktop caller is
+    /// `oh-app`'s `create_window`, which calls it with the config value
+    /// right after `Window::create`.
+    ///
+    /// Android / wasm: INERT-BY-DESIGN — the platform window (the
+    /// activity's immersive window / the page's `<canvas>`) has no
+    /// window-style equivalent, and the C++ has no android/wasm build
+    /// (SFML desktop-only), so there is no C++ path inert either. The web's
+    /// fullscreen affordance is the page's browser-API button (lane 046),
+    /// not the config's `fullscreen` value.
     pub fn set_fullscreen(&mut self, fullscreen: bool) {
         self.fullscreen = fullscreen;
+        #[cfg(not(any(target_os = "android", target_os = "emscripten")))]
+        if let Some(gl) = self.gl.as_ref() {
+            gl.winit_window().set_fullscreen(if fullscreen {
+                Some(winit::window::Fullscreen::Borderless(None))
+            } else {
+                None
+            });
+        }
     }
 
     #[must_use]
