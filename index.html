@@ -1,0 +1,107 @@
+<!doctype html>
+<!--
+  oh-web (issue 26c W5, D-029) - the browser page for the REAL composition:
+  oh_app::client::main_client (headless = false) boots config + assets over
+  the _RELEASE tree preloaded into emscripten MEMFS at /RELEASE, the
+  oh-render emscripten window over this <canvas id="c">, the engine +
+  MenuGame, dispatches to the MENU, and drives it via request_animation_frame.
+
+  SERVE (static, no build step): copy the THREE build artifacts next to this
+  file (the .data is the --preload-file package - a missing one shows
+  "still waiting on run dependencies"), then serve THIS folder:
+
+      python3 -m http.server 8000 --directory <this folder>
+
+  (Artifact names: the loader is `oh-web.js` (MODULARIZE + EXPORT_ES6,
+  default-exports the Module factory) but emcc names the wasm after the
+  object file - `oh_web.wasm` (underscore); the loader's locateFile looks
+  for exactly `oh_web.wasm` beside `oh-web.js`. The `_RELEASE` tree is
+  packed into `oh_web.data` and fetched relative to this page.)
+
+  URL: http://localhost:8000/
+  (Any static file server works - the page is plain ES-module + three files.)
+
+  THE CANVAS (issue 32 - the REAL window size): the canvas fills the
+  viewport (the CSS box), and the oh-render emscripten window sizes
+  ITSELF to that box x the device pixel ratio (the 025g "config size !=
+  real size" lesson - the menu layout + every hit test run in the real
+  size, and a browser resize keeps it current through the page's
+  `resize` event -> the port's `Resized` fold -> the canvas backing
+  store + the GL viewport). `touch-action: none` makes the canvas the
+  page's own touch surface (no scroll / zoom gesture steals a touch from
+  the game) - the port's pointer feed (pointerdown/move/up/cancel +
+  setPointerCapture) is the input story (issue 32).
+
+  Expected browser console (the W5 real-composition boot - lane 026
+  re-verified 2026-10-17):
+      oh-web: boot started (after __wasm_call_ctors)
+      [web] main_client entry (t=0)
+      [web] config loaded
+      [web] assets loaded
+      [web] entering create_window
+      [web] windowed build entry
+      [web] engine + menu composed (the four callback links bound)
+      [web] client built (window + engine + menu)
+      [web] rAF loop scheduled (the browser owns the frames)
+      oh-web: main_client returned 0 (the rAF loop keeps driving the menu)
+      oh-web: module loaded
+      status booted=true;exit_code=0;ticks=<n>   (every 2s; ticks advance ~30 per poll)
+  NOTE (lane 026): the composition's Rust `println!`/`eprintln!` lines do NOT
+  land in the browser console - the emscripten fd 1/2 writes fall into the
+  default `/dev/stdout -> /dev/tty` null path (no visible sink in this glue).
+  The `[channel]` lines above reach the console through the `oh-game`
+  `log_sink` hook (`oh-web`'s `boot()` installs the browser-console sink
+  before `main` runs) - the engine's event-driven lines (Lua errors, the
+  `[lua]` channel, replay, ...) route through the SAME sink.
+  The canvas shows the MENU (the composition's first representative
+  state); the rAF loop keeps driving it (emscripten EXIT_RUNTIME=0 keeps
+  the runtime alive after main returns). Input (issue 32): keyboard on
+  the page (the keys the game consumes are preventDefault'd - the page
+  does not scroll on Space / the arrows), pointer + wheel on the canvas,
+  and the gameplay touch overlay's on-screen buttons (issue 31's
+  platform-neutral seam, fed by the same pointer events).
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>SSVOpenHexagon (web)</title>
+    <style>
+      /* The canvas IS the window (issue 32 §2.3): its CSS box fills the
+         viewport; the port's emscripten window measures it (x the device
+         pixel ratio) and owns the backing store from there. */
+      html, body { margin: 0; padding: 0; background: #111; color: #ddd;
+                   font-family: monospace; overflow: hidden; }
+      canvas { display: block; width: 100vw; height: 100vh;
+               /* The canvas is the game's touch surface (issue 32): no
+                  scroll / zoom / double-tap gestures may steal a pointer
+                  from it (the port's pointer feed owns them). */
+               touch-action: none; user-select: none;
+               -webkit-user-select: none; }
+      #status { position: fixed; top: 4px; right: 8px; font-size: 11px;
+                opacity: 0.7; }
+    </style>
+  </head>
+  <body>
+    <!-- The canvas oh-web's boot looks up: id "c" (the 26c.1 selector
+         contract). The width/height attributes are the INITIAL backing
+         store only - the boot's real-size measurement (the CSS box x the
+         device pixel ratio) resizes them at context creation, and the
+         page's `resize` event keeps them tracking the viewport. -->
+    <canvas id="c" width="640" height="480"></canvas>
+    <div id="status">booting</div>
+    <script type="module">
+      // MODULARIZE + EXPORT_ES6 (the 26c.1 recipe): the default export is
+      // the Module factory; it resolves once the wasm + the wasm-bindgen
+      // glue (including Rust main via addOnInit) have initialized.
+      import Module from "./oh-web.js";
+      const mod = await Module();
+      console.log("oh-web: module loaded");
+      // Poll the #[wasm_bindgen] status() probe into the page + console.
+      setInterval(() => {
+        const s = mod.status();
+        document.getElementById("status").textContent = "status: " + s;
+        console.log("status " + s);
+      }, 2000);
+    </script>
+  </body>
+</html>
