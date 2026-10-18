@@ -241,6 +241,14 @@ pub struct MenuDraw {
     /// C++ `creditsBar2` (cycles the three `creditsIds` frames —
     /// MenuGame.hpp:135-137; the frame is set every draw, 29w1).
     credits_bar2: Sprite,
+    /// The `creditsBar2` frame index currently materialized on the sprite
+    /// (issue 36): the C++'s `setTexture(assets.getTexture(...))` sets a
+    /// SHARED texture pointer (zero-copy, every frame); the port's
+    /// `set_texture` takes ownership, so the port only materializes a new
+    /// frame (a deep RGBA copy of the 1024×116 texture) when the cycling id
+    /// actually changes — the sprite's visible frame is otherwise exactly
+    /// the C++'s (the id advances every ~100 s of frametime).
+    credits_bar2_frame: usize,
     /// C++ `creditsIds` (MenuGame.hpp:135-137): the `creditsBar2` cycling
     /// frames in `CREDITS_BAR_IDS` order (`creditsBar2.png` /
     /// `creditsBar2b.png` / `creditsBar2c.png`) — 29w1.
@@ -426,6 +434,7 @@ impl MenuDraw {
             title_bar: Sprite::new(placeholder.clone()),
             credits_bar1: Sprite::new(credits_bar1),
             credits_bar2: Sprite::new(credits_bar2_frames[0].clone()),
+            credits_bar2_frame: 0, // the sprite starts on `CREDITS_BAR_IDS[0]`
             credits_bar2_frames,
             s_online: Sprite::new(placeholder.clone()),
             epilepsy_warning: Sprite::new(placeholder),
@@ -875,9 +884,17 @@ pub fn draw(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn DrawTarget) {
     // 100))))`: the C++ sets the frame every frame BEFORE `draw()` (so
     // `refreshCamera`'s `getLocalWidth(creditsBar2)` origin, :3157, reads
     // the current frame); the id is already mod'd (`credits_bar2_id`).
+    // The C++'s `setTexture` is a shared-pointer assign (zero-copy); the
+    // port's `set_texture` takes ownership (a deep RGBA copy of the
+    // 1024×116 frame — 464 KiB), so the port materializes only on a frame
+    // CHANGE (issue 36 — the per-frame deep copy was the menu's 464 KiB/frame
+    // allocation churn): the visible frame is the same either way.
     let credits_frame = menu.shared().borrow().credits_bar2_id();
-    app.credits_bar2
-        .set_texture(app.credits_bar2_frames[credits_frame].clone());
+    if credits_frame != app.credits_bar2_frame {
+        app.credits_bar2
+            .set_texture(app.credits_bar2_frames[credits_frame].clone());
+        app.credits_bar2_frame = credits_frame;
+    }
 
     // C++ :5758-5765 — the `mustRefresh` block (size-driven in the port).
     app.refresh_if_stale(menu);

@@ -905,6 +905,33 @@ mod tests {
         assert!(a.size().1 <= ATLAS_MAX);
     }
 
+    /// Issue 36 — the abort's `memory allocation of 8388608 bytes failed`
+    /// names the atlas's second height doubling: 8388608 = 1024 × 2048 × 4
+    /// exactly. Drive the atlas through both doublings (512 → 1024 →
+    /// 2048) and pin the buffer size at each step — the 2048 row IS the
+    /// 8 MiB buffer a full menu glyph set forces (the width stays 1024).
+    #[test]
+    fn atlas_height_growth_to_2048_is_exactly_the_8_mib_abort_size() {
+        let mut a = GlyphAtlas::new();
+        assert_eq!(a.pixels().len(), 1024 * 512 * 4, "the 2 MiB start atlas");
+        loop {
+            if a.size().1 == 2048 {
+                break;
+            }
+            let _ = a.reserve(100, 1);
+        }
+        assert_eq!(
+            a.size(),
+            (1024, 2048),
+            "the 2048 row (the width never moves — only the height doubles)"
+        );
+        assert_eq!(
+            a.pixels().len(),
+            8388608,
+            "the 8388608-byte (8 MiB) buffer the web abort named"
+        );
+    }
+
     #[test]
     fn atlas_width_growth_repacks_and_preserves_content() {
         let mut a = GlyphAtlas::new();

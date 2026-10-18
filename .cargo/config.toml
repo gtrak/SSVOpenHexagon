@@ -101,11 +101,19 @@ rustflags = [
   "-Clink-arg=--preload-file=_RELEASE@/RELEASE",
   "-Clink-arg=-sFORCE_FILESYSTEM=1",
   # Memory (issue 36): emcc's default is a FIXED heap with ALLOW_MEMORY_GROWTH
-  # OFF, so any allocation spike is a FATAL ABORT rather than a growth -
-  # observed as `memory allocation of 8388608 bytes failed` + `Aborted()` in the
-  # browser console (the engine + Luau fit, but only just, and a fresh profile
-  # plus an input sequence tipped it over). Growth must be on for a build that
-  # runs a whole engine in a tab.
+  # OFF, so any allocation that outgrows it is a FATAL ABORT rather than a
+  # growth - observed as `memory allocation of 8388608 bytes failed` +
+  # `Aborted()` in the browser console. Lane 036 established the mechanism:
+  # 8388608 = 8 MiB = 1024 x 2048 x 4, the glyph atlas's second height
+  # doubling (the atlas starts 1024x512 and doubles its height when the
+  # menu's glyph set outgrows the rows - the only COMPUTED 8 MiB buffer in
+  # the codebase; no 8 MiB file in the content, no literal 8388608
+  # anywhere). With the heap fixed, that content-driven growth is the
+  # abort. With growth ON it is a normal reallocation (the old buffer is
+  # freed after the copy); the engine's steady state fits the 64 MiB
+  # initial heap with a wide margin (lane 036 measured <= ~16 MiB in use
+  # at boot; even a 48 MiB probe allocated without any growth). Growth
+  # must be on for a build that runs a whole engine in a tab.
   "-Clink-arg=-sALLOW_MEMORY_GROWTH=1",
   "-Clink-arg=-sINITIAL_MEMORY=67108864",
   "-Clink-arg=-sMAXIMUM_MEMORY=2147483648",
