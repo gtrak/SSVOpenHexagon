@@ -38,7 +38,7 @@ const PORT = Number(process.env.OH_CDP_PORT || 9335);
 
 const chrome = spawn(CHROME, ['--headless=new', `--remote-debugging-port=${PORT}`, '--no-sandbox',
   '--disable-dev-shm-usage', '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
-  '--window-size=1280,720', '--no-first-run', `--user-data-dir=/tmp/oh-web-probe-profile`, 'about:blank'],
+  '--window-size=1280,720', '--no-first-run', `--user-data-dir=/tmp/oh-web-probe-profile-${process.pid}`, 'about:blank'],
   { stdio: ['ignore', 'ignore', 'ignore'] });
 
 const http = async (p, i) => (await fetch(`http://127.0.0.1:${PORT}${p}`, i)).json();
@@ -68,6 +68,11 @@ ws.addEventListener('message', (ev) => {
 const send = (method, params = {}) => new Promise((r) => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
 await new Promise((r) => ws.addEventListener('open', r));
 await send('Runtime.enable'); await send('Network.enable'); await send('Page.enable');
+// A REUSED profile plus a CDN/Pages cache makes a freshly-deployed build look unchanged: the
+// orchestrator hit exactly that (two byte-identical screenshots of a static screen, while the
+// deployed .wasm had in fact changed by 578 bytes). Disable the cache outright and use a per-run
+// profile so the probe always measures what the server is serving right now.
+await send('Network.setCacheDisabled', { cacheDisabled: true });
 await send('Page.navigate', { url });
 
 const stateOf = async () => {
