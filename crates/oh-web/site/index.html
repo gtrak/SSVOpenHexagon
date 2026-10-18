@@ -82,6 +82,27 @@
                -webkit-user-select: none; }
       #status { position: fixed; top: 4px; right: 8px; font-size: 11px;
                 opacity: 0.7; }
+      /* issue 046 (F33) - the fullscreen button (#fs): the config's
+         `fullscreen` value's web applier (the port's emscripten window
+         get-or-creates it; this declaration is the committed shell's
+         contract - the Rust fallback's inline style carries the same
+         values). Bottom-right (out of the way in the MENU states; the
+         game states' touch overlay owns the corners - the JS gate
+         below HIDES the button there, `display: none` NOT merely
+         opacity: a hidden element is the only variant that cannot
+         swallow a touch). ~44px touch target, subtle/translucent,
+         `pointer-events: auto` on itself only. The `html:fullscreen`
+         flip is the `fullscreenchange`'s declarative half (the Esc /
+         the Android back's exit updates the button's state - no JS
+         listener needed). */
+      #fs { position: fixed; right: 12px; bottom: 12px; width: 44px; height: 44px;
+            display: none; padding: 0; border: 1px solid rgba(255, 255, 255, 0.25);
+            border-radius: 10px; background: rgba(255, 255, 255, 0.10);
+            color: #ddd; opacity: 0.55; font-size: 20px; line-height: 1;
+            cursor: pointer; touch-action: manipulation; pointer-events: auto;
+            z-index: 10; -webkit-tap-highlight-color: transparent; }
+      html:fullscreen #fs { background: rgba(255, 255, 255, 0.22);
+            opacity: 0.8; }
     </style>
   </head>
   <body>
@@ -91,7 +112,39 @@
          device pixel ratio) resizes them at context creation, and the
          page's `resize` event keeps them tracking the viewport. -->
     <canvas id="c" width="640" height="480"></canvas>
+    <!-- issue 046 (F32) - the hidden-but-focusable IME input: the phone's
+         soft keyboard's target (a mobile browser raises the on-screen
+         keyboard ONLY for a focused editable element; the canvas's
+         keydown listener never gets one). The oh-render emscripten window
+         get-or-creates it (this declaration is the committed shell; the
+         Rust fallback covers a page that predates it) and re-applies the
+         attribute contract below (the Rust side is the single source of
+         truth: `type="text" inputmode="text" autocapitalize="off"
+         autocomplete="off" spellcheck="false" enterkeyhint="done"` + the
+         off-screen / `opacity: 0` / 16 px style - NEVER `display: none`,
+         browsers refuse to focus those; the 16 px floor keeps iOS from
+         zooming the page on focus - the operator's target is Android
+         Chrome, where the floor is harmless). It is focused on the menu's
+         `is_entering_text` transition edge (the C++ `isEnteringText`'s
+         port - the name entry + every text-entry state, never per frame)
+         and blurred on leaving; its `input` / `compositionend` events feed
+         the game's EXISTING entered-text sink (the issue-025d chain), and
+         desktop typing into the page reaches the game through it too. -->
+    <input id="ime" type="text" inputmode="text" autocapitalize="off"
+           autocomplete="off" spellcheck="false" enterkeyhint="done"
+           style="position: fixed; left: -10000px; top: 0; opacity: 0;
+                  font-size: 16px;" />
     <div id="status">booting</div>
+    <!-- issue 046 (F33) - the fullscreen button: toggles the ported
+         `fullscreen` config value (the `LinkedValue` - the single
+         source of truth; the LAlt+Enter bind toggles the SAME value,
+         so the button and the menu cannot disagree) and applies it
+         through the browser Fullscreen API (the port's FINDING: it
+         never applied the config anywhere - the C++ did at the window
+         creation, `sf::Style::Fullscreen`). Its visibility is gated
+         by the `ohstatechange` DOM event the port dispatches on the
+         menu <-> game transition edge (the script below). -->
+    <button id="fs" aria-label="Toggle fullscreen">⛶</button>
     <script type="module">
       // MODULARIZE + EXPORT_ES6 (the 26c.1 recipe): the default export is
       // the Module factory; it resolves once the wasm + the wasm-bindgen
@@ -191,7 +244,47 @@
       };
       document.addEventListener("visibilitychange", () => { if (document.hidden) flushSession(); });
       window.addEventListener("pagehide", flushSession);
-
+      // The CDP probe's per-step state read (issue 046): the module scope's
+      // `mod` is not a global, so expose the `#[wasm_bindgen] status()`
+      // probe on `window` (the probe's `window.ohStatus()` - the page's
+      // 2 s console poll below stays the no-evaluate fallback).
+      window.ohStatus = () => mod.status();
+      // issue 046 (F33) - the #fs button's visibility gate: shown in
+      // the menu states, HIDDEN (display:none - not merely transparent:
+      // a hidden element is the only variant that cannot swallow a
+      // touch - the gameplay touch overlay's RotateCW owns that corner
+      // while playing) in the game state. The port dispatches the
+      // 'ohstatechange' DOM event on the menu <-> game transition EDGE
+      // (the port's house pattern - edge, not per frame; zero lag,
+      // unlike a poll - the F33 register row's signal). The handler
+      // re-reads the port's status() on each edge (the state string's
+      // `menu:` prefix - the boot's LoadingScreen included: a menu
+      // state, the button shows).
+      function gateFs() {
+        const fs = document.getElementById('fs');
+        if (!fs) return;
+        const m = /state=([^;\s]+)/.exec(window.ohStatus ? window.ohStatus() : '');
+        fs.style.display = m && m[1].startsWith('menu:') ? 'block' : 'none';
+      }
+      document.addEventListener('ohstatechange', gateFs);
+      gateFs(); // the initial state (the module load's post-boot menu)
+      // issue 046 (F33) - the #fs's requestFullscreen PROMISE's async
+      // verdict (the port's Rust binding - Element::request_fullscreen -
+      // resolves the call's SYNCHRONOUS result; the browser's async
+      // grant/deny of the transient user activation - the headless
+      // CDP probe cannot grant it, the operator's real tap does -
+      // surfaces as the promise's REJECTION). This listener routes
+      // the fullscreen rejections to the [oh-web-fs] console line (the
+      // wiring's async evidence the probe greps) and swallows the
+      // unhandled-rejection console pollution (only FULLSCREEN
+      // rejections - anything else stays unhandled, as before).
+      window.addEventListener('unhandledrejection', (ev) => {
+        const reason = String(ev.reason && (ev.reason.message || ev.reason));
+        if (/fullscreen/i.test(reason)) {
+          console.log(`[oh-web-fs] promise rejected: ${reason}`);
+          ev.preventDefault();
+        }
+      });
       // Poll the #[wasm_bindgen] status() probe into the page + console.
       setInterval(() => {
         const s = mod.status();

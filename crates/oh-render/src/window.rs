@@ -659,6 +659,230 @@ impl WebPointerFeed {
     }
 }
 
+// ---------------------------------------------------------------------------
+// issue 046 (F32) — the web's IME (the hidden-but-focusable `#ime` input)
+// ---------------------------------------------------------------------------
+
+/// issue 046 (F32) — the IME text ROUTING machine: the hidden input's DOM
+/// events (`compositionstart` / `compositionend` / `input`) → the `char`s
+/// that become the game's `Event::TextEntered`s (the existing entered-text
+/// sink — the issue-025d chain — fed, never a second pipeline).
+///
+/// The four cases the port's `TextEntered` path must see (the task's
+/// "the four cases that decide this"):
+///
+/// * **printable text** — the `input` event's `data` (the phone's soft
+///   keyboard AND the desktop typing into the focused element);
+/// * **Backspace** — NOT a keypress: the `input` event with
+///   `inputType: deleteContentBackward` (and the `deleteContent*`
+///   siblings) routed as ONE unicode 8 — the port's `TextEntered(8)`
+///   `pop_back` arm (the C++'s second `TextEntered` handler, the dialog
+///   erase, MenuGame.cpp:509-516);
+/// * **Enter** — produces NO `input` event at all; it is NOT this
+///   machine's (the game's `KeyPressed(ENTER)` — the C++'s `okAction`
+///   bind, MenuGame.cpp:960 — CREATES the profile, the 025d/025f device
+///   flow's "Enter created the profile");
+/// * **composition** — `compositionstart` / `update` / `end` (a phone
+///   keyboard, an autocomplete, any CJK method): the INTERMEDIATE `input`
+///   events (the `insertCompositionText` inputType, fired DURING the
+///   composition) must not feed — the `compositionend`'s `data` is the
+///   commit and is fed EXACTLY ONCE (the double-commit guard below covers
+///   the browser that ALSO fires a final `input` carrying the same data
+///   after the `compositionend` — feeding both would double every
+///   character; a CANCELLED composition — the empty-`data` `end` — feeds
+///   nothing).
+///
+/// Pure + host-testable (no `web-sys`): the emscripten listeners (the
+/// `attach_web_ime_listeners` below) are the thin wrapper that hands it
+/// the DOM event's fields and pushes its chars as `TextEntered`s into the
+/// window's DOM→SFML event queue.
+pub struct WebImeFeed {
+    /// A composition is in flight (`compositionstart` seen, the
+    /// `compositionend` not yet): the `input` events are the intermediate
+    /// ones — suppressed (the `compositionend` is the commit's source).
+    composing: bool,
+    /// The last `compositionend`'s `data` (the single-shot double-commit
+    /// guard: a subsequent `input` carrying the SAME text is the same
+    /// commit the `end` already fed — a different event, the same text,
+    /// fed twice = doubled characters).
+    last_committed: Option<String>,
+}
+
+impl Default for WebImeFeed {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WebImeFeed {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            composing: false,
+            last_committed: None,
+        }
+    }
+
+    /// `compositionstart` — the composition's first `input` event is the
+    /// intermediate one (suppressed from here to the `compositionend`).
+    pub fn composition_start(&mut self) {
+        self.composing = true;
+    }
+
+    /// `compositionend` — the COMMIT: feed the `data`'s chars (a CJK
+    /// method / an autocomplete / a phone keyboard that composes); the
+    /// empty `data` (a CANCELLED composition — the Esc) feeds nothing.
+    #[must_use]
+    pub fn composition_end(&mut self, data: &str) -> Vec<char> {
+        self.composing = false;
+        if data.is_empty() {
+            self.last_committed = None;
+            return Vec::new();
+        }
+        self.last_committed = Some(data.to_string());
+        data.chars().collect()
+    }
+
+    /// `input` — the SOLE text path while the element is focused (the
+    /// keydown listener's `web_keydown_ime_policy` gate): the printable
+    /// `data` (the insertions) + the Backspace (the `deleteContent*`
+    /// inputTypes — ONE unicode 8 per event, the port's `pop_back` arm's
+    /// granularity: one deletion event, one pop).
+    #[must_use]
+    pub fn input(&mut self, input_type: &str, data: &str) -> Vec<char> {
+        // The composition's territory (the flag: a composition in flight;
+        // the inputType: the `insertCompositionText` final-commit event a
+        // browser fires AFTER the `compositionend` cleared the flag —
+        // that commit's data is the `end`'s, fed above, exactly once).
+        if self.composing || input_type == "insertCompositionText" {
+            return Vec::new();
+        }
+        // Backspace (the `deleteContentBackward` the task names + the
+        // `deleteContent*` siblings — a selected-range delete is ONE event
+        // too: one pop, the port's `pop_back` arm's granularity — under
+        // feeding is the safe side of the mismatch).
+        if input_type.starts_with("delete") {
+            self.last_committed = None;
+            return vec!['\u{8}'];
+        }
+        // An insertion (the `insertText` / `insertReplacementText` /
+        // `insertFromPaste` / `insertFromDrop` — and the `data`-less
+        // browser variants): the `data` is the text.
+        if data.is_empty() {
+            return Vec::new();
+        }
+        // The double-commit guard (the docs): the same text the
+        // `compositionend` JUST fed is the same commit — not a new one.
+        if Some(data) == self.last_committed.as_deref() {
+            self.last_committed = None;
+            return Vec::new();
+        }
+        self.last_committed = None;
+        data.chars().collect()
+    }
+}
+
+/// issue 046 (F32) — the `keydown`'s modifier / state fields (the
+/// `web_keydown_ime_policy`'s input bundle — the clippy 7-argument
+/// bound's: the `code` / `key` + these five + the IME gate):
+/// the `KeyboardEvent`'s `ctrlKey` / `altKey` / `metaKey` / `repeat` /
+/// `isComposing`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebKeydownState {
+    /// `ctrlKey` (the browser-level shortcuts — reload, new tab, copy /
+    /// paste, zoom: they must NOT be swallowed).
+    pub ctrl: bool,
+    /// `altKey` (the non-printable control-char `key` values' half).
+    pub alt: bool,
+    /// `metaKey` (the browser-level shortcuts' other modifier).
+    pub meta: bool,
+    /// `repeat` (the held-key repeat — the C++ `TextEntered` fires on
+    /// the press half only; the held-key repeat would double-type).
+    pub repeat: bool,
+    /// `isComposing` (the IME composition keys — the `key` values
+    /// `"Process"` / `"Composing"`; a composition must run to its
+    /// commit, the issue-32 `preventDefault` policy's gate).
+    pub is_composing: bool,
+}
+
+impl WebKeydownState {
+    #[must_use]
+    pub fn new(ctrl: bool, alt: bool, meta: bool, repeat: bool, is_composing: bool) -> Self {
+        Self {
+            ctrl,
+            alt,
+            meta,
+            repeat,
+            is_composing,
+        }
+    }
+}
+
+/// issue 046 (F32) — the `keydown`'s text policy (pure + host-testable —
+/// the emscripten keydown listener applies it): `(prevent_default, text)`.
+///
+/// `text` = the char this keydown should push as the alongside
+/// `TextEntered` (the issue-32 keydown→`TextEntered` half — the C++
+/// `runEvents` polls SFML's `TextEntered` ALONGSIDE the `KeyPressed`;
+/// the winit fold's twin's paired-event suppression, the
+/// `RunHandler::window_event`'s `KeyboardInput` docs) — or `None`:
+///
+/// * the key produces no text (the functional keys — the `key` "Enter" /
+///   "Escape" / "…" are WORDS, not chars — the modifier combos, the
+///   repeats: the issue-32 guards, byte-identical);
+/// * **the IME input is focused** (`ime_active` = `document.activeElement`
+///   is the `#ime` element): the DOUBLE-TYPING gate. With the hidden input
+///   focused the window STILL receives the `keydown` (it bubbles) — so the
+///   same character would arrive twice: once through the keydown's
+///   `TextEntered` and once through the browser's own insertion into the
+///   focused input (the `input` event the feed rides on). The keydown
+///   must push NO text (printable AND the Backspace's unicode-8 restore —
+///   the browser's deletion fires the `deleteContentBackward` `input`
+///   event instead) while the IME is focused: exactly ONE path per
+///   keypress. The game's keys (the Enter that CREATES the profile — the
+///   C++'s `okAction` bind's `KeyPressed(ENTER)`, the Escape, the
+///   navigation) still flow as `KeyPressed` / `KeyReleased` — the
+///   listener's mapping halves are UNCHANGED (this policy covers the
+///   `TextEntered` + `preventDefault` halves only).
+///
+/// `prevent_default` = the issue-32 `web_keydown_prevent_default` policy —
+/// EXCEPT `false` while the IME input is focused: the browser's own text
+/// editing (the char insertion / the backspace the `input` events' feed
+/// is) must RUN; a swallowed keydown inserts nothing and fires no
+/// `input` event (no text at all — the 041 class of a headless-looking
+/// path that is actually dead). The C++'s desktop behaviour is
+/// UNCHANGED: `#ime` exists only on the emscripten window, and when it
+/// is not focused (every non-text-entry state — the `soft_input.hide()`
+/// blur on the transition edge) `ime_active` is `false` and both halves
+/// behave exactly as issue 32.
+#[must_use]
+pub fn web_keydown_ime_policy(
+    code: &str,
+    key: &str,
+    state: &WebKeydownState,
+    ime_active: bool,
+) -> (bool, Option<char>) {
+    let prevent = if ime_active {
+        false
+    } else {
+        web_keydown_prevent_default(code, key, state.ctrl, state.meta, state.is_composing)
+    };
+    // The text half (the docs): the IME gate AND the issue-32 guards
+    // (the modifier combos / the repeat) close it — the `None` block;
+    // the single-char / Backspace arms below are the byte-identical
+    // issue-32 halves (reached only when none of the gates holds).
+    let text = if ime_active || state.ctrl || state.alt || state.meta || state.repeat {
+        None
+    } else if key.chars().count() == 1 {
+        key.chars().next()
+    } else if code == "Backspace" {
+        Some('\u{8}')
+    } else {
+        None
+    };
+    (prevent, text)
+}
+
 /// The per-window-event hook of [`Window::run_with_event_hook`] (issue
 /// 014b) — the egui console's `egui-winit` event feed, seeing every raw
 /// winit `WindowEvent` on a real window (the C++ `runEvents`'s per-event
@@ -822,6 +1046,26 @@ pub struct Window {
     #[cfg(target_os = "emscripten")]
     #[allow(dead_code)] // never read — the closures must outlive the registration
     dom_listeners: Vec<Closure<dyn FnMut(web_sys::Event)>>,
+    // issue 046 (F32) — the hidden-but-focusable IME input element
+    // (`#ime`) (the `web_ime_input_get_or_create` docs): the web
+    // `SoftInput` controller's (`oh-app` `WebIme` — the 025f
+    // `ImeController`'s web twin) focus / blur target on the menu's
+    // `is_entering_text` transition edge (the `windowed::
+    // MenuSlotAdapter::refresh_input` docs — once per transition, never
+    // per frame). `None` = the headless fallback / no DOM (the
+    // controller's no-op arm; the desktop / Android windows never have
+    // one — their `SoftInput` arms are the no-op / the android-activity).
+    #[cfg(target_os = "emscripten")]
+    ime_input: Option<web_sys::HtmlInputElement>,
+    // issue 046 (F33) — the fullscreen button's (`#fs`) click sink slot
+    // (the `set_fullscreen_click_sink` docs): the `oh-app`'s callback
+    // (the config's `fullscreen` toggle + the browser Fullscreen API) —
+    // the `#fs`'s `click` listener (the `Window::create`'s emscripten
+    // half) calls it when set. `None` = the headless fallback / no `#fs`
+    // element (no listener attached; the setter no-ops).
+    #[cfg(target_os = "emscripten")]
+    fullscreen_click_slot:
+        Option<std::sync::Arc<std::sync::RwLock<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>>>,
     // Android (issue 25b SG2): the `ensure_android_gl` once-only flag —
     // a GL creation failure (no GLES context) degrades to the headless
     // frames permanently (the C++'s no-GL `window == nullptr` equivalent),
@@ -957,6 +1201,28 @@ impl Window {
             Some(canvas) => canvas,
             None => return base,
         };
+        // issue 046 (F32) — the hidden-but-focusable IME input (`#ime`)
+        // (the `web_ime_input_get_or_create` docs): the phone's soft
+        // keyboard's focus target (a mobile browser raises it ONLY for a
+        // focused editable element) + its `input` / `compositionend`
+        // feed (the `attach_web_ime_listeners` below). `None` = the no-DOM
+        // edge (the web `SoftInput` controller's no-op arm — the
+        // `oh-app` `WebIme`'s `None` arm).
+        let ime: Option<web_sys::HtmlInputElement> = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| web_ime_input_get_or_create(&d));
+        // issue 046 (F33) — the fullscreen button (`#fs`) (the
+        // `web_fs_button_get_or_create` docs): the config's `fullscreen`
+        // value's web applier (the `oh-app`'s click sink — the browser
+        // Fullscreen API). `None` = the no-DOM edge (the setter no-ops).
+        let fs_button: Option<web_sys::Element> = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| web_fs_button_get_or_create(&d));
+        let fullscreen_click_slot: Option<
+            std::sync::Arc<std::sync::RwLock<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>>,
+        > = fs_button
+            .as_ref()
+            .map(|_| std::sync::Arc::new(std::sync::RwLock::new(None)));
         // The REAL size (the CSS box × the DPR — `web_canvas_real_size`):
         // the window's size bookkeeping + the GL canvas both start in the
         // real size (a zero rect — not laid out yet — keeps the requested
@@ -973,7 +1239,30 @@ impl Window {
         // replacement).
         let queue: std::sync::Arc<std::cell::RefCell<Vec<Event>>> =
             std::sync::Arc::new(std::cell::RefCell::new(Vec::new()));
-        let dom_listeners = attach_web_listeners(&canvas, &queue);
+        let dom_listeners = {
+            let mut listeners = attach_web_listeners(&canvas, &queue, ime.as_ref());
+            // issue 046 (F32) — the IME input's feed listeners (the
+            // `compositionstart` / `compositionend` / `input` →
+            // `TextEntered` halves — the `attach_web_ime_listeners` docs).
+            if let Some(ime_el) = ime.as_ref() {
+                listeners.extend(attach_web_ime_listeners(ime_el, &queue));
+            }
+            // issue 046 (F33) — the `#fs`'s click (the slot's callback —
+            // the `set_fullscreen_click_sink`'s `oh-app` half: the
+            // config's `fullscreen` toggle + the browser Fullscreen API).
+            if let (Some(fs_btn), Some(slot)) = (fs_button.as_ref(), fullscreen_click_slot.as_ref())
+            {
+                let s = slot.clone();
+                add_dom_listener(&fs_btn, "click", &mut listeners, move |_e| {
+                    if let Ok(guard) = s.read() {
+                        if let Some(cb) = guard.as_ref() {
+                            cb();
+                        }
+                    }
+                });
+            }
+            listeners
+        };
         // The WebGL2 context (`gl.rs` — the emscripten C API + the glow
         // loader; it sets the canvas's backing store to the size it is
         // given — the REAL one); a failure degrades to the headless
@@ -986,6 +1275,13 @@ impl Window {
             gl,
             event_queue: Some(queue),
             dom_listeners,
+            // issue 046 (F32) — the IME input element (the `Window`
+            // field's docs): the web `SoftInput` controller's focus / blur
+            // target (the `web_ime_input` accessor below).
+            ime_input: ime,
+            // issue 046 (F33) — the `#fs`'s click sink slot (the field's
+            // docs).
+            fullscreen_click_slot,
             // The real-size bookkeeping (the requested-size `base` above
             // is only the canvas-missing / not-laid-out fallback).
             width_px: real_w,
@@ -1101,6 +1397,10 @@ impl Window {
             event_queue: None,
             #[cfg(target_os = "emscripten")]
             dom_listeners: Vec::new(),
+            #[cfg(target_os = "emscripten")]
+            ime_input: None,
+            #[cfg(target_os = "emscripten")]
+            fullscreen_click_slot: None,
             #[cfg(target_os = "android")]
             ensure_android_gl_failed: false,
             #[cfg(target_os = "android")]
@@ -1474,6 +1774,40 @@ impl Window {
         self.icon_set = true;
     }
 
+    /// issue 046 (F32) — the page's hidden IME input element (the `#ime`
+    /// field's docs): the web `SoftInput` controller's focus / blur
+    /// target (the `oh-app` `WebIme`'s `SoftInput::show` / `hide` ride
+    /// the menu's `is_entering_text` transition edge). `None` = the
+    /// headless fallback (no canvas / no DOM — the controller no-ops).
+    #[cfg(target_os = "emscripten")]
+    #[must_use]
+    pub fn web_ime_input(&self) -> Option<web_sys::HtmlInputElement> {
+        self.ime_input.clone()
+    }
+
+    /// issue 046 (F33) — install the fullscreen button's (`#fs`) click
+    /// callback (the `fullscreen_click_slot` field's docs): the `oh-app`
+    ///'s `WindowedClient::build`'s emscripten half — the config's
+    /// `fullscreen` toggle (the SAME shared `Arc<RwLock<Config>>` the
+    /// LAlt+Enter bind's `MenuConfig` seam writes through — so the
+    /// button and the menu's own toggle cannot disagree) + the browser
+    /// Fullscreen API's apply (the `documentElement`'s
+    /// `requestFullscreen` / the `document`'s `exitFullscreen` — the
+    /// `documentElement` so the button stays visible IN the fullscreen;
+    /// the Promise's rejection routes to the page's `[oh-web-fs]`
+    /// console line — the task's honest limit: a `requestFullscreen`
+    /// needs a transient user activation; a CDP probe MAY grant it
+    /// (an immediate click after a CDP key input) or not (the operator's
+    /// real tap always does on Android Chrome)). No-op when the `#fs`
+    /// was absent at creation (the headless fallback — no button, no
+    /// click).
+    #[cfg(target_os = "emscripten")]
+    pub fn set_fullscreen_click_sink(&mut self, cb: std::sync::Arc<dyn Fn() + Send + Sync>) {
+        if let Some(slot) = &self.fullscreen_click_slot {
+            *slot.write().expect("fullscreen click slot poisoned") = Some(cb);
+        }
+    }
+
     #[must_use]
     pub fn icon_is_set(&self) -> bool {
         self.icon_set
@@ -1697,14 +2031,35 @@ impl Window {
                 // `runEvents` batch — `apply_event` per event, the winit
                 // path's same fold).
                 let events: Vec<Event> = r.queue.borrow_mut().drain(..).collect();
+                // issue 046 (F32) — the fast-press visibility (the
+                // `BatchPresses`'s docs): the batch's press edges + the
+                // state's save (the restoration's `saved` half — the
+                // `InputState`'s `Copy`).
+                let presses = BatchPresses::from_events(&events);
+                let saved_input = r.window.input;
                 for event in events {
                     Window::apply_event(&mut r.window, event);
+                }
+                // The OR-in (the docs): the frame's update sees the
+                // press edges down (the C++'s poll-inside-the-press
+                // visibility) — the shared sink re-published with them.
+                if !presses.is_empty() {
+                    presses.apply(&mut r.window.input);
+                    r.window.publish_input_state();
                 }
                 // The per-frame handler (disjoint field borrows).
                 {
                     let on_frame = &mut r.on_frame;
                     let window = &mut r.window;
                     on_frame(window);
+                }
+                // The restoration (the docs): the TRUE post-drain state
+                // is the window's state after the frame (the next
+                // frame's update sees the key up — the `Type::Once`
+                // latch's re-arm, the C++'s `refresh`'s `!isDown`).
+                if !presses.is_empty() {
+                    r.window.input = saved_input;
+                    r.window.publish_input_state();
                 }
                 if r.window.open {
                     let id = ww
@@ -1881,6 +2236,90 @@ impl Window {
                 });
             }
         }
+    }
+}
+
+/// issue 046 (F32) — a drained event batch's press edges (pure +
+/// host-testable — the emscripten `Window::run` rAF drain's fast-press
+/// visibility, its docs):
+/// the keys / buttons / fingers that went DOWN anywhere in the batch
+/// (a `KeyPressed` — repeat or not, a `MouseButtonPressed`, a
+/// `TouchBegan`), in batch order.
+///
+/// Why the batch needs them: the C++'s `poll()` loop is an UNCAPPED
+/// spin (the `RunHandler`'s docs — the `GameWindow.hpp:117-150`'s
+/// `while (isOpen) { poll; update; draw; }` iterates as fast as it can):
+/// a press is therefore visible to the `runUpdate`'s input-state read
+/// for as long as the key is down between polls, however brief. The
+/// web's rAF drain collapses every event of the frame interval into
+/// ONE drain + ONE `apply_event` fold + ONE update — a down+up pair
+/// INSIDE the interval (a machine-speed pair — AND the phone soft
+/// keyboard's own synthesized down+up for a quick tap) leaves the
+/// post-drain state with the key UP: the `Type::Once`'s
+/// state-snapshot binds (the Enter → `okAction`'s profile creation —
+/// the 046 acceptance's "the profile was created") never see the
+/// press. The drain's caller's fix: this batch's press edges are OR'd
+/// into the window's input state for the frame's update ONLY (the
+/// update sees the key down, exactly as a C++ poll inside the press's
+/// window would), then the TRUE post-drain state is restored (no
+/// persistent pollution: the next frame's update sees the key up —
+/// the `Type::Once` latch's re-arm, the C++'s `refresh`'s `!isDown`
+/// re-arm). The winit path needs no twin: its `ControlFlow::Poll`
+/// `about_to_wait` fires per event wakeup (each OS-delivered event
+/// batch gets its own frame) — the desktop's human press durations
+/// (≥ 50ms) span the uncapped spin's polls anyway (the 025g
+/// established loop model).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BatchPresses {
+    /// The batch's `KeyPressed`'s codes (the `Key`'s; a repeat is the
+    /// key already down — the OR-in a no-op).
+    keys: Vec<crate::Key>,
+    /// The batch's `MouseButtonPressed`'s buttons.
+    btns: Vec<crate::Button>,
+    /// The batch's `TouchBegan`'s finger ids (the 0..`FINGER_COUNT`;
+    /// an out-of-range id is the `apply`'s `set_finger`'s no-op — the
+    /// fold's own guard).
+    fingers: Vec<u32>,
+}
+
+impl BatchPresses {
+    /// The batch's press edges (the docs): a `LostFocus` in the batch
+    /// CLEARS the earlier edges (the fold's `reset()` — the C++'s
+    /// event order: a press before the blur's `reset()` is gone).
+    #[must_use]
+    pub fn from_events(events: &[Event]) -> Self {
+        let mut out = Self::default();
+        for e in events {
+            match e {
+                Event::LostFocus => out = Self::default(),
+                Event::KeyPressed { code, .. } => out.keys.push(*code),
+                Event::MouseButtonPressed { button } => out.btns.push(*button),
+                Event::TouchBegan { finger, .. } => out.fingers.push(*finger),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// OR the press edges into `state` (each edge's `pressed = true`) —
+    /// idempotent (a duplicated edge within the batch is harmless).
+    pub fn apply(&self, state: &mut InputState) {
+        for k in &self.keys {
+            state.set_key_pressed(*k, true);
+        }
+        for b in &self.btns {
+            state.set_button_pressed(*b, true);
+        }
+        for f in &self.fingers {
+            state.set_finger(*f, true);
+        }
+    }
+
+    /// No press edges in the batch (the drain's save / restore halves
+    /// skip — no state touched, no re-publish).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty() && self.btns.is_empty() && self.fingers.is_empty()
     }
 }
 
@@ -2148,6 +2587,11 @@ fn canvas_position(canvas: &web_sys::HtmlCanvasElement, client_x: f64, client_y:
 fn attach_web_listeners(
     canvas: &web_sys::HtmlCanvasElement,
     queue: &std::sync::Arc<std::cell::RefCell<Vec<Event>>>,
+    // issue 046 (F32) — the hidden-but-focusable IME input (`#ime`) when
+    // the page has a DOM (the keydown listener's `web_keydown_ime_policy`
+    // double-typing gate: `None` = the element is absent, the gate is
+    // inactive — the issue-32 behaviour byte-identical).
+    ime: Option<&web_sys::HtmlInputElement>,
 ) -> Vec<Closure<dyn FnMut(web_sys::Event)>> {
     let window = web_sys::window().expect("web window (attach is web-only)");
     let document = window
@@ -2174,32 +2618,44 @@ fn attach_web_listeners(
     // (29b3, the desktop fold's twin): SFML emits a `TextEntered` with
     // unicode 8 for Backspace (the C++'s dialog-input `pop_back` arm —
     // the erase, MenuGame.cpp:509-516); the DOM carries no `key` char
-    // for it, so it is restored from the physical `code`.
+    // for it, so it is restored from the physical `code`. issue 046
+    // (F32): BOTH the `TextEntered` half AND the `preventDefault` are
+    // gated on the IME input's focus (the `web_keydown_ime_policy` docs —
+    // the DOUBLE-TYPING gate: while `#ime` is focused its `input` event
+    // is the sole text path, and a swallowed keydown would insert
+    // nothing into the focused input and fire no `input` event at all);
+    // the `KeyPressed` / `KeyReleased` mapping halves (the Enter that
+    // CREATES the profile — the C++'s `okAction` bind — the Escape, the
+    // navigation) are UNCHANGED below.
     let q = queue.clone();
+    let ime_el = ime.map(|el| el.clone());
     add_dom_listener(&window, "keydown", &mut listeners, move |e| {
         let Some(ke) = e.dyn_ref::<web_sys::KeyboardEvent>() else {
             return;
         };
-        let prevent = web_keydown_prevent_default(
+        // issue 046 (F32) — the double-typing gate's DOM half: the
+        // `#ime` element is the focused element (the `keydown` bubbles
+        // from it to the window — without the gate the same character
+        // would arrive twice: the keydown's `TextEntered` + the browser's
+        // own insertion's `input` event the feed rides on).
+        let ime_active = ime_el.as_ref().is_some_and(web_ime_is_active);
+        let (prevent, text) = web_keydown_ime_policy(
             ke.code().as_str(),
             ke.key().as_str(),
-            ke.ctrl_key(),
-            ke.meta_key(),
-            ke.is_composing(),
+            &WebKeydownState::new(
+                ke.ctrl_key(),
+                ke.alt_key(),
+                ke.meta_key(),
+                ke.repeat(),
+                ke.is_composing(),
+            ),
+            ime_active,
         );
         if prevent {
             e.prevent_default(); // the page must not also scroll / zoom / move focus
         }
-        if !ke.ctrl_key() && !ke.alt_key() && !ke.meta_key() && !ke.repeat() {
-            let key = ke.key();
-            if key.chars().count() == 1 {
-                if let Some(c) = key.chars().next() {
-                    q.borrow_mut().push(Event::TextEntered { character: c });
-                }
-            } else if ke.code() == "Backspace" {
-                q.borrow_mut()
-                    .push(Event::TextEntered { character: '\u{8}' });
-            }
+        if let Some(c) = text {
+            q.borrow_mut().push(Event::TextEntered { character: c });
         }
         let code = web_key_to_sfml(ke.code().as_str(), ke.key().as_str());
         if code == Key::UNKNOWN {
@@ -2357,6 +2813,199 @@ fn attach_web_listeners(
     add_dom_listener(&window, "resize", &mut listeners, move |_e| {
         let (width, height) = web_canvas_real_size(&c);
         q.borrow_mut().push(Event::Resized { width, height });
+    });
+
+    listeners
+}
+
+/// issue 046 (F32) — the hidden-but-focusable IME input element (`#ime`)
+/// — the phone's soft keyboard's target (a mobile browser raises the
+/// on-screen keyboard ONLY for a focused editable element; the canvas'
+/// `keydown` listener never gets one — the task's diagnosis):
+///
+/// * **hidden but FOCUSABLE** — off-screen (`position: fixed; left:
+///   -10000px`) + `opacity: 0`, NEVER `display: none` (browsers refuse to
+///   focus those);
+/// * the attribute contract (F32): `type="text"`, `inputmode="text"`,
+///   `autocapitalize="off"`, `autocomplete="off"`, `spellcheck="false"`,
+///   `enterkeyhint="done"` (the soft keyboard's commit key — the Enter
+///   that CREATES the profile, the C++'s `okAction` bind, the 025d/025f
+///   device flow) + a **16 px font** (a smaller font makes iOS zoom the
+///   page on focus — the operator's target is Android Chrome, where the
+///   floor is harmless);
+/// * **get-or-create** (the committed shell, `crates/oh-web/site/
+///   index.html`, declares `#ime` — the element created by Rust is the
+///   fallback for a page that predates it, the `#c` canvas's "the page
+///   MUST provide it" contract mirrored with a Rust-side create):
+///   the attribute + style contract is re-applied either way (the Rust
+///   side is the single source of truth — the page's copy is the
+///   discoverability twin).
+///
+/// Returns `None` only when the page has no `document` / `body` at all
+/// (the canvas is present here, so this is the no-DOM edge — the web
+/// `SoftInput` controller's no-op arm).
+#[cfg(target_os = "emscripten")]
+fn web_ime_input_get_or_create(document: &web_sys::Document) -> Option<web_sys::HtmlInputElement> {
+    let existing = document
+        .get_element_by_id("ime")
+        .map(|el| el.unchecked_into::<web_sys::HtmlInputElement>());
+    let el = match existing {
+        Some(el) => el,
+        None => {
+            let el = document.create_element("input").ok()?;
+            let body = document.body()?;
+            body.append_child(&el).ok()?;
+            el.unchecked_into::<web_sys::HtmlInputElement>()
+        }
+    };
+    // The attribute contract (the docs) — re-applied on the page-declared
+    // element too (the committed shell carries the same values; a stale /
+    // custom page is brought back to the contract). The typed setters
+    // (the `type` / `inputmode` / `autocomplete` / `spellcheck` web-sys
+    // exposes) + `set_attribute` for the two web-sys 0.3.106 has no typed
+    // setter for (`autocapitalize` / `enterkeyhint` — the same DOM
+    // attributes, the generic attribute route) + the `style` attribute
+    // (web-sys exposes the `style` declaration read-only — the attribute
+    // is the write route; the SAME string the committed shell's inline
+    // style carries).
+    el.set_type("text");
+    el.set_input_mode("text");
+    el.set_autocomplete("off");
+    el.set_spellcheck(false);
+    el.set_attribute("autocapitalize", "off").ok()?;
+    el.set_attribute("enterkeyhint", "done").ok()?;
+    // The style contract (the docs): off-screen (focusable — never
+    // `display: none`), invisible (`opacity: 0`), the 16 px floor (the
+    // iOS no-zoom; the Android target is unaffected — the floor is the
+    // web's minimum-tappable-font convention, not an Android behaviour).
+    el.set_attribute(
+        "style",
+        "position: fixed; left: -10000px; top: 0; opacity: 0; font-size: 16px;",
+    )
+    .ok()?;
+    Some(el)
+}
+
+/// issue 046 (F33) — the fullscreen button's (`#fs`) get-or-create (the
+/// `Window` field's twin's `#ime` half — the `web_ime_input_get_or_create`
+/// docs): the config's `fullscreen` value's web applier's button (the
+/// `oh-app`'s click sink's target — the `set_fullscreen_click_sink` docs).
+///
+/// The committed shell declares it (the page's `<button id="fs">` + its
+/// stylesheet's contract: the bottom-right corner, the 44px touch
+/// target, the translucent / subtle look, `touch-action: manipulation`,
+/// `pointer-events: auto` on itself only, `display: none` by default —
+/// the shell's `ohstatechange` gate shows it in the menu states and
+/// HIDES it — not merely makes it transparent — in the game state,
+/// where the gameplay touch overlay's RotateCW owns that corner: a
+/// hidden element is the only variant that cannot swallow a touch). A
+/// found element is left AS-IS (its styling is the shell stylesheet's —
+/// the committed shell is the supported page; unlike the `#ime`'s
+/// text contract, a stale `#fs` cannot corrupt the input, only look
+/// different). The absent-element fallback CREATES it: the full inline
+/// style contract (the committed shell's values) + the `⛶` glyph + the
+/// `aria-label` — WITHOUT a `display` override (the fallback page lacks
+/// the shell's gate JS — the button is visible and working, just
+/// ungated: the committed shell is the supported page).
+#[cfg(target_os = "emscripten")]
+fn web_fs_button_get_or_create(document: &web_sys::Document) -> Option<web_sys::Element> {
+    if let Some(existing) = document.get_element_by_id("fs") {
+        return Some(existing);
+    }
+    let el = document.create_element("button").ok()?;
+    el.set_attribute("id", "fs").ok()?;
+    el.set_attribute("aria-label", "Toggle fullscreen").ok()?;
+    // The style contract (the committed shell's `#fs` rule — the
+    // fallback page's inline twin; the `display` is deliberately ABSENT
+    // — the shell's gate JS owns it, the fallback's button works).
+    el.set_attribute(
+        "style",
+        "position: fixed; right: 12px; bottom: 12px; width: 44px; height: 44px; padding: 0; border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 10px; background: rgba(255, 255, 255, 0.10); color: #ddd; opacity: 0.55; font-size: 20px; line-height: 1; cursor: pointer; touch-action: manipulation; pointer-events: auto; z-index: 10;",
+    )
+    .ok()?;
+    el.set_text_content(Some("⛶"));
+    document.body()?.append_child(&el).ok()?;
+    Some(el)
+}
+
+/// issue 046 (F32) — the keydown gate's DOM half: the `#ime` element is
+/// the page's focused element (`document.activeElement`). The `is_same_node`
+/// comparison (NOT `==`): the web-sys stable API's object identity — the
+/// DOM's node identity, not a structural compare (the DOM's `isSameNode`
+/// takes a NULLABLE node — web-sys's `Option<&Node>` signature).
+#[cfg(target_os = "emscripten")]
+fn web_ime_is_active(ime: &web_sys::HtmlInputElement) -> bool {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.active_element())
+        .is_some_and(|active| web_sys::Node::is_same_node(&active, Some(ime)))
+}
+
+/// issue 046 (F32) — the IME input's DOM → `Event::TextEntered` listeners
+/// (the `WebImeFeed` docs — the four cases): `compositionstart` (the
+/// composing flag), `compositionend` (the commit's `data` — fed exactly
+/// once), `input` (the printable `data` + the `deleteContentBackward`
+/// Backspace — the `WebImeFeed`'s routing decides what reaches the
+/// queue). Pushed into the SAME DOM→SFML event queue the keydown
+/// listener feeds (the `Window::run` rAF drain → the `TextEntered` fold
+/// → the windowed client's `entered_text_sink` → the menu's
+/// `handle_text_entered` — the EXISTING entered-text sink fed, not a
+/// second pipeline). Returns the closures — the caller MUST keep them
+/// alive for the window's life (the `dom_listeners` field's contract).
+#[cfg(target_os = "emscripten")]
+fn attach_web_ime_listeners(
+    ime: &web_sys::HtmlInputElement,
+    queue: &std::sync::Arc<std::cell::RefCell<Vec<Event>>>,
+) -> Vec<Closure<dyn FnMut(web_sys::Event)>> {
+    // The routing machine (the `WebImeFeed` docs): the pure half the host
+    // tests pin; the listeners are the thin wrapper (the `WebPointerFeed`
+    // pattern).
+    let feed = std::rc::Rc::new(std::cell::RefCell::new(WebImeFeed::new()));
+    let mut listeners = Vec::new();
+
+    // `compositionstart` — the composing flag (the DURING-composition
+    // `input` events are the intermediate ones — suppressed; the
+    // `compositionend`'s `data` is the commit).
+    let f = feed.clone();
+    add_dom_listener(ime, "compositionstart", &mut listeners, move |_| {
+        f.borrow_mut().composition_start();
+    });
+    // `compositionend` — the COMMIT (a phone keyboard, an autocomplete,
+    // any CJK method): feed the `data` (empty = a CANCELLED composition —
+    // nothing fed). The `data` is an owned `String` (the web-sys 0.3.106
+    // codegen's `Option<String>` — no borrow to manage).
+    let f = feed.clone();
+    let q = queue.clone();
+    add_dom_listener(ime, "compositionend", &mut listeners, move |e| {
+        let data = e
+            .dyn_ref::<web_sys::CompositionEvent>()
+            .and_then(|c| c.data())
+            .unwrap_or_default();
+        for c in f.borrow_mut().composition_end(&data) {
+            q.borrow_mut().push(Event::TextEntered { character: c });
+        }
+    });
+    // `input` — the SOLE text path while this element is focused (the
+    // keydown listener's `web_keydown_ime_policy` gate): the printable
+    // text (the `data`) + the Backspace (the `inputType`
+    // `deleteContentBackward` — NOT a keypress — the port's
+    // `TextEntered(8)`'s `pop_back` arm). Both fields are owned strings
+    // (the web-sys 0.3.106 codegen: the `input_type()`'s `String`, the
+    // `data()`'s `Option<String>` — no borrow out of the event).
+    let f = feed.clone();
+    let q = queue.clone();
+    add_dom_listener(ime, "input", &mut listeners, move |e| {
+        let (input_type, data) = match e.dyn_ref::<web_sys::InputEvent>() {
+            Some(i) => {
+                let t = i.input_type();
+                let d = i.data().unwrap_or_default();
+                (t, d)
+            }
+            None => (String::new(), String::new()),
+        };
+        for c in f.borrow_mut().input(&input_type, &data) {
+            q.borrow_mut().push(Event::TextEntered { character: c });
+        }
     });
 
     listeners
@@ -3045,5 +3694,421 @@ mod tests {
             (v.get_center(), v.get_size()),
             (Vec2::new(800.0, 450.0), Vec2::new(1600.0, 900.0))
         );
+    }
+
+    // ------------------------------------------------------------------
+    // issue 046 (F32) — the rAF drain's fast-press visibility
+    // (`BatchPresses`). The pure half the emscripten `Window::run`
+    // drain's save / OR-in / restore applies — the C++'s
+    // poll-inside-the-press visibility at the rAF cadence (the
+    // `BatchPresses`'s docs).
+    // ------------------------------------------------------------------
+
+    /// issue 046 (F32) — the batch's press edges (the docs): the mixed
+    /// batch's downs (the `KeyPressed` — a RELEASED-IN-BATCH press still
+    /// counts: the press happened IN the interval, the C++'s
+    /// poll-inside-the-press visibility; the `MouseButtonPressed`; the
+    /// `TouchBegan`), the non-press events ignored (the releases, the
+    /// moves, the wheel, the resize, the focus — the state's UP half is
+    /// the fold's job, not the batch's).
+    #[test]
+    fn batch_presses_collects_the_batch_press_edges() {
+        let p = Vec2::new(1.0, 2.0);
+        let events = vec![
+            Event::KeyPressed {
+                code: Key::A,
+                repeated: false,
+            },
+            Event::KeyReleased { code: Key::A },
+            Event::KeyPressed {
+                code: Key::B,
+                repeated: false,
+            }, // still held (no release in the batch)
+            Event::MouseButtonPressed {
+                button: Button::LEFT,
+            },
+            Event::MouseButtonReleased {
+                button: Button::LEFT,
+            },
+            Event::TouchBegan {
+                finger: 3,
+                position: p,
+            },
+            Event::TouchEnded { finger: 3 },
+            Event::MouseMoved { position: p },
+            Event::MouseWheelScrolled { delta: 1.0 },
+            Event::Resized {
+                width: 100,
+                height: 100,
+            },
+        ];
+        let presses = BatchPresses::from_events(&events);
+        let mut state = InputState::new();
+        presses.apply(&mut state);
+        assert!(
+            state.is_key_pressed(Key::A),
+            "the released-in-batch press is the interval's press (the C++'s poll-inside-the-press)"
+        );
+        assert!(state.is_key_pressed(Key::B));
+        assert!(state.is_button_pressed(Button::LEFT));
+        assert!(state.is_finger(3));
+        assert!(!state.is_key_pressed(Key::C));
+        assert!(!state.is_button_pressed(Button::RIGHT));
+        assert!(!state.is_finger(0));
+    }
+
+    /// issue 046 (F32) — the `LostFocus`'s batch half (the docs): the
+    /// fold's `reset()` clears the state — the batch's earlier press
+    /// edges clear WITH it (a press before the blur's `reset()` is
+    /// gone, the C++'s event order); a press AFTER the blur survives.
+    #[test]
+    fn batch_presses_lost_focus_clears_earlier_presses() {
+        let events = vec![
+            Event::KeyPressed {
+                code: Key::A,
+                repeated: false,
+            },
+            Event::LostFocus,
+            Event::KeyPressed {
+                code: Key::B,
+                repeated: false,
+            },
+        ];
+        let mut state = InputState::new();
+        // The fold's own halves (for the test's realism): the press's
+        // down, the blur's `reset()` (the fold's `LostFocus` arm), the
+        // second press's down.
+        state.set_key_pressed(Key::A, true); // the `KeyPressed`'s down
+        state.reset(); // the `LostFocus`'s `reset()`
+        state.set_key_pressed(Key::B, true); // the second press's down
+        BatchPresses::from_events(&events).apply(&mut state);
+        assert!(
+            !state.is_key_pressed(Key::A),
+            "the pre-blur press is the `reset()`'s gone half"
+        );
+        assert!(state.is_key_pressed(Key::B));
+    }
+
+    /// issue 046 (F32) — the `repeated`'s keydown (the held-key's
+    /// auto-repeat — a `KeyPressed` with `repeated: true`): the key is
+    /// DOWN (the repeat's premise) — the edge is collected (the OR-in
+    /// the no-op on an already-down state — the batch never lies about
+    /// the key's level).
+    #[test]
+    fn batch_presses_repeated_keydown_is_a_press_edge() {
+        let events = vec![Event::KeyPressed {
+            code: Key::D,
+            repeated: true,
+        }];
+        let mut state = InputState::new();
+        BatchPresses::from_events(&events).apply(&mut state);
+        assert!(state.is_key_pressed(Key::D));
+    }
+
+    /// issue 046 (F32) — a release-only batch (no downs): empty (the
+    /// drain's save / restore halves skip — the state's UP half is the
+    /// fold's, nothing to restore).
+    #[test]
+    fn batch_presses_release_only_batch_is_empty() {
+        let events = vec![
+            Event::KeyReleased { code: Key::A },
+            Event::MouseButtonReleased {
+                button: Button::LEFT,
+            },
+            Event::TouchEnded { finger: 0 },
+        ];
+        assert!(BatchPresses::from_events(&events).is_empty());
+    }
+
+    /// issue 046 (F32) — the save / OR-in / restore's full frame cycle
+    /// (the drain's orchestration's semantics, pinned host-side — the
+    /// emscripten `Closure`'s body itself is the target-gated half):
+    /// the batch's [down+up A] + [held B] over the frame — the frame's
+    /// update sees A + B down; the post-frame state is the TRUE
+    /// post-drain state (A up, B down — the latch's re-arm's input).
+    #[test]
+    fn batch_presses_save_or_restore_frame_cycle() {
+        let events = vec![
+            Event::KeyPressed {
+                code: Key::A,
+                repeated: false,
+            },
+            Event::KeyReleased { code: Key::A },
+            Event::KeyPressed {
+                code: Key::B,
+                repeated: false,
+            },
+        ];
+        let presses = BatchPresses::from_events(&events);
+        let mut state = InputState::new();
+        // B held from before the interval (the previous frame's press).
+        state.set_key_pressed(Key::B, true);
+        // The fold (the drain's `apply_event` halves, over a bare state):
+        // A down, A up, B down (B already down).
+        state.set_key_pressed(Key::A, true);
+        state.set_key_pressed(Key::A, false);
+        state.set_key_pressed(Key::B, true);
+        // The save (the drain's `saved_input`) + the OR-in.
+        let saved = state;
+        presses.apply(&mut state);
+        // The frame's update's view (the `on_frame`'s read):
+        assert!(
+            state.is_key_pressed(Key::A),
+            "the fast press is visible to the frame's update"
+        );
+        assert!(state.is_key_pressed(Key::B));
+        // The restoration (the drain's post-`on_frame` half).
+        state = saved;
+        assert!(
+            !state.is_key_pressed(Key::A),
+            "the next frame sees the true (released) state"
+        );
+        assert!(state.is_key_pressed(Key::B));
+    }
+
+    // ------------------------------------------------------------------
+    // issue 046 (F32) — the IME text routing (`WebImeFeed`) + the keydown
+    // double-typing gate (`web_keydown_ime_policy`). The pure halves the
+    // emscripten listeners apply — the four cases the task names, pinned
+    // host-side (the DOM halves ride the web build + the CDP probe).
+    // ------------------------------------------------------------------
+
+    /// issue 046 (F32) — printable text via the `input` event (the
+    /// `insertText` inputType — the phone's soft keyboard AND the desktop
+    /// typing into the focused element): the `data`'s chars, in order, one
+    /// `TextEntered` each (the menu drain's C++ `isAlphanumeric` / `
+    /// isPunctuation` filter is the game's half, not the feed's — the
+    /// feed delivers the browser's text as-is, exactly one path per
+    /// event).
+    #[test]
+    fn web_ime_feed_inserts_printable_data_in_order() {
+        let mut feed = WebImeFeed::new();
+        assert_eq!(feed.input("insertText", "0"), vec!['0']);
+        assert_eq!(feed.input("insertText", "46"), vec!['4', '6']);
+        // The paste / replacement / drop insertions feed their `data` too
+        // (the `insertFromPaste` / `insertReplacementText` / `insertFrom
+        // Drop` inputTypes — the non-`delete` non-composition arm).
+        assert_eq!(feed.input("insertFromPaste", "ab"), vec!['a', 'b']);
+        assert_eq!(feed.input("insertReplacementText", "Z"), vec!['Z']);
+    }
+
+    /// issue 046 (F32) — the Backspace case: a deletion arrives as an
+    /// `input` event with `inputType: deleteContentBackward` (NOT as a
+    /// keypress) and is routed as EXACTLY ONE unicode 8 — the port's
+    /// `TextEntered(8)`'s `pop_back` arm (the C++'s second `TextEntered`
+    /// handler's erase, MenuGame.cpp:509-516). The `deleteContent`
+    /// sibling (a selected-range delete) is ONE event too: one pop (the
+    /// under-feeding side of the mismatch — the safe one).
+    #[test]
+    fn web_ime_feed_backspace_is_exactly_one_unicode_8() {
+        let mut feed = WebImeFeed::new();
+        assert_eq!(feed.input("deleteContentBackward", ""), vec!['\u{8}']);
+        assert_eq!(feed.input("deleteContentBackward", ""), vec!['\u{8}']);
+        assert_eq!(feed.input("deleteContent", ""), vec!['\u{8}']);
+        // A backspace between insertions does not corrupt the next
+        // insertion's feed (the guard state is reset by the deletion).
+        assert_eq!(feed.input("insertText", "a"), vec!['a']);
+        assert_eq!(feed.input("deleteContentBackward", ""), vec!['\u{8}']);
+        assert_eq!(feed.input("insertText", "b"), vec!['b']);
+    }
+
+    /// issue 046 (F32) — the composition case (a phone keyboard, an
+    /// autocomplete or any CJK method): the INTERMEDIATE `input` events
+    /// (the `insertCompositionText` inputType, fired DURING the
+    /// composition) feed NOTHING — the `compositionend`'s `data` is the
+    /// commit, fed EXACTLY ONCE, and a browser that ALSO fires a final
+    /// `input` carrying the same `data` AFTER the `compositionend` (the
+    /// double-commit ordering) is suppressed by the guard (feeding both
+    /// would double every character — the task's "do not let it corrupt
+    /// or double").
+    #[test]
+    fn web_ime_feed_composition_commits_exactly_once() {
+        let mut feed = WebImeFeed::new();
+        feed.composition_start();
+        // The intermediate updates (the `compositionupdate`'s data is NOT
+        // fed — the listener attaches to `compositionstart` /
+        // `compositionend` only; the `input` events that run DURING the
+        // composition are the `insertCompositionText` ones):
+        assert_eq!(
+            feed.input("insertCompositionText", "ni"),
+            Vec::<char>::new()
+        );
+        assert_eq!(feed.input("insertCompositionText", "n"), Vec::<char>::new());
+        // The commit — the `compositionend`'s `data`:
+        assert_eq!(feed.composition_end("nihao"), vec!['n', 'i', 'h', 'a', 'o']);
+        // The double-commit guard: the SAME data a final `input` event
+        // carries after the `end` (the browser that fires both) is the
+        // same commit — suppressed:
+        assert_eq!(
+            feed.input("insertText", "nihao"),
+            Vec::<char>::new(),
+            "the double-commit must not feed the characters a second time"
+        );
+        // …while the SAME text typed AFTER the guard is consumed is a NEW
+        // insertion (the guard is single-shot):
+        assert_eq!(
+            feed.input("insertText", "nihao"),
+            vec!['n', 'i', 'h', 'a', 'o']
+        );
+    }
+
+    /// issue 046 (F32) — the CANCELLED composition (the Esc): the
+    /// empty-`data` `compositionend` feeds nothing and resets the state —
+    /// the following plain insertion is unaffected.
+    #[test]
+    fn web_ime_feed_cancelled_composition_feeds_nothing() {
+        let mut feed = WebImeFeed::new();
+        feed.composition_start();
+        assert_eq!(
+            feed.input("insertCompositionText", "xyz"),
+            Vec::<char>::new()
+        );
+        assert_eq!(
+            feed.composition_end(""),
+            Vec::<char>::new(),
+            "a cancelled composition (the empty data) feeds nothing"
+        );
+        assert_eq!(feed.input("insertText", "a"), vec!['a']);
+    }
+
+    /// issue 046 (F32) — the `data`-less insertions (the browser variant
+    /// that fires an `input` event with no `data`) feed nothing (no
+    /// guessing: the value-diff fallback would risk doubling what the
+    /// `data`-carrying events already delivered).
+    #[test]
+    fn web_ime_feed_empty_data_feeds_nothing() {
+        let mut feed = WebImeFeed::new();
+        assert_eq!(feed.input("insertText", ""), Vec::<char>::new());
+        assert_eq!(feed.input("", ""), Vec::<char>::new());
+    }
+
+    /// issue 046 (F32) — the `policy` shorthand for the tests (the
+    /// `WebKeydownState`'s five fields in the listener's order — the
+    /// clippy 7-argument bound's bundle): `code`, `key`, `ctrl`, `alt`,
+    /// `meta`, `repeat`, `is_composing`, `ime_active`.
+    #[allow(clippy::too_many_arguments)] // the test shorthand's 8 fields (the production fn's bundle)
+    fn policy(
+        code: &str,
+        key: &str,
+        ctrl: bool,
+        alt: bool,
+        meta: bool,
+        repeat: bool,
+        is_composing: bool,
+        ime_active: bool,
+    ) -> (bool, Option<char>) {
+        super::web_keydown_ime_policy(
+            code,
+            key,
+            &super::WebKeydownState::new(ctrl, alt, meta, repeat, is_composing),
+            ime_active,
+        )
+    }
+
+    /// issue 046 (F32) — the DOUBLE-TYPING gate's desktop arm unchanged
+    /// (`ime_active = false` — every non-text-entry state, where `#ime`
+    /// is blurred): the printable char pushes its `TextEntered` AND
+    /// `preventDefault`s (the issue-32 behaviour, byte-identical — the
+    /// page must not also scroll / zoom; the character must reach the
+    /// game exactly once through THIS path, the keydown's, the C++
+    /// `runEvents`'s alongside-`TextEntered` the winit fold's twin
+    /// restores, window.rs:1777-1790's paired-event suppression intact).
+    #[test]
+    fn web_keydown_policy_desktop_path_unchanged_when_ime_blurred() {
+        // The printable char: text + prevent (the `KeyA` / "a" pair).
+        let (prevent, text) = policy("KeyA", "a", false, false, false, false, false, false);
+        assert!(
+            prevent,
+            "the desktop page-consumed key still preventDefaults"
+        );
+        assert_eq!(
+            text,
+            Some('a'),
+            "the desktop text path still pushes the char"
+        );
+        // The Backspace's unicode-8 restore (the 29b3 half, unchanged).
+        let (_, text) = policy(
+            "Backspace",
+            "Backspace",
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
+        assert_eq!(
+            text,
+            Some('\u{8}'),
+            "the desktop Backspace still restores the pop"
+        );
+        // The repeat (the held-key double-type guard, unchanged).
+        let (_, text) = policy("KeyA", "a", false, false, false, true, false, false);
+        assert_eq!(text, None, "a repeated key still pushes no text");
+        // The modifier combos (unchanged).
+        let (_, text) = policy("KeyA", "a", true, false, false, false, false, false);
+        assert_eq!(text, None);
+        // The Enter (a WORD, not a char — no text; the game's `okAction`
+        // bind's `KeyPressed(ENTER)` is the listener's mapping half,
+        // outside this policy, unchanged).
+        let (_, text) = policy("Enter", "Enter", false, false, false, false, false, false);
+        assert_eq!(text, None);
+        // The browser-reserved keys still do NOT preventDefault (the
+        // F5 / F11 / F12 policy, unchanged).
+        let (prevent, _) = policy("F5", "F5", false, false, false, false, false, false);
+        assert!(!prevent);
+    }
+
+    /// issue 046 (F32) — the DOUBLE-TYPING gate's IME arm (`ime_active =
+    /// true` — the menu's text-entry state, `#ime` focused): the keydown
+    /// must push NO `TextEntered` (printable AND the Backspace's
+    /// unicode-8 restore — the browser's own insertion / deletion fires
+    /// the `input` events the feed rides on; both halves feeding would
+    /// double-type every character) AND must NOT `preventDefault` (a
+    /// swallowed keydown inserts nothing into the focused input and fires
+    /// no `input` event — no text at all). One keypress, exactly one
+    /// character (through the `input` path — this policy's job is to keep
+    /// the keydown path OUT of it).
+    #[test]
+    fn web_keydown_policy_ime_active_suppresses_text_and_prevent() {
+        // The printable char: no text, no prevent.
+        let (prevent, text) = policy("KeyA", "a", false, false, false, false, false, true);
+        assert!(
+            !prevent,
+            "a prevented keydown would insert nothing into the focused input"
+        );
+        assert_eq!(
+            text, None,
+            "the keydown's char would double-type the input event's"
+        );
+        // The Backspace (the soft keyboard's deletion key — the `input`
+        // event's `deleteContentBackward` is the pop's sole source).
+        let (prevent, text) = policy(
+            "Backspace",
+            "Backspace",
+            false,
+            false,
+            false,
+            false,
+            false,
+            true,
+        );
+        assert!(!prevent);
+        assert_eq!(
+            text, None,
+            "the keydown's unicode-8 would double-pop the input event's"
+        );
+        // The Enter (the soft keyboard's commit key — the `okAction`
+        // bind's `KeyPressed(ENTER)` the mapping half still pushes, OUTSIDE
+        // this policy): no text (it never had any), no prevent.
+        let (prevent, text) = policy("Enter", "Enter", false, false, false, false, false, true);
+        assert!(!prevent);
+        assert_eq!(text, None);
+        // The composition keys (the `is_composing` — the `Process` /
+        // `Composing` `key` values): no text, no prevent (the composition
+        // runs to its commit — the `compositionend`'s feed).
+        let (prevent, text) = policy("Dead", "Process", false, false, false, false, true, true);
+        assert!(!prevent);
+        assert_eq!(text, None);
     }
 }

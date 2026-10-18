@@ -95,6 +95,21 @@ web-sys = { version = "0.3.106", features = [
   # `.state()` is read on the first input (the autoplay-policy observable).
   "AudioContext",
   "AudioContextState",
+  # issue 046 — the web's IME (the hidden-but-focusable `#ime` input the
+  # phone's soft keyboard needs to focus): `HtmlInputElement` (the element +
+  # its `inputmode` / `autocomplete` / `spellcheck` typed setters — the
+  # `autocapitalize` / `enterkeyhint` / `style` ride the generic
+  # `set_attribute`, the web-sys 0.3.106 has no typed setter for) +
+  # `HtmlElement` (the `create_element` fallback's `document.body()` append
+  # target) + `Node` (the `#c` canvas's get-or-create twin's `append_child`
+  # + the keydown gate's `is_same_node` active-element check) + `InputEvent`
+  # (the `input` feed's `input_type` / `data`) + `CompositionEvent` (the
+  # `compositionend` commit's `data`).
+  "HtmlInputElement",
+  "HtmlElement",
+  "Node",
+  "InputEvent",
+  "CompositionEvent",
 ] }
 
 [dev-dependencies]

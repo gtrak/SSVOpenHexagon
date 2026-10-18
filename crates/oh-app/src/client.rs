@@ -198,6 +198,29 @@ pub fn main_client(
         oh_game::log_sink::emit_log("web", "entering create_window");
         let _window =
             crate::windowed::create_window(&config.read().expect("config poisoned"), base_dir);
+        // issue 046 (F32) — the soft-input (system IME) controller:
+        // the Android activity's `show_soft_input` / `hide_soft_input`
+        // seam's web twin — the page's hidden-but-focusable `#ime`
+        // input's focus / blur on the menu's `is_entering_text`
+        // transition edge (the `WebIme` docs — the `oh-render`
+        // emscripten `Window` created the element; the element is read
+        // BEFORE the window moves into `build` below). `None` (the
+        // headless fallback — no canvas / no DOM) = the no-op arms.
+        // The characters feed the EXISTING entered-text sink (the
+        // `Window`'s `#ime` listeners push `Event::TextEntered`s into
+        // the window's DOM→SFML event queue — the `entered_text_sink`
+        // chain the `MenuSlotAdapter::refresh_input` drains). Desktop:
+        // the no-op (no IME on the desktop window — D-031, unchanged).
+        let soft_input: std::sync::Arc<dyn crate::windowed::SoftInput> = {
+            #[cfg(target_os = "emscripten")]
+            {
+                std::sync::Arc::new(crate::windowed::WebIme::new(_window.web_ime_input()))
+            }
+            #[cfg(not(target_os = "emscripten"))]
+            {
+                std::sync::Arc::new(crate::windowed::NoOpSoftInput)
+            }
+        };
         match crate::windowed::WindowedClient::build(
             _window,
             config.clone(),
@@ -205,12 +228,7 @@ pub fn main_client(
             base_dir,
             steam.clone(),
             discord,
-            // issue 025f (D-031) — the soft-input (system IME) controller:
-            // the desktop no-op (no IME on the desktop window — the C++
-            // desktop build never asked for one; the C++'s Android IME
-            // wiring lived in SFML's own Android layer, D-031 — the
-            // Android arm passes the android-activity controller).
-            Arc::new(crate::windowed::NoOpSoftInput),
+            soft_input,
         ) {
             Ok(client) => {
                 #[cfg(target_os = "emscripten")]

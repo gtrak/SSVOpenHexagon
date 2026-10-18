@@ -1713,6 +1713,75 @@ impl SoftInput for NoOpSoftInput {
     fn hide(&self) {}
 }
 
+/// issue 046 (F32) — the web `SoftInput` controller (the 025f
+/// `ImeController`'s web twin — D-031's platform addition's web half):
+/// the page's hidden-but-focusable IME input (the `oh-render` emscripten
+/// `Window`'s `#ime` element — its `web_ime_input` accessor; the
+/// element + its attribute contract live there, the `Window::create`
+/// get-or-create) focused on the menu's ENTER-TEXT entry and blurred on
+/// its leave — the SAME `is_entering_text` transition edge (the
+/// `MenuSlotAdapter::refresh_input` docs — computed ONCE per transition,
+/// never per frame: the per-frame call is the bug class the operator
+/// hit with the Android touch input, 025f) that drives the Android
+/// activity's `show_soft_input` / `hide_soft_input`.
+///
+/// The characters then feed the EXISTING entered-text pipeline — the
+/// element's `input` / `compositionend` listeners (the `oh-render`
+/// `attach_web_ime_listeners`) push the `Event::TextEntered`s into the
+/// window's DOM→SFML event queue (the issue-025d chain: the `TextEntered`
+/// fold → the `entered_text_sink` → the menu's `handle_text_entered`,
+/// gated by the ported `isEnteringText`, MenuGame.cpp:2862-2878) — fed,
+/// NOT a second pipeline built. The C++ has no web text path either (its
+/// input came from SFML — D-031's framing, the F32 register row): this
+/// is the deliberate platform addition, and ALL text-entry states
+/// benefit (the gate is the menu's `is_entering_text()`, not a
+/// name-entry special case — the dialog input box / the Lua console ride
+/// the SAME edge if the state gate ever widens to them, exactly as the
+/// Android arm does).
+#[cfg(target_os = "emscripten")]
+pub struct WebIme {
+    /// The `#ime` element (`None` = the headless fallback / no DOM — the
+    /// no-op arms below; the desktop / Android windows never have one —
+    /// their `SoftInput` arms are the no-op / the android-activity).
+    input: Option<web_sys::HtmlInputElement>,
+}
+
+#[cfg(target_os = "emscripten")]
+impl WebIme {
+    #[must_use]
+    pub fn new(input: Option<web_sys::HtmlInputElement>) -> Self {
+        Self { input }
+    }
+}
+
+#[cfg(target_os = "emscripten")]
+impl SoftInput for WebIme {
+    /// Focus the hidden input (the browser's `showSoftInput` twin — a
+    /// mobile browser raises the soft keyboard ONLY for a focused
+    /// editable element: the task's diagnosis). The `prevent_scroll`
+    /// option: the element is off-screen (`left: -10000px` — the
+    /// `web_ime_input_get_or_create` style contract), so a focus-scroll
+    /// would jump the page (the `body`'s `overflow: hidden` makes it a
+    /// non-issue, the option is the belt).
+    fn show(&self) {
+        if let Some(el) = &self.input {
+            let options = web_sys::FocusOptions::new();
+            options.set_prevent_scroll(true);
+            let _ = el.focus_with_options(&options);
+        }
+    }
+    /// Blur it (the "keyboard must NOT appear in non-text states" half of
+    /// the acceptance — a stray focused input would swallow the game's
+    /// keys: the keydown's text gate is keyed on this element's focus,
+    /// and a focused input steals the soft keyboard's target from the
+    /// page while it should not be typing at all).
+    fn hide(&self) {
+        if let Some(el) = &self.input {
+            let _ = el.blur();
+        }
+    }
+}
+
 /// The C++ `mg->getGame()` `GameState` (main.cpp:461/479/505/532): the
 /// menu's `update(mFT)` (MenuGame.cpp:257) + `draw()` (MenuGame.cpp:259 —
 /// the issue-013b bridge, `crate::menu_draw::draw`).
@@ -3079,6 +3148,84 @@ impl WindowedClient {
             register_menu_binds(&mut menu_manager.borrow_mut(), &menu, &config);
         }
 
+        // issue 046 (F33) — the fullscreen button's (`#fs`) click sink
+        // (the `Window::set_fullscreen_click_sink` docs — the `oh-render`
+        // emscripten half attached the listener; this installs the
+        // callback): the config's `fullscreen` toggle + the browser
+        // Fullscreen API's apply. The `config` here is the SAME shared
+        // `Arc<RwLock<Config>>` the `MenuConfig` seam wraps (the
+        // LAlt+Enter bind's `cfg.set_fullscreen(!cfg.fullscreen())` —
+        // `register_menu_binds`'s) — the button and the menu's own
+        // toggle cannot disagree (the task's "single source of truth").
+        // The C++ applied this config at the window's creation /
+        // recreation (`Config::setFullscreen`'s `recreateWindow` —
+        // `sf::Style::Fullscreen`, GameWindow.hpp:90; the port's FINDING —
+        // the register row — never applied it anywhere: the winit window
+        // is created windowed and `Window::set_fullscreen` is
+        // bookkeeping-only); this callback is the web's applier (the
+        // browser Fullscreen API — the C++'s `recreateWindow`'s
+        // fullscreen half, with the `documentElement` as the fullscreened
+        // node so the `#fs` stays visible IN the fullscreen).
+        #[cfg(target_os = "emscripten")]
+        {
+            let cfg = config.clone();
+            window.set_fullscreen_click_sink(std::sync::Arc::new(move || {
+                // The toggle (the LAlt+Enter bind's twin — the config's
+                // value decides the direction, the browser's state does
+                // NOT: an Esc / back-exit leaves the config as the
+                // source of truth, the C++'s LAlt+Enter's semantics —
+                // it toggles the config regardless of the window's
+                // actual state).
+                let next = {
+                    let mut c = cfg.write().expect("config poisoned");
+                    let n = !c.get_fullscreen();
+                    c.set_fullscreen(n);
+                    n
+                };
+                // The browser Fullscreen API's apply (the FINDING's
+                // applier half — the port never applied the config
+                // anywhere; this is the first path that does, on the
+                // web target). The `request_fullscreen` binding resolves
+                // the call's SYNCHRONOUS result (the `Ok` = the Promise
+                // was created); the browser's ASYNC verdict (the
+                // transient user activation's grant or deny — the
+                // headless CDP's honest limit: a CDP click cannot grant
+                // the activation, the task's "the transition is the
+                // operator's real tap") surfaces as the Promise's
+                // rejection, which the shell's `unhandledrejection`
+                // listener routes to the `[oh-web-fs] promise rejected`
+                // console line (the wiring's async evidence).
+                let browser = web_sys::window()
+                    .and_then(|w| w.document())
+                    .map(|doc| {
+                        if next {
+                            doc
+                                .document_element()
+                                .map(|el| match el.request_fullscreen() {
+                                    Ok(()) => "requestFullscreen() called (the Promise's async verdict: the [oh-web-fs] console line)".to_string(),
+                                    Err(e) => format!("rejected (sync): {e:?}"),
+                                })
+                                .unwrap_or_else(|| "no documentElement".to_string())
+                        } else {
+                            doc.exit_fullscreen();
+                            format!(
+                                "exitFullscreen() called (fullscreen_enabled={})",
+                                doc.fullscreen_enabled()
+                            )
+                        }
+                    })
+                    .unwrap_or_else(|| "no DOM (the headless fallback)".to_string());
+                // The wiring-evidence line (the 041's `[oh-audio]`'s
+                // console-visible diagnostic's pattern — the Rust
+                // stdio's black hole, the `oh-game` log sink's
+                // browser-console route).
+                oh_game::log_sink::emit_log(
+                    "web",
+                    &format!("[oh-web-fs] fullscreen -> {next} (browser: {browser})"),
+                );
+            }));
+        }
+
         // Fill the `refreshBinds` slot (both managers, every trigger —
         // C++ `MenuGame::refreshBinds`, MenuGame.cpp:3373-3387; the
         // `Config::loadAllJoystickBinds()` tail (MenuGame.cpp:3387) is now
@@ -3511,14 +3658,34 @@ impl WindowedClient {
             // the composition's single-threaded frame — the store is the
             // current representative state: the menu's `States`
             // discriminant, or `10` for the game state).
+            // issue 046 (F33) — the menu <-> game transition EDGE (the
+            // port's house pattern — edge, never per frame: the 025f's
+            // `is_entering_text` edge's twin): the `ohstatechange` DOM
+            // event the shell's `#fs` visibility gate listens for (the
+            // fullscreen button's `display: none` in the game state —
+            // the gameplay touch overlay's RotateCW owns that corner
+            // while playing: a HIDDEN element is the only variant that
+            // cannot swallow a touch — the F33 register row's
+            // hit-test property). Dispatched ONCE per transition (the
+            // discriminant's change — zero lag, unlike a page-side poll;
+            // the store's `Relaxed` order is the probe slot's, the
+            // edge's correctness is the value compare's, not the
+            // atomics').
             #[cfg(target_os = "emscripten")]
-            WEB_STATE.store(
-                match engine.current() {
+            {
+                let state_now = match engine.current() {
                     GameSlot::Menu => menu.state() as u32,
                     GameSlot::Game => 10,
-                },
-                std::sync::atomic::Ordering::Relaxed,
-            );
+                };
+                if state_now != WEB_STATE.load(std::sync::atomic::Ordering::Relaxed) {
+                    WEB_STATE.store(state_now, std::sync::atomic::Ordering::Relaxed);
+                    if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+                        if let Ok(event) = web_sys::Event::new("ohstatechange") {
+                            let _ = document.dispatch_event(&event);
+                        }
+                    }
+                }
+            }
             Self::tick_fields(
                 window,
                 &mut timer,

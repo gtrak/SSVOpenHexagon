@@ -129,3 +129,119 @@ Also note in the report, as a finding rather than a fix: the port never APPLIES 
 anywhere (a grep finds it only in `oh-config`), whereas the C++ applies it at window creation. That is
 a pre-existing desktop gap, out of this lane's scope — say so and leave it, unless honoring it on the
 web (which is in scope) makes the desktop half a one-liner.
+
+## Report
+
+**Landings (two commits, the task's order):** F32 IME text entry = `fe6507c1` (landed first, the
+blocking item), F33 fullscreen button = `918163d4` (second, own register row). Both rows in
+`.agents/plans/001-rust-port/deviations.md` (F32, F33 — the F33 row carries the task's FINDING).
+
+### F32 — the web's IME text entry (the soft keyboard's profile-name entry)
+
+The phone browser's soft keyboard now types the profile name on the `ETLPNewBoot` screen through
+ONE path: the hidden-but-focusable `#ime` input's `input` event is the sole text path while it is
+focused; the keydown listener pushes no `TextEntered` and no `preventDefault` while it is focused
+(the browser's own insertion/deletion must run). Four cases, all host-tested pure functions
+(`WebImeFeed` routing: printable `data` → `TextEntered`, `deleteContentBackward` → exactly one
+`'\u{8}'`, during-composition `input` suppressed, the `compositionend.data` commit fed exactly once
+— the double-commit guard) + the `web_keydown_ime_policy` gate + the `BatchPresses`
+fast-press-visibility fix (the rAF drain's down+up-inside-the-interval collapse; the C++'s
+uncapped-spin `poll()` visibility at the rAF cadence — the winit path needs no twin). Focus/blur
+on the `is_entering_text` transition edge via the existing `SoftInput` seam (the 025f
+`ImeController`'s web twin — the `WebIme` in `oh-app`).
+
+### F33 — the fullscreen button (the `#fs`)
+
+Bottom-right, 44×44px, subtle/translucent, `pointer-events: auto` on itself only, `display: none`
+by default. Click toggles the ported `fullscreen` config value — the SAME shared
+`Arc<RwLock<Config>>` the LAlt+Enter bind's `MenuConfig` seam writes through (the button and the
+menu's own toggle cannot disagree) — and applies it through the browser Fullscreen API on the
+`documentElement` (the `documentElement` so the button stays visible IN the fullscreen). The
+`fullscreenchange`'s declarative half is the `html:fullscreen #fs` CSS flip (the Esc / Android
+back exit brightens the button, no JS listener). VISIBILITY GATE: the port dispatches the
+`ohstatechange` DOM event on the menu↔game transition EDGE (the rAF closure's `WEB_STATE` store
+became the edge-detect — the port's house pattern: edge, never per frame, zero lag — NOT a
+page-side poll); the shell's gate shows the button in the menu states and HIDES it (`display: none`
+— not merely transparent: a hidden element is the only variant that cannot swallow a touch) in the
+game state, where the gameplay touch overlay's RotateCW owns that corner.
+
+**FINDING (recorded, not fixed — the task's direction):** the port never applies the `fullscreen`
+config anywhere. The winit window is created windowed (`WindowAttributes::new()`, no fullscreen
+attribute); `Window::set_fullscreen` is bookkeeping-only; the config's value is read/written by the
+LAlt+Enter toggle and the options menu WITHOUT effect. The C++ applied it at the window's
+creation/recreation (`Config::setFullscreen`'s `recreateWindow`,
+`fullscreen ? sf::Style::Fullscreen : sf::Style::Default` — GameWindow.hpp:90; the toggles at
+main.cpp:306, MenuGame.cpp:993, MenuGame.cpp:1371-1373; the `LinkedValue` at Config.hpp:38 /
+Config.cpp:321; `setFullscreen` at Config.cpp:639-649 — all re-verified in `cpp-original/`). The F33
+callback is the FIRST path that applies the config — on the web target. Fixing the DESKTOP's
+non-application is separate work (the winit window's recreation), out of this task's scope.
+
+### What the probe proved (headless CDP — everything short of the operator's phone)
+
+`node tools/web-probe.mjs <url> 30 --seq=...` (the `--seq` machine-speed sequence; the `--phone`
+390×844@3 re-run). All of the following observed:
+
+- **Profile creation end-to-end** (the task's acceptance): `Enter,Enter` (LoadingScreen →
+  EpilepsyWarning → `ETLPNewBoot`), `Input.insertText "046"` (a genuine IME commit, not a
+  keystroke) + a real `C` keypress (the double-typing gate's proof: exactly one char, not two), a
+  `Backspace` (the soft-keyboard's `deleteContentBackward` `input` event — the `#ime` value went
+  `046C → 046 → 046C` through the re-type), then a FAST machine-speed down+up `Enter` (the
+  `BatchPresses`'s worst case) → the game received the name AND created the profile (the state
+  transitioned `menu:ETLPNewBoot → menu:SMain` — that transition only fires on a non-empty
+  entered name; the game box's screenshot shows exactly `046C`).
+- **Focus discipline**: `document.activeElement` = `INPUT:ime` exactly during the text-entry state
+  (focused on the `EpilepsyWarning → ETLPNewBoot` edge), `BODY` everywhere else (blurred on the
+  `ETLPNewBoot → SMain` exit edge — no stray focused input swallowing the game's keys).
+- **The synthetic composition** (the `e64:` base64 dispatch, the phone `--phone` run): a
+  compositionstart + `insertCompositionText` + compositionend + the post-commit `insertText` tail
+  committed the name EXACTLY once (no double, no corruption).
+- **The F33 hit-test property (the task's acceptance)**: in the game state (LevelSelection →
+  Enter → `game`), `document.elementFromPoint` at the RotateCW center returns the CANVAS
+  (`rotateCwHit: "c"`) — nothing at that corner intercepts the right-thumb rotation — while `#fs`
+  is `display: none`; the `ohstatechange` edge fired exactly once on the transition (the DOM
+  keylog's line), not per frame. In the menu states the button is `display: block`, 44×44, 12px
+  from the bottom-right corner, and hit-tests to ITSELF (`selfHit: "fs"` — clickable).
+- **The F33 toggle wiring (both directions)**: a synthetic `#fs.click()` → the
+  `[oh-web-fs] fullscreen -> true (browser: requestFullscreen() called …)` console line (the
+  config toggle + the API call); a second click → `[oh-web-fs] fullscreen -> false (browser:
+  exitFullscreen() called (fullscreen_enabled=true))`.
+- **A real fullscreen transition** (when the headless CDP grants the transient user activation —
+  observed run-dependent: an immediate click after CDP key inputs): `document.fullscreenElement`
+  set, the `html:fullscreen` CSS flip (the button's opacity 0.55→0.8), and the canvas's real-size
+  path handled the fullscreen viewport change (the 025g class: the backing store re-sized
+  1280→800×800, the `backing == css × dpr` invariant held); the game-state hit-test property held
+  in the fullscreen size too. When the CDP does NOT grant the activation, the `requestFullscreen`
+  Promise rejects (`TypeError: Permissions check failed` console line) — the task's honest limit,
+  now observable either way.
+- **The desktop is unregressed**: the desktop (blurred `#ime`) keydown path is byte-identical to
+  issue 32 (the `web_keydown_ime_policy`'s desktop-blurred arm, host-tested); the host gate stayed
+  green (5/5: fmt, build, clippy `-D warnings`, workspace tests, lua-parity) before each commit.
+
+### What remains unproven without the operator's phone (the last word)
+
+1. **The soft keyboard itself cannot be raised headlessly** (no CDP API for it). The operator's
+   phone test: open the web build in Chrome on the phone, press any key through the boot to
+   `ETLPNewBoot` (the "new profile" screen), and TAP the name field area — the Android soft
+   keyboard should RAISE (the `#ime`'s `focus` on the `is_entering_text` edge), and typing a name +
+   the keyboard's "Done"/enter should create the profile and land on `SMain`. The probe verified
+   every layer short of the keyboard's own raise (the focus, the `input`-event path, the commit,
+   the profile creation); the keyboard's raise is the OS's half of the `focus()` call.
+2. **The `requestFullscreen` transient user activation** is granted by a real tap (the operator's
+   finger) and flaky headlessly. The operator's tap on the bottom-right `⛶` button should:
+   fullscreen the page (the canvas fills the screen, the button brightens — the `html:fullscreen`
+   flip), and a second tap (or Esc / the Android back) exits (the button returns to its subtle
+   look, the config value toggled each time — the single source of truth).
+3. **The desktop's `fullscreen` config non-application** (the FINDING) is recorded, not fixed — a
+   separate item (the winit window's recreation).
+
+### Boundaries respected
+
+Web only: `crates/oh-web/` (the `#ime` + `#fs` shell + the gate JS), the `windowed` edge hooks
+(`oh-app/src/windowed.rs` — the `WebIme` `SoftInput`, the click sink, the `ohstatechange` edge),
+`crates/oh-render/src/window.rs` (the `#ime` / `#fs` get-or-create, the listeners, the
+`BatchPresses`, the sinks), `crates/oh-app/Cargo.toml` + `crates/oh-render/Cargo.toml` (the
+emscripten `web-sys` features), `tools/web-probe.mjs` (the probe's `--seq` / `--phone` /
+`#ime`+`#fs` observables). The Android path is UNTOUCHED (025f works — the operator is comparing
+against it). No C++-faithful semantics changed for non-text states. The wasm built in the emsdk
+podman container; the host gate green before each commit; explicit-path staging (no `git add -A`);
+every process `timeout`-bounded.

@@ -135,6 +135,34 @@ gilrs = "0.11"
 # asset_manager()` returns this crate's `AssetManager` directly.
 ndk = "0.9"
 
+[target.'cfg(target_os = "emscripten")'.dependencies]
+# issue 046 (F32) — the web `SoftInput` controller (`src/windowed.rs`
+# `WebIme` — the 025f `ImeController`'s web twin): the page's
+# hidden-but-focusable `#ime` input element's focus / blur on the menu's
+# `is_entering_text` transition edge. The element + its attribute contract
+# live in `oh-render`'s emscripten `Window` (the `web_ime_input` accessor
+# this crate's `client.rs` emscripten arm reads); here only the controller
+# (the `HtmlInputElement` field type + the `focus_with_options` / `blur`
+# calls — the `HtmlElement` methods over the `HtmlInputElement` class).
+# issue 046 (F33) — the fullscreen button's (`#fs`) click sink (the
+# `WindowedClient::build`'s emscripten half — the config's `fullscreen`
+# toggle + the browser Fullscreen API's apply): `Window` / `Document`
+# (the `document()` + the `documentElement` + the `exitFullscreen` +
+# the `fullscreenEnabled` read + the `ohstatechange`'s `dispatch_event`
+# — the `EventTarget` the `Document` derefs to, the transitive feature)
+# + `Element` (the `documentElement`'s `requestFullscreen`) + `Event`
+# (the `ohstatechange`'s `Event::new` — the menu <-> game transition
+# edge's DOM signal, the shell's `#fs` visibility gate's listener).
+web-sys = { version = "0.3.106", features = [
+  "HtmlInputElement",
+  "HtmlElement",
+  "FocusOptions",
+  "Window",
+  "Document",
+  "Element",
+  "Event",
+] }
+
 [features]
 # Issue 020: the real Steam backend (the C++'s `#ifndef SSVOH_ANDROID`
 # build — links the official loader stub via `steamworks-sys`; degrades
