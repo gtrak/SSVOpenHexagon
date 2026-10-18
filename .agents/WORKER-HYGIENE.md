@@ -185,9 +185,14 @@ C++ extlib source from its own worktree, and any citation of one (e.g. `GameWind
 unverifiable there.
 
 Two consequences, both mechanical:
-- **Verify extlib citations in the MAIN checkout** (`/home/gary/dev/SSVOpenHexagon/cpp-original/...`),
-  which is the tree the orchestrator and citations refer to; if you genuinely need them locally, run
-  `git submodule update --init cpp-original/extlibs/<name>` and say so.
+- **Not everything is empty — check before concluding.** Measured: `SSVStart` IS populated in the main
+  checkout (9 entries) while `SFML` is NOT (0).
+- **For the PINNED sources, the oracle's dep cache is the authoritative copy**: CPM fetches the exact
+  `GIT_TAG` the C++ pins into `~/.cache/ohoracle-deps/<name>-fork/` (e.g. `sfml-fork` pinned at
+  `dacceddbd…` by `cpp-original/CMakeLists.txt`). Cite THAT for parity claims — a submodule checkout
+  can sit at a different ref than the pinned one, which is how the register's K2 row came to name SFML
+  pin `2f11710` when the real pin was `dacceddbd` (lane 049 corrected it). If neither copy exists, run
+  `git submodule update --init cpp-original/extlibs/<name>` and say so in the report.
 - **Never assert a citation you could not read.** Lane 047 did this correctly and it is the model: it
   fixed the behaviour from the C++ code it COULD read (`main.cpp:306`, `Config.cpp:639`) and explicitly
   marked the extlib citation as "the spec's citation, not independently verifiable here". A citation
