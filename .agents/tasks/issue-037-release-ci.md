@@ -95,3 +95,32 @@ report); `cargo fmt` if you touch Rust; bound every process with `timeout`; at m
 image read (you probably need none); append a `## Report` to this file with the workflow
 structure, the per-job evidence, the signing/Pages settings the operator must set, and the
 unverified list.
+
+## Addendum (operator, same session): REDO CI FROM SCRATCH
+
+Operator, verbatim: *"redo CI from scratch, the stuff that's there is probably old c++."*
+Their read is correct: `.github/workflows/ci_linux.yml` and `ci_windows.yml` are the **upstream
+C++ project's** workflows (ninja + msys2 + ccache, pointed at the root `CMakeLists.txt` and
+`build/`). They are obsolete for the port, and about to be doubly so because lane 038 is
+archiving the whole C++ tree into `cpp-original/` in parallel.
+
+Lane 037 therefore owns `.github/` entirely for this session (lane 038 is explicitly barred
+from it), and its scope is now one coherent set:
+
+1. **DELETE** `ci_linux.yml` and `ci_windows.yml`. Do not port the C++ build forward — the C++
+   is the archived reference, verified locally through the container oracle, not a shipped
+   artifact.
+2. **REPLACE `rust.yml` with a fresh `ci.yml`**, as parallel jobs: `gate` (matrix ubuntu +
+   windows → `tools/gate.sh`, with libudev for gilrs on Linux), `windows-cross`
+   (`tools/build-windows.sh --check` — **the job that just proved its worth** by being the only
+   thing that could see the `sigint.rs`/`libc::write` regression that left master Windows-red
+   for several landings), `android` (a fast `cargo check` for `aarch64-linux-android` with the
+   NDK pin), `wasm` (the emscripten build), and optionally a `workflow_dispatch`-only `oracle`
+   job if it can be bounded (if not, omit it and say why — a job that times out is worse than
+   no job).
+3. The release workflow stays as specced, plus the approved `sigint.rs` fix.
+
+**One source of truth for every command.** The CI jobs and the release workflow must invoke
+the same `tools/` scripts, and any command that exists only inline in a workflow gets extracted
+into a script. Command drift between a local run and CI is precisely how the Windows hole
+happened: a check that only ever ran on GitHub.
