@@ -39,6 +39,19 @@ cd "$(dirname "$0")/.."
 # The NDK toolchain (PATH + the CC/AR env for the C builds).
 . tools/android-env.sh
 
+# The rustup target the APK builds against — the same self-install check
+# tools/check-android.sh and tools/package-web.sh carry: a fresh runner
+# has only the host target, and without this the build dies as E0463
+# "can't find crate for `core`" (issue 045, run 39103410548 — the android
+# job had never run on a runner, so only locally-preinstalled targets had
+# masked it). Default ABI per the metadata pin (aarch64-linux-android);
+# an OH_APK_TARGET override installs the overridden target instead.
+APK_TARGET="${OH_APK_TARGET:-aarch64-linux-android}"
+if ! rustup target list --installed | grep -qx "$APK_TARGET"; then
+    echo "== installing rustup target $APK_TARGET"
+    rustup target add "$APK_TARGET"
+fi
+
 if ! command -v cargo-apk >/dev/null 2>&1; then
     echo "cargo-apk not found on PATH — install it with: cargo install cargo-apk" >&2
     exit 1
