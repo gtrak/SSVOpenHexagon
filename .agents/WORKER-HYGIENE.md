@@ -154,6 +154,16 @@ not context exhaustion and not a token budget. The evidence trail, in order:
    `grep -c -i compact` — **zero markers means compaction never succeeded**, which
    is the real signal (cumulative token totals are *not* — they are re-sent context
    per turn, so 20M+ is normal for a long lane).
+
+   **Scope — this is the DEAD-lane test.** Zero markers on a lane that is still
+   RUNNING means only that it never needed to compact, which is the healthy case,
+   not a finding. For a LIVE lane read the **window**, not the total: the last few
+   `usage` blocks in the child's session.jsonl carry `input`. Lane 043 at 102 turns
+   measured 118048 / 118390 / 121150 input tokens per turn with zero compaction
+   events — its 6M total is 102 turns of re-sent context, and it is healthy while
+   `input` sits below the model's window. It becomes the §9 pathology only when
+   `input` pins at the ceiling and stays there with no compaction.
+
 3. `~/.pi/agent/settings.json`: `compaction.model` names the server that does the
    summarizing. Here it is deliberately `desktop/desktop` — a **remote
    workstation**, chosen so long prefills don't block the local worker model.
