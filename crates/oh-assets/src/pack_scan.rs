@@ -139,8 +139,22 @@ mod tests {
         // `.json` is case-sensitive: `c.JSON` and `note.txt` are excluded.
         // Byte-wise: 'A' (0x41) < 'a' (0x61) < 'b' (0x62) — matches C++
         // `std::sort` on the path strings.
+        //
+        // Windows: the filesystem is case-INsensitive — `a.json` cannot
+        // coexist with `A.json` (the write above opens the same file, the
+        // entry keeps its first-seen case), so only one of the pair is
+        // enumerable. What the scan contract CAN express on Windows is
+        // still asserted: the case-sensitive EXTENSION filter (no
+        // `c.JSON` / `note.txt`) + the byte-wise sort of what exists.
         let got = scan_single_by_ext(&root, "Levels/", ".json");
-        assert_eq!(got, vec!["Levels/A.json", "Levels/a.json", "Levels/b.json"]);
+        #[cfg(windows)]
+        {
+            assert_eq!(got, vec!["Levels/A.json", "Levels/b.json"]);
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(got, vec!["Levels/A.json", "Levels/a.json", "Levels/b.json"]);
+        }
         let _ = fs::remove_dir_all(&root);
     }
 
