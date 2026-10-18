@@ -166,3 +166,18 @@ problem). A 2026-10-17 investigation burned ~10 tool calls on KV-exhaustion and
 model-name theories before this; the layout (localhost = worker sglang, remote
 desktop = compaction) is intentional and should not be "fixed" by pointing
 compaction at the local model — that steals prefill from the workers.
+## 10. The orchestrator pushes to origin at milestones (operator directive, 2026-10-17)
+
+Operator: *"run git push from now on at milestones."* The orchestrator pushes `master` to
+`origin` as milestones close (a landing, a batch of fixes, a release), instead of letting the
+remote drift dozens of commits behind the work. Consequences worth knowing:
+
+- **The remote CI actually runs.** `ci.yml`/`release.yml` are per-push/tag workflows, so pushing
+  is what tells us whether they work at all — a repo whose CI has never run is a repo whose CI is
+  unverified, and this project has already been burned by that (a Windows-red master survived
+  several landings because nothing was gating).
+- **Lane branches stay local.** A lane's branch is a working branch landed by the orchestrator;
+  pushing those is clutter, not a record. Push `master` (and deliberately, `gh-pages` for the web
+  page). The landed commit on `master` is the record.
+- **Push after verifying, not before.** The gate result and the branch state are what make a
+  milestone a milestone; pushing a red tree just publishes the red.
