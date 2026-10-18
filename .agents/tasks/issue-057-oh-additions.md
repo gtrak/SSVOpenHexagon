@@ -87,3 +87,32 @@ baseline, and a plain statement of what you deliberately did NOT move and why.
 A short section at the end of the report: "where the operator's improvements will go" — one or two lines
 saying that new additions land in `oh-additions` under the contract above, so the next conversation has a
 door to walk through.
+
+## SCOPE CORRECTION (operator, after this lane began): additions, NOT just UI
+
+Verbatim: *"not just ui by the way. i might add some more things like synth music and slomo or zen
+mode."* So `oh-additions` is the home for **everything the C++ does not have**, of which UI is only the
+first family. Name these in the crate's docs (without building empty modules for them): **UX/UI** · **modes
+and features** (slomo, zen) · **platform affordances** · **content/audio generation** (e.g. synthesized
+music instead of shipped third-party tracks).
+
+THE CONTRACT GENERALISES — write this version into the crate's docs, because it is what makes features
+possible without forking the port:
+
+> Our layer may **drive the ported code through the knobs the C++ already has** — the config, the
+> binds/input state, and the seams — may **draw over** it, and may **own platform affordances**. It may
+> not edit the ported simulation or menu logic; only FIXES (correct ports of the C++'s own behaviour)
+> stay inside.
+
+This is the F36 precedent stated generally: invoking the original's own action is what keeps a feature an
+ADDITION rather than a fork. The operator's examples already have C++ knobs to drive — `timescale` for
+slomo and `invincible` for zen are EXISTING config values, and a synthesizer belongs behind
+`seams::Audio`, i.e. our code attached at a seam like the audio and Steam backends.
+
+AND ONE MORE RULE FOR THE CRATE'S DOCS, which is the acceptance for any RUN-AFFECTING addition: **an
+addition that changes what happens in a run must be driven through RECORDED INPUTS (so the replay
+reproduces the run) or through config — never through silent state.** A slomo or zen toggle nobody records
+would diverge a replay, and the port's determinism tests would catch it; the docs should hand that
+constraint forward instead of leaving it to be rediscovered.
+
+The classification table's "OURS" category therefore means "additions", not "UI".

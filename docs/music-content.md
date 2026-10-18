@@ -111,3 +111,20 @@ repo + release artifacts; (3) the credits — already in the shipped metadata
 its last push was 2022-08-23, so pin what is fetched (commit or dated snapshot) and
 record the URL + date beside the audio, as the SFX licence file already does for the
 seven named sound effects.
+
+## Option E — added 2026-10-18 on the operator's suggestion: **synthesize our own music**
+
+The operator's new direction for `oh-additions` named "synth music" as one of the things they might add.
+That is a genuinely different answer to this whole brief: a soundtrack WE generate is **our own original
+work**, so no third-party terms apply at all — the licensing question above simply does not arise, and
+neither does the 62 MB download or the Steam-EULA ambiguity.
+
+It is also a DIFFERENT soundtrack: it would not be the original's music, so a player who wants *Open
+Hexagon's* tracks still needs option A or D. What it does buy is a game that has music by default, with a
+provenance we own.
+
+Mechanically it fits where the port already has a seam: the audio path is a sink (`seams::Audio` /
+`seams::AudioImpl`), exactly like the Steam and network sinks, so a synthesizer is "our code attached at a
+seam" rather than a change to the ported audio logic. It belongs in `oh-additions` under that crate's
+contract (see `.agents/tasks/issue-057-oh-additions.md`), with the added rule that anything affecting a RUN
+must be driven through recorded inputs or config, never silent state.
