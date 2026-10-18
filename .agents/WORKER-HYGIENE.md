@@ -66,6 +66,18 @@ red tree for the next lane.
   the recipe in `tools/`-adjacent notes) or `--target aarch64-linux-android`. Landing
   such a change without it means the next person discovers it, usually in the target the
   operator actually wants.
+- **The host gate is not a WINDOWS gate either.** `tools/gate.sh` compiles the HOST
+  only, so an error that exists solely under `#[cfg(windows)]` is invisible to
+  fmt/build/clippy/test — even to a fully green four-stage gate. Real case: 29o1's
+  `crates/oh-app/src/sigint.rs` passed `bytes.len()` (`usize`) to `libc::write`, whose
+  count is `c_uint` on Windows targets; master was therefore RED for the Windows target
+  for several landings, and the only thing that ever saw it was lane 037 attempting the
+  release CROSS-BUILD. Run **`bash tools/build-windows.sh --check`** (the mingw
+  cross-check that `rust.yml` runs in CI) before landing anything that touches
+  platform-gated code, `libc`/FFI signatures, signal handlers, or target-specific paths.
+  The general rule: **a target you do not compile is a target you are not testing** —
+  which is why Android and wasm are built in their own lanes' verification too (and why
+  the emscripten paths are built before anything is claimed about them).
 
 ## 5. Stop-and-report beats grinding
 
