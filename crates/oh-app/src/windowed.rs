@@ -1639,9 +1639,16 @@ impl GameState for GameSlotAdapter {
         // record sees the same derived bits). The console gate mirrors
         // the C++'s `updateInput`'s `imguiLuaConsoleHasInput()` early
         // return (the game's own touch controls are gated the same
-        // way). The `Exit` edge's fire is the C++'s notInConsole-
-        // wrapped Escape binding (once per physical press, the menu's
-        // `go_to_menu(true, false)` contract — 029d1).
+        // way). The ACTION buttons' edges (issue 039 F31 — the
+        // `Tid::Exit` / `Tid::Replay` / `Tid::Restart` / `Tid::Pause`
+        // binds' observables, HexagonGame.cpp:385-441) fire once per
+        // physical press under the action gate (the whole game state —
+        // the gameplay / action class split of the overlay's two gates,
+        // the C++'s `Type::Once` per-frame poll); the console-gating
+        // follows the C++'s `notInConsole` wrappers — the `Tid::Pause`
+        // bind is the ungated one (HexagonGame.cpp:421-441), its menu's
+        // `go_to_menu(true, false)` contract the `Tid::Exit` bind's
+        // (029d1).
         {
             let mut o = self.touch_overlay.write().expect("touch overlay poisoned");
             if o.active() && o.enabled() && !self.game.lua_console_has_input() {
@@ -1658,10 +1665,26 @@ impl GameState for GameSlotAdapter {
                     self.game.set_input_swap(true);
                 }
             }
+            // The action edges (F31): taken unconditionally (the
+            // pending edges drain every frame — the C++'s `Type::Once`
+            // per-frame poll; an edge whose class gate is off at the
+            // take is dropped, never deferred), applied under the
+            // action gate.
             let edges = o.take_press_edges();
-            if edges[crate::touch_overlay::Button::Exit.idx()] && !self.game.lua_console_has_input()
-            {
-                self.game.trigger_go_to_menu();
+            if o.action_active() && o.enabled() {
+                let console = self.game.lua_console_has_input();
+                if edges[crate::touch_overlay::Button::Exit.idx()] && !console {
+                    self.game.trigger_go_to_menu();
+                }
+                if edges[crate::touch_overlay::Button::Replay.idx()] && !console {
+                    self.game.trigger_replay();
+                }
+                if edges[crate::touch_overlay::Button::Restart.idx()] && !console {
+                    self.game.trigger_restart();
+                }
+                if edges[crate::touch_overlay::Button::Pause.idx()] {
+                    self.game.trigger_pause();
+                }
             }
         }
     }
@@ -3731,6 +3754,15 @@ impl WindowedClient {
                     && !status.has_died
                     && !game.in_replay(),
             );
+            // issue 039 (F31) — the action buttons' gate: the whole
+            // GAME state (playing + the `has_died` results screen + the
+            // replay playback — the C++'s `Tid::Exit` / `Tid::Restart`
+            // / `Tid::Replay` / `Tid::Pause` binds' reachability,
+            // HexagonGame.cpp:385-441; deliberately WITHOUT the
+            // `!game.in_replay()` half — the replay playback's exit /
+            // restart / replay is the C++'s `in_replay`'s skip-and-
+            // re-fire and must stay reachable on touch).
+            o.set_action_active(engine.current() == GameSlot::Game && status.started);
             o.set_view(view_w, view_h);
             for (i, (prev, cur)) in last.iter().zip(positions.iter()).enumerate() {
                 let id = i as u32;
@@ -3795,22 +3827,28 @@ impl WindowedClient {
             let mut target = GlDrawTarget::new(gl)
                 .with_provider(Arc::new(AssetsPackShaderProvider::new(assets.clone())));
             engine.draw(&mut target);
-            // issue 31 — the overlay's buttons (the §2.5 layout: only
-            // while playing — the gate's draw half; after the game's
-            // draw, before the console's paint — a dev overlay may
-            // cover the controls, the controls must not cover the
+            // issue 31 + issue 039 F31 — the overlay's buttons (the §2.5
+            // layout: the GAMEPLAY buttons only while playing — the
+            // gate's draw half; the F31 ACTION row (exit / replay /
+            // restart / pause) under the action gate — the whole game
+            // state, the game-over screen's controls) — after the
+            // game's draw, before the console's paint — a dev overlay
+            // may cover the controls, the controls must not cover the
             // game). The buttons live in the VIEW's pixel space (the
             // 025g lesson) — the `draw`'s 1:1 view; the ON state is the
             // button's held state (the C++'s `drawKeyIcons`'s opacity
-            // pair, the module docs).
+            // pair, the module docs); the per-class visibility is the
+            // `draw`'s own (the `active` / `action_active` halves).
             {
                 let o = touch_overlay.read().expect("touch overlay poisoned");
                 // The draw's gate = the operational gate (spec §5's
-                // "a pointer feed exists" + an enable flag + the
-                // gameplay-only half): a disabled overlay (the desktop —
-                // §4.4: no overlay, no behavior change) draws nothing
-                // even when the gameplay gate alone would pass.
-                if o.active() && o.enabled() {
+                // "a pointer feed exists" + an enable flag) + EITHER
+                // class's gate (the F31 half: the game-over screen's
+                // action row draws while the gameplay row does not —
+                // a disabled overlay (the desktop — §4.4: no overlay,
+                // no behavior change) draws nothing even when a gate
+                // alone would pass).
+                if o.enabled() && (o.active() || o.action_active()) {
                     let (view_w, view_h) = render_size.get();
                     touch_overlay_buttons.borrow_mut().draw(
                         &mut target,

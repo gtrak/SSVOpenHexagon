@@ -3027,6 +3027,18 @@ impl MenuGame {
         // MenuGame.cpp:2198). Outside the `borrow_mut` block above: the
         // action methods re-borrow `shared`.
         let touch = self.shared.borrow().touch().clone();
+        // issue 039 s1 — the per-dispatch device diagnostic (the
+        // `adb logcat -s OpenHexagon` half; the C++'s grid is per-frame
+        // — ONE dispatch per frame while `getFingerDownCount() == 1`
+        // holds — so a held finger's dispatch count IS the held-frame
+        // count; the line is the count's instrument, issue 026's
+        // evidence-path class, the s3 audio-log's twin).
+        let grid_log = |zone: &str, p: &oh_math::ssvs::Vec2| {
+            eprintln!(
+                "[oh-menu] grid dispatch zone={zone} pos=({:.0},{:.0})",
+                p.x, p.y
+            );
+        };
         if touch.finger_down_count() == 1 {
             let (w, h) = self.window_size();
             let w_third = w / 3.0;
@@ -3036,16 +3048,21 @@ impl MenuGame {
             for p in touch.finger_down_positions() {
                 if p.y > h_third && p.y < h_lt {
                     if p.x > 0.0 && p.x < w_third {
+                        grid_log("left", &p);
                         self.left_action();
                     } else if p.x < w && p.x > w_lt {
+                        grid_log("right", &p);
                         self.right_action();
                     } else if p.x > w_third && p.x < w_lt {
+                        grid_log("ok", &p);
                         self.ok_action();
                     }
                 } else {
                     if p.y < h_third {
+                        grid_log("up", &p);
                         self.up_action();
                     } else if p.y > h_lt {
+                        grid_log("down", &p);
                         self.down_action();
                     }
                 }

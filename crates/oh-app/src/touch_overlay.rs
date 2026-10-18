@@ -103,18 +103,39 @@ pub enum Button {
     RotateCCW,
     /// The rotation-CW input (the C++ touch control's right screen half).
     RotateCW,
+    /// issue 039 (F31) — the C++ `Tid::Replay` body (HexagonGame.cpp:
+    /// 399-407 — `MustReplay`, the `death_input_ignore` + `has_died`
+    /// gate / the `in_replay` half): the game-over screen's "PRESS Y TO
+    /// REPLAY" affordance. Edge-triggered (the C++'s `Type::Once`).
+    Replay,
+    /// issue 039 (F31) — the C++ `Tid::Restart` body (HexagonGame.cpp:
+    /// 389-397 — `MustRestart`, the `death_input_ignore <= 0 && has_died`
+    /// gate): the game-over screen's "PRESS SPACE ... TO RESTART"
+    /// affordance. Edge-triggered.
+    Restart,
+    /// issue 039 (F31) — the C++ `Tid::Pause` body (HexagonGame.cpp:
+    /// 421-441 — the DEBUG-gated `debugPause` toggle: a no-op in the
+    /// release build, exactly as the keyboard's `F2` is; the button
+    /// carries the bind's reachability, not a behaviour the keyboard
+    /// lacks). Edge-triggered, and — like the C++'s `Tid::Pause` bind —
+    /// NOT console-gated (its sibling `Tid::Restart` / `Tid::Replay`
+    /// binds ARE `notInConsole`-wrapped, HexagonGame.cpp:385-407).
+    Pause,
 }
 
 impl Button {
     /// The fixed order (the hit-test priority when the view is too
     /// small for the rectangles to be disjoint + the `held` /
     /// `press_edges` array indices).
-    pub const ALL: [Button; 5] = [
+    pub const ALL: [Button; 8] = [
         Self::Exit,
         Self::RotateCCW,
         Self::RotateCW,
         Self::Focus,
         Self::Swap,
+        Self::Replay,
+        Self::Restart,
+        Self::Pause,
     ];
 
     /// The `ALL` index (the `held` / `press_edges` / `consumed` array
@@ -126,7 +147,24 @@ impl Button {
             Self::RotateCW => 2,
             Self::Focus => 3,
             Self::Swap => 4,
+            Self::Replay => 5,
+            Self::Restart => 6,
+            Self::Pause => 7,
         }
+    }
+
+    /// issue 039 (F31) — the button's CLASS: the `action` buttons
+    /// (`Exit` / `Replay` / `Restart` / `Pause`) answer to the
+    /// `action_active` gate (the whole game state — playing, game-over
+    /// and replay playback: the keyboard binds' reachability, the C++
+    /// HexagonGame.cpp:385-441), the `gameplay` buttons (`RotateCCW`
+    /// / `RotateCW` / `Focus` / `Swap`) to the `active` gate (playing
+    /// only — the spec §2.4/§2.5 half).
+    pub const fn is_action(self) -> bool {
+        matches!(
+            self,
+            Self::Exit | Self::Replay | Self::Restart | Self::Pause
+        )
     }
 }
 
@@ -143,23 +181,35 @@ const BUTTON_HALF: f32 = 32.0;
 /// `padding = 8 * scaling` — the buttons must not touch the edge).
 const PAD: f32 = 12.0;
 /// The focus / swap center-to-center gap (the two 64px buttons sit
-/// bottom-middle, 80px apart — 16px clear between the rectangles).
+/// bottom-middle, 80px apart — 16px clear between the rectangles). The
+/// F31 action trio reuses the gap at the TOP (the `Replay` / `Restart`
+/// pair top-middle, `Pause` top-right): the layout's two rows — the
+/// gameplay row at the bottom (the two thumbs), the action row at the
+/// top.
 const MIDDLE_GAP: f32 = 80.0;
 
-/// The five button centers (view pixel space — the spec §5 "map pointer
-/// coordinates to the overlay in the VIEW's space"): two-thumbs — the
-/// rotations at the bottom corners (left thumb → CCW, right thumb → CW:
-/// the C++'s screen-half rotation's spatial meaning preserved), the
-/// focus / swap at the bottom middle (either thumb), the exit at the
-/// top-left (the action area stays clear).
+/// The eight button centers (view pixel space — the spec §5 "map
+/// pointer coordinates to the overlay in the VIEW's space"): the
+/// action row on top (the F31 trio + the exit at the top-left), the
+/// gameplay row at the bottom (two-thumbs — the rotations at the bottom
+/// corners (left thumb → CCW, right thumb → CW: the C++'s screen-half
+/// rotation's spatial meaning preserved), the focus / swap at the bottom
+/// middle (either thumb), the exit at the top-left (the action area
+/// stays clear)).
 #[must_use]
-pub fn button_centers(w: f32, h: f32) -> [Vec2; 5] {
+pub fn button_centers(w: f32, h: f32) -> [Vec2; 8] {
     [
         Vec2::new(PAD + BUTTON_HALF, PAD + BUTTON_HALF), // Exit — top-left
         Vec2::new(PAD + BUTTON_HALF, h - PAD - BUTTON_HALF), // RotateCCW — bottom-left
         Vec2::new(w - PAD - BUTTON_HALF, h - PAD - BUTTON_HALF), // RotateCW — bottom-right
         Vec2::new(w * 0.5 - MIDDLE_GAP * 0.5, h - PAD - BUTTON_HALF), // Focus
         Vec2::new(w * 0.5 + MIDDLE_GAP * 0.5, h - PAD - BUTTON_HALF), // Swap
+        // issue 039 (F31) — the action row (top): the `Replay` /
+        // `Restart` pair top-middle (the focus / swap x's), `Pause`
+        // top-right (the `RotateCW` mirror).
+        Vec2::new(w * 0.5 - MIDDLE_GAP * 0.5, PAD + BUTTON_HALF), // Replay
+        Vec2::new(w * 0.5 + MIDDLE_GAP * 0.5, PAD + BUTTON_HALF), // Restart
+        Vec2::new(w - PAD - BUTTON_HALF, PAD + BUTTON_HALF),      // Pause
     ]
 }
 
@@ -178,12 +228,24 @@ pub struct TouchOverlay {
     /// provides the feed; a disabled overlay ignores every event and
     /// reports nothing held).
     enabled: bool,
-    /// The gameplay-only gate (spec §2.4/§2.5: the buttons only while
-    /// playing — the composition sets it per frame from the game status;
-    /// deactivation clears every capture + held flag + edge, so a finger
-    /// on a button at the state's end leaves no stuck input for the
-    /// next session).
+    /// The gameplay-only gate (spec §2.4/§2.5: the gameplay buttons —
+    /// the rotations / focus / swap — only while playing: the
+    /// composition sets it per frame from the game status; deactivation
+    /// clears every GAMEPLAY capture + held flag + edge, so a finger on
+    /// a button at the state's end leaves no stuck input for the next
+    /// session).
     active: bool,
+    /// issue 039 (F31) — the action-button gate (the `Exit` / `Replay`
+    /// / `Restart` / `Pause` buttons): the whole GAME state — playing,
+    /// game-over (the `has_died` results screen) and replay playback:
+    /// the C++'s `Tid::Exit` / `Tid::Restart` / `Tid::Replay` /
+    /// `Tid::Pause` keyboard binds stay live in every one of those
+    /// states (HexagonGame.cpp:385-441), so the touch affordance does
+    /// too. Deactivation clears the ACTION captures / held flags /
+    /// edges (the `active` half's clears never touch this class, and
+    /// vice versa — the two gates' clears are class-scoped, the
+    /// `clear_class` half).
+    action_active: bool,
     view_w: f32,
     view_h: f32,
     /// Pointer capture (spec §5): a `Down` hit on a button binds the
@@ -193,11 +255,11 @@ pub struct TouchOverlay {
     captured: HashMap<u32, Button>,
     /// The per-button held state (the §2b refcount: a button is held iff
     /// ≥1 captured pointer maps to it).
-    held: [bool; 5],
-    /// The press edges since the last `take_press_edges` (the `Exit`
-    /// affordance's fire — once per physical press, the C++'s
-    /// notInConsole-wrapped Escape binding's observable).
-    press_edges: [bool; 5],
+    held: [bool; 8],
+    /// The press edges since the last `take_press_edges` (the action
+    /// buttons' fires — once per physical press, the C++'s `Type::Once`
+    /// binds' observable).
+    press_edges: [bool; 8],
 }
 
 impl TouchOverlay {
@@ -216,20 +278,55 @@ impl TouchOverlay {
     }
 
     /// The gameplay-only gate's per-frame refresh (spec §2.4/§2.5).
-    /// Deactivation clears every capture + held flag + pending edge —
-    /// the C++'s state-transition semantics (the dead game's held touch
-    /// must not leak into the next session's inputs).
+    /// Deactivation clears the GAMEPLAY captures + held flags + pending
+    /// edges (the class-scoped `clear_class` — the action buttons' state
+    /// is the `action_active` gate's, untouched here) — the C++'s
+    /// state-transition semantics (the dead game's held touch must not
+    /// leak into the next session's inputs).
     pub fn set_active(&mut self, active: bool) {
         if self.active && !active {
-            self.captured.clear();
-            self.held = [false; 5];
-            self.press_edges = [false; 5];
+            self.clear_class(false);
         }
         self.active = active;
     }
     #[must_use]
     pub fn active(&self) -> bool {
         self.active
+    }
+
+    /// issue 039 (F31) — the action-button gate's per-frame refresh (the
+    /// whole game state — the composition's `GameSlot::Game && started`
+    /// feed). Deactivation clears the ACTION captures + held flags +
+    /// pending edges (the class-scoped `clear_class` — the gameplay
+    /// buttons' state is the `active` gate's, untouched here).
+    pub fn set_action_active(&mut self, active: bool) {
+        if self.action_active && !active {
+            self.clear_class(true);
+        }
+        self.action_active = active;
+    }
+    #[must_use]
+    pub fn action_active(&self) -> bool {
+        self.action_active
+    }
+
+    /// The class-scoped deactivation clear (F31): drop this class's
+    /// captures, clear its held flags where no pointer still holds the
+    /// button (the §2b refcount), and drop its pending edges. A button
+    /// belongs to exactly ONE class, so the "other captured pointer
+    /// still holds it" test is over the whole (post-drop) capture map.
+    fn clear_class(&mut self, action: bool) {
+        self.captured.retain(|_, btn| btn.is_action() != action);
+        for btn in Button::ALL {
+            if btn.is_action() != action {
+                continue;
+            }
+            let i = btn.idx();
+            if !self.captured.values().any(|b| *b == btn) {
+                self.held[i] = false;
+            }
+            self.press_edges[i] = false;
+        }
     }
 
     /// The view size's per-frame refresh (spec §5: the view's space, not
@@ -244,7 +341,7 @@ impl TouchOverlay {
     /// overlay (or a pre-`set_view` zero view) ignores the event — the
     /// spec §2.4 "must not fire during menus" + §5 gate.
     pub fn pointer_event(&mut self, ev: &PointerEvent) {
-        if !self.enabled || !self.active || self.view_w <= 0.0 || self.view_h <= 0.0 {
+        if !self.enabled || self.view_w <= 0.0 || self.view_h <= 0.0 {
             return;
         }
         match ev.phase {
@@ -257,6 +354,21 @@ impl TouchOverlay {
                 let Some(btn) = Self::hit_test(ev.position, self.view_w, self.view_h) else {
                     return; // no button under the pointer — not consumed
                 };
+                // issue 039 (F31) — the per-class gate: a gameplay
+                // button only while the `active` gate is on (spec
+                // §2.4/§2.5 — "must not fire during menus"), an action
+                // button only while the `action_active` gate is on (the
+                // whole game state — the C++'s keyboard binds'
+                // reachability, HexagonGame.cpp:385-441). A `Down` on
+                // a button whose class is off is NOT consumed.
+                let gated = if btn.is_action() {
+                    self.action_active
+                } else {
+                    self.active
+                };
+                if !gated {
+                    return;
+                }
                 self.captured.insert(ev.id, btn);
                 if !self.held[btn.idx()] {
                     self.held[btn.idx()] = true;
@@ -303,11 +415,12 @@ impl TouchOverlay {
     }
 
     /// The press edges since the last take (the composition consumes
-    /// the `Exit` edge — one fire per physical press).
+    /// the action buttons' edges — one fire per physical press, the
+    /// C++'s `Type::Once` binds' observable).
     #[must_use]
-    pub fn take_press_edges(&mut self) -> [bool; 5] {
+    pub fn take_press_edges(&mut self) -> [bool; 8] {
         let edges = self.press_edges;
-        self.press_edges = [false; 5];
+        self.press_edges = [false; 8];
         edges
     }
 
@@ -345,6 +458,14 @@ pub struct TouchOverlayButtons {
     focus: Sprite,
     swap: Sprite,
     exit: Text,
+    /// issue 039 (F31) — the action trio's labels (no C++ key-icon
+    /// texture exists for replay / restart / pause — the `Exit` label's
+    /// text affordance, the game's font; 16 pt: the 64 px box fits
+    /// `PAUSE` / `REPLAY`, and `RESTART` overflows it by a couple of
+    /// px (the label is centred on the button, the overflow reads)).
+    replay: Text,
+    restart: Text,
+    pause: Text,
 }
 
 impl TouchOverlayButtons {
@@ -365,6 +486,17 @@ impl TouchOverlayButtons {
             rotate_cw: Sprite::new(rotate),
             focus: Sprite::new(focus_tex),
             swap: Sprite::new(swap_tex),
+            // issue 039 (F31) — the action trio (the `Tid::Replay` /
+            // `Tid::Restart` / `Tid::Pause` affordances' labels; the
+            // button IS the input, so the label is the bind's NAME —
+            // the end-of-level hint's "PRESS REPLAY TO REPLAY" reads
+            // the same vocabulary, the Android hint half's F31 line).
+            // `Font` is not `Copy`: the label texts take ownership, so
+            // the shared handle is cloned for the trio and moved into
+            // the last label (`exit` — the literal's order is free).
+            replay: Text::new(font.clone(), "REPLAY", 16),
+            restart: Text::new(font.clone(), "RESTART", 16),
+            pause: Text::new(font.clone(), "PAUSE", 16),
             // The §2.6 affordance's label: the game's font, the C++'s
             // key-icon off-opacity (it is an action, not a hint).
             exit: Text::new(font, "MENU", 20),
@@ -410,6 +542,17 @@ impl TouchOverlayButtons {
         };
         let centers = button_centers(view_w, view_h);
 
+        // issue 039 (F31) — the per-class visibility: the gameplay row
+        // (the rotations / focus / swap) only under the `active` gate
+        // (playing only — the spec §2.4/§2.5 half), the action row
+        // (the exit + the replay / restart / pause trio) only under the
+        // `action_active` gate (the whole game state — the game-over
+        // screen's controls stay drawn over the still-rendered game
+        // screen, the C++'s `has_died` state's "the game screen is the
+        // results screen's background" half).
+        let gameplay = overlay.active();
+        let action = overlay.action_active();
+
         let place = |sprite: &mut Sprite, btn: Button| {
             // The C++'s `setOrigin({halfSize, halfSize})` — center
             // origin, the position = the center.
@@ -417,23 +560,38 @@ impl TouchOverlayButtons {
             sprite.set_position(centers[btn.idx()]);
             sprite.set_color(if overlay.held(btn) { on } else { off });
         };
-        place(&mut self.rotate_ccw, Button::RotateCCW);
-        place(&mut self.rotate_cw, Button::RotateCW);
-        place(&mut self.focus, Button::Focus);
-        place(&mut self.swap, Button::Swap);
-        target.draw_sprite(&self.rotate_ccw);
-        target.draw_sprite(&self.rotate_cw);
-        target.draw_sprite(&self.focus);
-        target.draw_sprite(&self.swap);
+        let place_label = |label: &mut Text, btn: Button| {
+            // The `Exit` label's centering (the `measure`'s width /
+            // height, the C++'s center-origin idiom).
+            let (tw, th, _) = label.measure();
+            label.set_position(centers[btn.idx()] + Vec2::new(-tw * 0.5, -th * 0.5));
+            label.set_fill_color(if overlay.held(btn) { on } else { off });
+        };
 
-        // The exit's label (centered in its 64×64 rect — the `measure`'s
-        // width/height, the C++'s center-origin idiom).
-        let (tw, th, _) = self.exit.measure();
-        self.exit
-            .set_position(centers[Button::Exit.idx()] + Vec2::new(-tw * 0.5, -th * 0.5));
-        self.exit
-            .set_fill_color(if overlay.held(Button::Exit) { on } else { off });
-        target.draw_text(&self.exit, oh_render::draw::RenderStates::default());
+        if gameplay {
+            place(&mut self.rotate_ccw, Button::RotateCCW);
+            place(&mut self.rotate_cw, Button::RotateCW);
+            place(&mut self.focus, Button::Focus);
+            place(&mut self.swap, Button::Swap);
+            target.draw_sprite(&self.rotate_ccw);
+            target.draw_sprite(&self.rotate_cw);
+            target.draw_sprite(&self.focus);
+            target.draw_sprite(&self.swap);
+        }
+
+        if action {
+            place_label(&mut self.exit, Button::Exit);
+            target.draw_text(&self.exit, oh_render::draw::RenderStates::default());
+            // issue 039 (F31) — the action trio's labels (the `Tid`
+            // vocabulary the end-of-level hint's Android half reads,
+            // F31's "PRESS REPLAY TO REPLAY" line).
+            place_label(&mut self.replay, Button::Replay);
+            target.draw_text(&self.replay, oh_render::draw::RenderStates::default());
+            place_label(&mut self.restart, Button::Restart);
+            target.draw_text(&self.restart, oh_render::draw::RenderStates::default());
+            place_label(&mut self.pause, Button::Pause);
+            target.draw_text(&self.pause, oh_render::draw::RenderStates::default());
+        }
     }
 }
 
@@ -486,6 +644,19 @@ mod tests {
         let mut o = TouchOverlay::new();
         o.set_enabled(true);
         o.set_active(true);
+        o.set_action_active(true);
+        o.set_view(W, H);
+        o
+    }
+    /// The issue 039 (F31) game-over shape: the gameplay gate off
+    /// (the `has_died` state — the rotations / focus / swap are gone)
+    /// while the action gate stays on (the `Exit` / `Replay` /
+    /// `Restart` / `Pause` buttons are the screen's only inputs).
+    fn game_over_overlay() -> TouchOverlay {
+        let mut o = TouchOverlay::new();
+        o.set_enabled(true);
+        o.set_active(false);
+        o.set_action_active(true);
         o.set_view(W, H);
         o
     }
@@ -504,6 +675,27 @@ mod tests {
     }
     fn exit_pos() -> Vec2 {
         button_centers(W, H)[Button::Exit.idx()]
+    }
+    fn replay_pos() -> Vec2 {
+        button_centers(W, H)[Button::Replay.idx()]
+    }
+    fn restart_pos() -> Vec2 {
+        button_centers(W, H)[Button::Restart.idx()]
+    }
+    fn pause_pos() -> Vec2 {
+        button_centers(W, H)[Button::Pause.idx()]
+    }
+    fn btn_name(b: Button) -> &'static str {
+        match b {
+            Button::Exit => "Exit",
+            Button::Focus => "Focus",
+            Button::Swap => "Swap",
+            Button::RotateCCW => "RotateCCW",
+            Button::RotateCW => "RotateCW",
+            Button::Replay => "Replay",
+            Button::Restart => "Restart",
+            Button::Pause => "Pause",
+        }
     }
 
     #[test]
@@ -653,29 +845,134 @@ mod tests {
         assert!(!o.held(Button::Focus));
     }
 
-    /// Deactivation clears every capture + held flag + edge (the state
-    /// transition's semantics — no stuck input leaks into the next
-    /// session).
+    /// The class-scoped deactivation clears (F31): the gameplay gate's
+    /// off clears the gameplay captures + held flags + edges, leaving
+    /// the ACTION class's state untouched (and vice versa) — the two
+    /// gates' clears are class-scoped (`clear_class`), the C++'s
+    /// state-transition semantics (the dead game's held touch must not
+    /// leak into the next session's inputs, and the game-over screen's
+    /// held action finger must not leak when the game ends either).
     #[test]
-    fn deactivation_clears_every_capture() {
+    fn the_deactivation_clears_are_class_scoped() {
+        // The death transition: the gameplay gate drops, the action
+        // gate stays. A finger on `Focus` (gameplay) is cleared; a
+        // finger on `Exit` (action) is NOT.
         let mut o = active_overlay();
         o.pointer_event(&down(1, focus_pos().x, focus_pos().y));
         o.pointer_event(&down(2, exit_pos().x, exit_pos().y));
         assert!(o.held(Button::Focus));
+        assert!(o.held(Button::Exit));
         o.set_active(false);
+        assert!(
+            !o.held(Button::Focus),
+            "the gameplay finger is cleared at death"
+        );
+        assert!(
+            o.held(Button::Exit),
+            "the action finger survives the death transition"
+        );
+        assert_eq!(o.captured_ids(), vec![2]);
+        // The physically-still-down focus finger's `Up` is a no-op now
+        // (its capture was cleared with the class).
+        o.pointer_event(&up(1));
         assert!(!o.held(Button::Focus));
+        // The end-of-game transition: the action gate drops too (the
+        // game slot left — the menu). The exit finger is cleared; a
+        // re-activation of either gate is clean (a fresh press is
+        // required, no stale capture fires).
+        o.set_action_active(false);
         assert!(!o.held(Button::Exit));
         assert!(o.captured_ids().is_empty());
         assert!(!o.take_press_edges().iter().any(|e| *e));
-        // The physically-still-down fingers' `Up`s are no-ops now.
-        o.pointer_event(&up(1));
         o.pointer_event(&up(2));
-        assert!(!o.held(Button::Focus));
-        // Re-activation is clean: a fresh press is required.
         o.set_active(true);
+        o.set_action_active(true);
         assert!(!o.held(Button::Focus));
+        assert!(!o.held(Button::Exit));
         o.pointer_event(&down(1, focus_pos().x, focus_pos().y));
         assert!(o.held(Button::Focus));
+    }
+
+    /// The F31 action trio's press edges: each button fires its edge
+    /// once per physical press (the C++'s `Type::Once` binds' observable
+    /// — `trigger_replay` / `trigger_restart` / `trigger_pause`), and
+    /// the third finger on the same button adds no edge (the refcount's
+    /// second increment is not a press).
+    #[test]
+    fn the_action_trio_fires_one_edge_per_press() {
+        let mut o = game_over_overlay();
+        for (finger, pos, btn) in [
+            (1u32, replay_pos(), Button::Replay),
+            (2u32, restart_pos(), Button::Restart),
+            (3u32, pause_pos(), Button::Pause),
+        ] {
+            o.pointer_event(&down(finger, pos.x, pos.y));
+            let edges = o.take_press_edges();
+            assert!(edges[btn.idx()], "the {} press edge", btn_name(btn));
+            assert!(!o.take_press_edges()[btn.idx()], "no edge while held");
+            // A second finger on the same button: no new edge.
+            o.pointer_event(&down(finger + 10, pos.x, pos.y));
+            assert!(!o.take_press_edges()[btn.idx()]);
+            o.pointer_event(&up(finger + 10));
+            o.pointer_event(&up(finger));
+            assert!(!o.held(btn));
+        }
+        // A fresh press after the release is a fresh edge.
+        o.pointer_event(&down(1, replay_pos().x, replay_pos().y));
+        assert!(o.take_press_edges()[Button::Replay.idx()]);
+        o.pointer_event(&up(1));
+    }
+
+    /// The game-over shape (F31): with the gameplay gate off, a
+    /// `Down` on a gameplay button is NOT consumed (the `Focus` / `Swap`
+    /// buttons are gone at death — a stray finger there must not
+    /// capture, must not hold, must not fire) while the action buttons
+    /// answer to their own gate.
+    #[test]
+    fn the_game_over_shape_consumes_only_the_action_buttons() {
+        let mut o = game_over_overlay();
+        o.pointer_event(&down(1, focus_pos().x, focus_pos().y));
+        assert!(!o.held(Button::Focus));
+        assert!(
+            o.captured_ids().is_empty(),
+            "a gameplay button does not capture at death"
+        );
+        o.pointer_event(&down(2, ccw_pos().x, ccw_pos().y));
+        assert!(!o.held(Button::RotateCCW));
+        // The action buttons DO capture (the game-over screen's inputs).
+        o.pointer_event(&down(3, replay_pos().x, replay_pos().y));
+        assert!(o.held(Button::Replay));
+        assert!(o.take_press_edges()[Button::Replay.idx()]);
+        o.pointer_event(&up(3));
+        assert!(!o.held(Button::Replay));
+    }
+
+    /// The layout's F31 half: the trio's positions — `Replay` /
+    /// `Restart` top-middle (the focus / swap x's, the top row), `Pause`
+    /// top-right (the `RotateCW` mirror); the `button_centers`'s 8
+    /// entries are all distinct.
+    #[test]
+    fn the_action_row_layout_sits_above_the_gameplay_row() {
+        let centers = button_centers(W, H);
+        assert_eq!(centers.len(), 8);
+        let replay = centers[Button::Replay.idx()];
+        let restart = centers[Button::Restart.idx()];
+        let pause = centers[Button::Pause.idx()];
+        let focus = centers[Button::Focus.idx()];
+        let swap = centers[Button::Swap.idx()];
+        let cw = centers[Button::RotateCW.idx()];
+        // The top row: same x's as the bottom-middle pair, at the top
+        // edge (the `PAD + BUTTON_HALF` center, the `Exit`'s y).
+        assert_eq!(replay.x, focus.x);
+        assert_eq!(restart.x, swap.x);
+        assert_eq!(replay.y, centers[Button::Exit.idx()].y);
+        assert_eq!(restart.y, replay.y);
+        // `Pause` mirrors `RotateCW` (the top-right corner).
+        assert_eq!(pause.x, cw.x);
+        assert_eq!(pause.y, centers[Button::Exit.idx()].y);
+        // The rows are disjoint (the top row clears the bottom row's
+        // top edge by far more than the button's half-size).
+        assert!(replay.y + BUTTON_HALF < focus.y - BUTTON_HALF);
     }
 
     /// The hit-test: each corner / middle position lands on its button;

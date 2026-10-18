@@ -43,9 +43,20 @@
 //!   shaders are the desktop GL surface) and the slot stays `None` — the
 //!   game runs without the console overlay (the C++ Android build has no
 //!   ImGui at all, `#ifndef SSVOH_ANDROID` in Imgui.cpp).
-//! * **Audio** — the no-op `NoopAudio` menu sink + the engine's `None`
-//!   audio seam (the C++ Android build's audio is the documented AAudio
-//!   follow-up, D-026 plan: not a blocker for this issue's scope).
+//! * **Audio** — the REAL `oh_audio::Audio` (the issue-025e replacement
+//!   of the D-026-era `NoopAudio` / `None` stand-ins — the module doc
+//!   here was stale): the SAME shared windowed composition as desktop
+//!   (`WindowedClient::build`'s `oh_audio::Audio::new` over the cpal
+//!   Android output + `set_sound_volume` / `set_music_volume` from the
+//!   config, windowed.rs:2742-2754).
+//! * **Engine logging** — issue 039 STEP 0: the `oh_game::log_sink`
+//!   seam's Android sink (the `oh-web` browser-console sink's twin —
+//!   issue 026): `run` installs an `__android_log_write` sink BEFORE any
+//!   engine work, so the engine's `[channel]` lines (the C++
+//!   `ssvu::lo` parity — `log()` / `host_error`) reach logcat under the
+//!   `OpenHexagon` tag (`adb logcat -s OpenHexagon`). Without it the
+//!   lines' stdout default never reaches logcat on Android (the device
+//!   sessions' OCR navigation, issue 029k1's device-session note).
 //! * **Soft input (the system IME)** — issue 025f (D-031): the C++'s
 //!   Android text input came from SFML's own Android layer (the IME
 //!   wiring lived in SFML, not in this repo) — the port's platform
@@ -300,7 +311,63 @@ fn create_android_window(
 /// over the `AndroidApp` from `android_main`. Called ONCE per
 /// `android_main` invocation (the activity's main-loop thread); returns
 /// when the window closes (the loop-exit translation).
+/// issue 039 STEP 0 — the engine-log sink's liblog write (the NDK
+/// `log.h` `ANDROID_LOG_INFO` = 4; the `__android_log_write` non-format
+/// form — the format-taking `__android_log_print` is variadic, which
+/// stable Rust's FFI cannot call, so the fully-formatted line is
+/// written whole). The tag is the spec's `adb logcat -s <tag>` handle.
+const ANDROID_LOG_INFO: i32 = 4;
+const LOG_TAG: &core::ffi::CStr = c"OpenHexagon";
+
+#[allow(clippy::missing_safety_doc)] // the FFI's own docs are the NDK log.h
+extern "C" {
+    fn __android_log_write(
+        prio: i32,
+        tag: *const core::ffi::c_char,
+        buf: *const core::ffi::c_char,
+    ) -> i32;
+}
+
+fn android_log_write(line: &str) {
+    // The NUL terminator (the liblog `const char*` contract): the
+    // `CString` is the bounded allocation of the day (the engine's
+    // lines are event-rate, not frame-rate).
+    let buf = match std::ffi::CString::new(line) {
+        Ok(b) => b,
+        // An interior NUL cannot occur in a formatted `[{channel}] {message}`
+        // (both halves are Rust `String`s; the C++'s own lines carry none).
+        Err(_) => return,
+    };
+    unsafe {
+        __android_log_write(ANDROID_LOG_INFO, LOG_TAG.as_ptr(), buf.as_ptr());
+    }
+}
+
 pub fn run(app: AndroidApp) {
+    // issue 039 STEP 0 — the engine-log sink (the `oh-web` boot's
+    // browser-console sink installed "before `main` runs" — issue 026's
+    // seam, `oh_game::log_sink::set_log_sink`): every engine `[channel]`
+    // line (`log()` / `host_error` → `emit_log`) reaches logcat through
+    // `__android_log_write` (the `ANDROID_LOG_INFO` half; the
+    // composition's own `eprintln!` boot-failure lines already reach
+    // logcat on the `RustStdoutStderr` tag). Installed FIRST — before
+    // the base-dir / extraction / config / assets failures below, so the
+    // engine's lines exist from the earliest possible frame.
+    oh_game::log_sink::set_log_sink(|channel, message| {
+        android_log_write(&format!("[{channel}] {message}"));
+    });
+    // The sink's install-confirmation line (the STEP 0 acceptance
+    // evidence on `adb logcat -s OpenHexagon`: the engine's
+    // `[channel]` lines — the C++ `ssvu::lo` parity's `log()` /
+    // `host_error` + the event-rate ones, the replay's send / save
+    // lines — route through this sink from here on; the
+    // composition's own `eprintln!` diagnostics ride the
+    // `RustStdoutStderr` tag, a second logcat-visible route).
+    oh_game::log_sink::emit_log(
+        "android",
+        "engine boot: the OpenHexagon logcat sink is installed (issue 039 STEP 0)",
+    );
+
     // C++ main.cpp:650-658 (the chdir-to-argv[0]-parent) + the Android
     // storage model (D-026): the base dir is the app's internal data dir
     // (the extracted `_RELEASE` content from SG4 on).

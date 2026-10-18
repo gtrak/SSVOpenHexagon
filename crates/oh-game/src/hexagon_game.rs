@@ -1053,6 +1053,21 @@ impl<S: SharedStore> HexagonGame<S> {
             } else {
                 g.status.replay_input = "NO REPLAY BUTTON SET\n".to_string();
             }
+
+            // issue 039 (F31) — the Android hint half: the touch
+            // affordance's names (the overlay's `Restart` / `Replay`
+            // buttons — the button LABEL is the input name, the desktop
+            // bind names' `Space` / `Y` are unreachable on a touch-only
+            // device; the C++'s default bind table carries no Android
+            // `#if`, so this override is the documented deviation,
+            // F31). Cfg-scoped: the desktop strings above stay the
+            // C++ verbatim (the host test `restart_replay_hints` pins
+            // them).
+            #[cfg(target_os = "android")]
+            {
+                g.status.restart_input = "PRESS RESTART TO RESTART\n".to_string();
+                g.status.replay_input = "PRESS REPLAY TO REPLAY\n".to_string();
+            }
         }
     }
 
@@ -1894,6 +1909,24 @@ impl<S: SharedStore> HexagonGame<S> {
     /// C++ `playLevelMusic()` (verbatim, incl. the `beatPulseDelay`
     /// gameplay effect of `playRandomSegment`).
     pub fn play_level_music(&self) {
+        // issue 039 (the device's music triage) — the `shouldPlayMusic()`
+        // inputs + result at the play moment (the C++'s
+        // `playLevelMusic`, HexagonGame.cpp:1379-1391, logs nothing —
+        // the port's line is the device-diagnostic half; the three
+        // C++ gate terms, `shouldPlayMusic`, HexagonGame.cpp:515-518).
+        {
+            let cfg = self.config();
+            self.log(
+                "playLevelMusic",
+                &format!(
+                    "shouldPlayMusic: window={} audio_some={} no_music={} => {}\n",
+                    self.0.window,
+                    self.0.audio.is_some(),
+                    cfg.get_no_music(),
+                    self.should_play_music(),
+                ),
+            );
+        }
         if !self.should_play_music() {
             return;
         }
@@ -1917,6 +1950,20 @@ impl<S: SharedStore> HexagonGame<S> {
             .music_data
             .get_segment(seg_index)
             .expect("C++ playSegment(mIdx): segments[mIdx]");
+        // issue 039 — the resolved segment + music id (the C++
+        // `playRandomSegment`'s pick; the `loadAndPlayMusic`'s
+        // `'{packId}'_'{id}'` log line below carries the same pair on a
+        // failure — this line carries it on a SUCCESS too, so the
+        // device's happy path is evidenced, not just the error path).
+        self.log(
+            "playLevelMusic",
+            &format!(
+                "segment {seg_index} @ {:.3}s (music id '{}', pack '{}')\n",
+                seg.time,
+                g.music_data.id,
+                self.get_pack_id(),
+            ),
+        );
         // C++ `playSeconds` -> `loadAndPlayMusic`.
         if let Some(a) = self.0.audio.as_ref() {
             if !a.load_and_play_music(&self.get_pack_id(), &g.music_data.id, seg.time) {

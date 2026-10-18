@@ -309,6 +309,16 @@ impl oh_game::seams::Audio for Audio {
             eprintln!("[hg::AudioImpl::playMusic] No path for music id '{asset_id}'\n");
             return false;
         };
+        // issue 039 — the device's music triage: the resolved path, the
+        // on-disk existence (the streamed file has no one-shot decode
+        // moment to evidence — the open moment is it), and the volume
+        // the stream will play at.
+        eprintln!(
+            "[oh-audio] playing music '{asset_id}' from '{}' (file exists: {}, music volume {}%)",
+            path,
+            std::path::Path::new(&path).is_file(),
+            self.inner.lock().expect("audio lock poisoned").music_volume
+        );
         let mut inner = lock(&self.inner);
         let path_changed = inner.music.is_none() || inner.last_loaded_music_path != path;
         if path_changed {
@@ -372,6 +382,14 @@ impl Audio {
     pub fn set_sound_volume(&self, volume: f32) {
         let mut inner = lock(&self.inner);
         inner.sound_volume = volume.clamp(0.0, 100.0);
+        // issue 039 — the device's audio triage: the config → `oh-audio`
+        // volume chain's SFX half (the composition's `main.cpp:264-269`
+        // `audio.setSoundVolume(Config::getSoundVolume())` — the value the
+        // one-shots actually play at).
+        eprintln!(
+            "[oh-audio] set sound volume {} (0..=100, SFML units)",
+            inner.sound_volume
+        );
     }
 
     /// C++ `setMusicVolume(volume)` (Audio.cpp:59-68): store `_musicVolume`
@@ -386,6 +404,10 @@ impl Audio {
                 p.set_volume((vol / 100.0).clamp(0.0, 1.0));
             }
         }
+        // issue 039 — the device's audio triage: the config → `oh-audio`
+        // volume chain's music half (the value the streamed music plays
+        // at — the "SFX audible, music silent" signature's first suspect).
+        eprintln!("[oh-audio] set music volume {} (0..=100, SFML units)", vol);
     }
 
     /// C++ `setMusicPlayingOffsetMilliseconds(milliseconds)` (Audio.cpp:92-98).
@@ -417,9 +439,23 @@ fn open_music_source(
     pitch: f32,
 ) -> (Option<rodio::Player>, f32) {
     let Ok(file) = std::fs::File::open(path) else {
+        // issue 039 — the device's music triage: the C++'s `openFromFile`
+        // failure is the `Failed loading music file` line (Audio.cpp:
+        // 154-166 — the `Music::open` `Err` arm above logs it); this arm
+        // is the re-open at a seek offset (the `setMusicPlayingOffset`
+        // path) — the file vanished between the open and the seek.
+        eprintln!(
+            "[oh-audio] music file missing at re-open: '{}'",
+            path.display()
+        );
         return (None, 0.0);
     };
     let Ok(mut decoder) = rodio::Decoder::try_from(file) else {
+        // issue 039 — the device's music triage: the decode failure
+        // (the C++'s `openFromFile`-failed `sf::Music` — silent; the
+        // port's line is the diagnostic half the C++'s silent-fail
+        // lacks, the 025e evidence-path class).
+        eprintln!("[oh-audio] music OGG decode failed: '{}'", path.display());
         return (None, 0.0);
     };
     // The decoded duration (feeds the offset clamp/wrap math — the C++
