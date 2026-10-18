@@ -21,6 +21,15 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# If this script is run from INSIDE a lane worktree, the line above resolves REPO to
+# that worktree, so "$REPO/.." is oh-lanes/ itself and the lane path doubles
+# (/…/oh-lanes/oh-lanes/043 — reported by lane 043). The lanes dir always lives
+# beside the MAIN checkout, so resolve that through git's common dir when possible.
+_git_common="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+if [ -n "$_git_common" ]; then
+  _main="$(cd "$(dirname "$_git_common")" && pwd)"
+  [ -d "$_main" ] && REPO="$_main"
+fi
 LANES_DIR="$(cd "$REPO/.." && pwd)/oh-lanes"
 LANE="${2:-}"
 
