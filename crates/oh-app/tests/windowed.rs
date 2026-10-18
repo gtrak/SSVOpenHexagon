@@ -1495,3 +1495,151 @@ fn options_menu_antialiasing_change_sets_and_consumes_the_recreation_request() {
     assert!(!client.game.is_key_pressed(Key::A.0));
     set_key(&mut client, Key::A, false);
 }
+
+// ---------------------------------------------------------------------
+// 053 — the live resolution change (the 29w / creation-frozen-surface
+// deviation's closure): the C++ `changeResolutionTo` (MenuGame.cpp:
+// 1039-1053) is a LIVE `getRenderWindow().setSize(w, h)` (MenuGame.cpp:
+// 1047 — never a `mustRecreate` mark) + the `onEvent(Resized)` config
+// follow (MenuGame.cpp:261-263 → :1046). The display half (the live
+// winit resize's GL viewport + backbuffer follow) is the Xvfb
+// `resolution_live_probe`; this headless test is the sync's other half:
+// the config's CHANGED resolution reaching the window's `set_inner_size`
+// (the setter-driven trigger — the C++'s shape), and the `Resized`
+// edge's config-follow with the C++'s value guard (MenuGame.cpp:
+// 1041-1044) — menu state only (the C++'s two call sites' state; the
+// game state's edges drain, the C++'s no-handler half).
+// ---------------------------------------------------------------------
+
+#[test]
+fn options_menu_resolution_change_moves_the_window_and_the_config_follows_an_os_resize() {
+    let (mut client, _sandbox) = sandboxed_windowed_client(None);
+    boot_to_level_selection(&mut client);
+    assert_eq!(client.engine.current(), GameSlot::Menu);
+
+    // The harness window stands in for `create_window` at 1920×1080
+    // (arbitrary); the config's windowed default is the C++'s
+    // (800×600). The `resolution_sync`'s priming (the `build`'s
+    // init — the C++'s boot window is the config's resolution at
+    // pixel_multiplier 1, and a `pixel_multiplier` boot's ×pm window
+    // must NOT be pulled down to the logical config), so the boot
+    // primes the sync to the config's resolution: no boot-time fire,
+    // the window stays where the harness put it.
+    assert_eq!(client.window.get_size(), (1920, 1080));
+    tick(&mut client);
+    assert_eq!(
+        client.window.get_size(),
+        (1920, 1080),
+        "the boot's no-shrink: the primed sync matches the config, \
+         no fire (the pixel_multiplier-boot shape)"
+    );
+
+    // The options menu's resolution item (the C++ MenuGame.cpp:1046's
+    // `Config::setCurrentResolution(w, h)` half): the port's menu path
+    // is the `ConfigMenuAdapter::set_resolution`'s config write; the
+    // window half (the C++'s LIVE `renderWindow.setSize`, MenuGame.cpp:
+    // 1047) lands on the live window one frame later (the 29w sync's
+    // timing note: the frame AFTER the menu write is the frame the
+    // change lands in).
+    client
+        .config
+        .write()
+        .expect("config poisoned")
+        .set_current_resolution(1280, 720);
+    tick(&mut client);
+    assert_eq!(
+        client.window.get_size(),
+        (1280, 720),
+        "the window's size moved LIVE (the C++'s setSize's m_size update)"
+    );
+
+    // No new change: no re-request (the sync's set guard — the C++'s
+    // setter doesn't re-fire either: a same-resolution rewrite is a
+    // value no-op).
+    tick(&mut client);
+    assert_eq!(client.window.get_size(), (1280, 720));
+
+    // The config-follow half (the C++'s `onEvent(Resized)` handler,
+    // MenuGame.cpp:261-263 → `changeResolutionTo(event.size)` →
+    // `setCurrentResolution`, :1046): an OS/WM resize in the menu state
+    // (the winit `WindowEvent::Resized` — the `Window` fold's edge; the
+    // port's OWN `set_inner_size` / `set_fullscreen` deliveries are NOT
+    // edges, the fold's triage — the C++'s guard never fires on its own
+    // `setSize`'s delivery: the config is already the new size by
+    // then).
+    oh_render::window::Window::apply_event(
+        &mut client.window,
+        oh_render::window::Event::Resized {
+            width: 900,
+            height: 1600,
+        },
+    );
+    tick(&mut client);
+    let cfg = client.config.read().expect("config poisoned");
+    assert_eq!(
+        (cfg.get_width(), cfg.get_height()),
+        (900, 1600),
+        "the config followed the OS resize (the C++'s onEvent(Resized) \
+         → setCurrentResolution)"
+    );
+    drop(cfg);
+    assert_eq!(
+        client.window.get_size(),
+        (900, 1600),
+        "no ping-pong: the window stays where the resize put it"
+    );
+
+    // The C++'s guard's flag half (MenuGame.cpp:1041-1044 — the value
+    // check rewrites NOTHING, the auto-resolution flag included): a
+    // `Resized` edge to the already-configured size must not clear the
+    // `windowed_auto_resolution` flag (the port's same-value guard
+    // skips the `set_current_resolution` entirely).
+    client
+        .config
+        .write()
+        .expect("config poisoned")
+        .set_current_resolution_auto(900, 1600);
+    oh_render::window::Window::apply_event(
+        &mut client.window,
+        oh_render::window::Event::Resized {
+            width: 900,
+            height: 1600,
+        },
+    );
+    tick(&mut client);
+    let cfg = client.config.read().expect("config poisoned");
+    assert!(cfg.get_windowed_auto_resolution());
+    drop(cfg);
+
+    // The game state has NO Resized handler (the C++'s is MenuGame's,
+    // MenuGame.cpp:261-263): an in-game OS resize updates the window's
+    // size bookkeeping (the C++'s SFML `m_size` update — the fold's
+    // always-half) but NO config (the C++'s `changeResolutionTo` never
+    // runs in the game state; the port's else-drain discards the edge
+    // — a menu RETURN must not fire a stale follow).
+    set_key(&mut client, Key::ENTER, true);
+    tick(&mut client);
+    assert_eq!(client.engine.current(), GameSlot::Game);
+    oh_render::window::Window::apply_event(
+        &mut client.window,
+        oh_render::window::Event::Resized {
+            width: 555,
+            height: 444,
+        },
+    );
+    tick(&mut client);
+    assert_eq!(
+        client.window.get_size(),
+        (555, 444),
+        "the window's bookkeeping followed the in-game resize"
+    );
+    let cfg = client.config.read().expect("config poisoned");
+    assert_eq!(
+        (cfg.get_width(), cfg.get_height()),
+        (900, 1600),
+        "the config did NOT follow in the game state (the C++'s \
+         no-handler half)"
+    );
+    drop(cfg);
+    set_key(&mut client, Key::ENTER, false);
+}

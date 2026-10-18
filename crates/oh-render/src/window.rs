@@ -27,6 +27,10 @@ use wasm_bindgen::JsCast;
 use winit::application::ApplicationHandler;
 #[cfg(not(target_os = "emscripten"))]
 use winit::event::WindowEvent;
+// 053 — the `set_inner_size`'s request (the android winit window's
+// surface is the screen's — the setter is desktop-only, its docs).
+#[cfg(not(any(target_os = "emscripten", target_os = "android")))]
+use winit::dpi::PhysicalSize;
 #[cfg(target_os = "android")]
 use winit::event_loop::EventLoop;
 #[cfg(not(target_os = "emscripten"))]
@@ -1009,6 +1013,35 @@ pub struct Window {
     /// first frame for no change).
     pixel_mult: f32,
     fullscreen: bool,
+    /// 053 — the `MenuGame::onEvent(Resized)`'s `changeResolutionTo`
+    /// (MenuGame.cpp:261-263) edge: a folded `Resized` that is NOT the
+    /// port's own `set_inner_size` / `set_fullscreen` request's delivery
+    /// (the triage, the `Event::Resized` fold's comment). The
+    /// `WindowedClient` frame body (oh-app `tick_fields`, desktop + menu
+    /// state) consumes it through [`Self::take_resized_edge`]: the C++'
+    /// handler's `Config::setCurrentResolution(event.size)` half — the
+    /// config follows a user/WM resize in the menu (the C++'s guard,
+    /// MenuGame.cpp:1041-1044, is the consumer's value check). `None`
+    /// until the first user/WM resize folds (the game state's drain,
+    /// the C++'s no-Resized-handler-in-HexagonGame half, keeps it
+    /// consumed-and-discarded out of the menu).
+    resized_edge: Option<(u32, u32)>,
+    /// 053 — the `set_fullscreen` style change is pending its own
+    /// `Resized` delivery (winit's fullscreen enter/exit moves the
+    /// window to the monitor size / back to the pre-fullscreen size —
+    /// the C++'s recreation instead lands directly at the target size,
+    /// GameWindow.hpp:88-91, so no such intermediate size exists there):
+    /// the `Event::Resized` fold's triage suppresses the config-follow
+    /// for that delivery (the C++'s `changeResolutionTo` guard never
+    /// fires on it — a spurious config-follow would write the monitor /
+    /// restore size into the resolution config). Cleared by the next
+    /// folded `Resized` (a boot-time `fullscreen = true` config's two
+    /// deliveries — the creation size + the monitor size — are the
+    /// fullscreen-gate's cover: the second one's `window.fullscreen`
+    /// state is already the C++'s `getFullscreen()` value, the fold's
+    /// triage comment). Desktop-only (the android/wasm `set_fullscreen`
+    /// arms are the inert stores — no winit window to transition).
+    fullscreen_transition: bool,
     /// C++ `GameWindow::mustRecreate` (GameWindow.hpp:39) — 29w: the
     /// "the setting changed" half of the C++'s trigger/re-apply split.
     /// The window-owned setters that the C++ marks (`setFullscreen` /
@@ -1424,6 +1457,8 @@ impl Window {
             height_px: height,
             pixel_mult: 1.0,
             fullscreen: false,
+            resized_edge: None,
+            fullscreen_transition: false,
             must_recreate: false,
             on_recreation: None,
             // 29w — `Config::default()`'s level (oh-config's `Config::
@@ -1634,10 +1669,87 @@ impl Window {
         self.height_px
     }
 
-    /// `setSize(w, h)`.
+    /// `setSize(w, h)` — the size BOOKKEEPING (the `width_px` /
+    /// `height_px` the `Resized` fold + the boot setters move: the C++
+    /// `GameWindow::setSize`'s logical members, GameWindow.hpp:181-185 —
+    /// the port's boot / event-fold bookkeeping, the `must_recreate`
+    /// field's docs). The C++'s LIVE `RenderWindow::setSize` (the runtime
+    /// size change) is [`Self::set_inner_size`].
     pub fn set_size(&mut self, width: u32, height: u32) {
         self.width_px = width;
         self.height_px = height;
+    }
+
+    /// C++ `MenuGame::changeResolutionTo`'s `window.getRenderWindow()
+    /// .setSize(sf::Vector2u{mWidth, mHeight})` (MenuGame.cpp:1047) +
+    /// `Config::setFullscreen`'s `mWindow.getRenderWindow().setSize(res)`
+    /// (Config.cpp:644) — 053: the port's LIVE window resize (the 025g
+    /// creation-frozen-surface deviation's closure). The C++'s call is
+    /// the LIVE SFML `RenderWindow::setSize` — never a `mustRecreate`
+    /// mark (the C++'s `changeResolutionTo`'s body, MenuGame.cpp:1039-
+    /// 1053, sets none; its `GameWindow::setSize` mark, GameWindow.hpp:
+    /// 181-185, is a DIFFERENT setter the C++'s live path never calls):
+    /// the port requests the winit window's inner size (the same live
+    /// call) and moves the size bookkeeping with it (the SFML
+    /// `Window::setSize`'s immediate `m_size` update — the C++'s
+    /// `changeResolutionTo`'s `refreshCamera()` reads `getWindowWidth()`'
+    /// new value in the SAME call, MenuGame.cpp:1049 → :3131-3136).
+    ///
+    /// The GL surface + the viewport + the `GlParts` bookkeeping follow
+    /// on the `Resized` event the request delivers (the `Event::Resized`
+    /// fold's desktop `gl.resize` arm — the ONE resize path, the issue
+    /// 32 web arm's same shape; the `GlParts::resize`'s docs). Until
+    /// that delivery the one-frame draw runs the new view math on the
+    /// old surface (the C++'s own X11 transient — its window resize is
+    /// async too). The C++'s `changeResolutionTo` tail (`refreshCamera`,
+    /// then `adjustLevelsOffset` / `adjustMenuOffset(true)` /
+    /// `resetNamesScrolls`, MenuGame.cpp:1049-1052) is the port's
+    /// per-frame `refresh_if_stale` (oh-app `menu_draw` — its stale-
+    /// detection tuple carries the window size: the folded size fires
+    /// it, no separate call needed).
+    ///
+    /// A no-op at the current size (the `WindowedClient` sync's per-frame
+    /// re-request guard). Desktop only: the android activity window's
+    /// surface is the screen's (the platform owns it — the `Resized`
+    /// fold's bookkeeping covers its size changes) and the web canvas is
+    /// the page's CSS box (the browser owns it — the DOM `resize`
+    /// listener's `Resized` fold resizes the canvas 1:1, issue 32): on
+    /// both the "resolution" setting has no window to drive (the C++
+    /// has no android/web build to match either).
+    pub fn set_inner_size(&mut self, width: u32, height: u32) {
+        if width == self.width_px && height == self.height_px {
+            return;
+        }
+        self.width_px = width;
+        self.height_px = height;
+        #[cfg(not(any(target_os = "emscripten", target_os = "android")))]
+        if let Some(gl) = self.gl.as_ref() {
+            // winit 0.30's `request_inner_size` (its `&self` form of the
+            // resize request): `None` = the request went to the display
+            // system (the actual size arrives with the `Resized` fold's
+            // `gl.resize`); the `Some(current)` rejection (a
+            // non-resizable window) = the request was ignored — the
+            // bookkeeping above is then the requested size (the C++'s
+            // SFML `setSize`'s own `m_size`-updates-while-the-OS-window
+            // lags shape).
+            let _ = gl
+                .winit_window()
+                .request_inner_size(PhysicalSize::new(width, height));
+        }
+    }
+
+    /// 053 — the `MenuGame::onEvent(Resized)`'s `changeResolutionTo` edge
+    /// (the `resized_edge` field's docs): the `WindowedClient` frame
+    /// body (oh-app `tick_fields`, desktop + menu state) consumes it —
+    /// the C++'s handler's `Config::setCurrentResolution(event.size)`
+    /// half (the config follows a user/WM resize in the menu). `None`
+    /// when no user/WM resize folded since the last take (the port's own
+    /// `set_inner_size` / `set_fullscreen` deliveries are the fold's
+    /// triage's `own` half — never edges, the `Event::Resized` arm's
+    /// comment).
+    #[must_use]
+    pub fn take_resized_edge(&mut self) -> Option<(u32, u32)> {
+        std::mem::take(&mut self.resized_edge)
     }
 
     /// C++ `setPixelMult` (GameWindow.hpp:197-201) — see the `pixel_mult`
@@ -1700,9 +1812,22 @@ impl Window {
     /// fullscreen affordance is the page's browser-API button (lane 046),
     /// not the config's `fullscreen` value.
     pub fn set_fullscreen(&mut self, fullscreen: bool) {
+        if fullscreen == self.fullscreen {
+            return;
+        }
         self.fullscreen = fullscreen;
         #[cfg(not(any(target_os = "android", target_os = "emscripten")))]
         if let Some(gl) = self.gl.as_ref() {
+            // 053 — the transition's own delivery's suppression (the
+            // `fullscreen_transition` field's docs): winit's fullscreen
+            // enter/exit moves the window to the monitor size / back to
+            // the pre-fullscreen size — the C++'s `setFullscreen`'s
+            // `renderWindow.setSize(res)` (Config.cpp:644) + recreation
+            // (GameWindow.hpp:88-91) land directly at the target size
+            // instead, so the C++'s `onEvent(Resized)` config-follow
+            // never fires on an intermediate size; the fold's triage
+            // suppresses this one's delivery.
+            self.fullscreen_transition = true;
             gl.winit_window().set_fullscreen(if fullscreen {
                 Some(winit::window::Fullscreen::Borderless(None))
             } else {
@@ -2421,15 +2546,48 @@ impl Window {
                 // viewport + the `GlParts` size bookkeeping move together,
                 // the 025g "config size ≠ real size" invariant: the menu
                 // layout + the hit tests run in the size the canvas is
-                // ACTUALLY drawn into). The desktop port's
-                // creation-frozen GL surface stays the documented
-                // deviation (the winit arm below — the size bookkeeping
-                // only, the 025g `Resized` fold).
+                // ACTUALLY drawn into).
                 #[cfg(target_os = "emscripten")]
                 if let Some(gl) = window.gl.as_mut() {
                     gl.resize(width, height);
                 }
+                // Desktop (053): the `changeResolutionTo`'s
+                // `renderWindow.setSize` (MenuGame.cpp:1047) + the
+                // `setFullscreen`'s `renderWindow.setSize(res)`
+                // (Config.cpp:644) delivery — the 025g /
+                // creation-frozen-surface deviation is CLOSED: the GL
+                // surface + the viewport + the `GlParts` size
+                // bookkeeping follow the folded size (the web arm's same
+                // shape, `GlParts::resize`'s docs). Android: still the
+                // documented bookkeeping-only fold (the activity window's
+                // surface is the screen's; the C++ has no android build).
+                #[cfg(not(any(target_os = "emscripten", target_os = "android")))]
+                if let Some(gl) = window.gl.as_mut() {
+                    gl.resize(width, height);
+                }
                 window.set_size(width, height);
+                // 053 — the `MenuGame::onEvent(Resized)` (MenuGame.cpp:
+                // 261-263)'s delivery triage: the C++'s handler runs
+                // `changeResolutionTo(event.size)` whose GUARD (MenuGame.
+                // cpp:1041-1044) early-returns when the config is ALREADY
+                // the event's size — the port's own `set_inner_size`
+                // delivery (the config was written by its caller first,
+                // the oh-app `tick_fields` sync's order) is that
+                // early-return, consumed by the consumer's value check;
+                // the `set_fullscreen` style transition's own delivery
+                // (the monitor size / the pre-fullscreen restore — the
+                // C++'s recreation never produces them) is the
+                // `fullscreen_transition` suppression; a fullscreen-state
+                // delivery is the winit borderless model's own move (the
+                // C++'s non-exclusive fullscreen's window size IS its
+                // resolution — the port's monitor-sized borderless is the
+                // documented 047 shape). Only a user/WM resize in the
+                // windowed state is a config-follow edge.
+                let own = window.fullscreen_transition || window.fullscreen;
+                window.fullscreen_transition = false;
+                if !own {
+                    window.resized_edge = Some((width, height));
+                }
             }
             Event::TouchBegan { finger, position } => {
                 window.input.set_finger(finger, true);

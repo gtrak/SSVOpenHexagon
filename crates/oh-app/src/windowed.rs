@@ -669,17 +669,29 @@ impl MenuConfig for ConfigMenuAdapter {
             .get_fullscreen()
     }
     fn set_fullscreen(&self, value: bool) {
-        // C++ `Config::setFullscreen(window, value)` (MenuGame.cpp:1370-1373)
-        // also recreates the window; the port's winit window is not
-        // recreated at runtime (module docs: `set_pixel_mult` note) — the
-        // config value is set, the recreation is the documented gap.
+        // C++ `Config::setFullscreen(window, value)` (MenuGame.cpp:
+        // 1370-1373): the config half is this write (the C++'
+        // `fullscreen() = mFullscreen` + `recalculateSizes()`,
+        // Config.cpp:641/:648 — oh-config's `set_fullscreen`); the window
+        // half (the C++'s `renderWindow.setSize(res)` + style —
+        // Config.cpp:644-646) is the `tick_fields`'s per-frame sync: the
+        // style applied live (047/29w) + 053's live resize to the
+        // config's (now mode-switched) resolution (the C++'s recreation
+        // is the port's style + resize observables — no context rebuild
+        // needed, the `Window::set_fullscreen`'s docs).
         self.config
             .write()
             .expect("config poisoned")
             .set_fullscreen(value);
     }
     fn set_resolution(&self, w: u32, h: u32) {
-        // C++ `changeResolutionTo` → `Config::setCurrentResolution`.
+        // C++ `changeResolutionTo` → `Config::setCurrentResolution` (the
+        // config half, MenuGame.cpp:1046): this write; the window half
+        // (the C++'s LIVE `renderWindow.setSize(w, h)`, MenuGame.cpp:
+        // 1047 — never a `mustRecreate`) is the `tick_fields`'s 053
+        // sync block (the config's changed resolution reaching the live
+        // winit window's `set_inner_size`, one frame after this write —
+        // the 29w sync's timing).
         self.config
             .write()
             .expect("config poisoned")
@@ -757,8 +769,11 @@ impl MenuConfig for ConfigMenuAdapter {
     }
     fn set_antialiasing(&self, value: u32) {
         // C++ `Config::setAntialiasingLevel(window, n)` (MenuGame.cpp:1452-1464)
-        // also recreates the window with the new MSAA level — the runtime
-        // recreation is the documented gap; the config value is set.
+        // also recreates the window with the new MSAA level — 29w: the
+        // runtime recreation is the `tick_fields`'s per-frame sync (the
+        // store half's `must_recreate` mark + the loop head's
+        // `maybe_recreate_window` — the C++'s `recreateWindow`,
+        // GameWindow.hpp:123); the config value is this write.
         self.config
             .write()
             .expect("config poisoned")
@@ -2618,6 +2633,24 @@ pub struct WindowedClient {
     /// + the previous frame's key-pressed bitset (`InputState::get_keys`).
     cursor_last_mouse: std::cell::Cell<Option<Vec2>>,
     cursor_last_keys: std::cell::Cell<[bool; oh_render::input::KEY_BITS]>,
+    /// 053 — the resolution the live window last FOLLOWED (the C++'
+    /// `changeResolutionTo`'s trigger, port shape): the `tick_fields`'
+    /// desktop menu-state sync fires the `Window::set_inner_size` only
+    /// when the config's resolution CHANGED since the last frame (the
+    /// C++'s setter-driven trigger — its `changeResolutionTo` runs on
+    /// the options item's write + the `onEvent(Resized)` handler, never
+    /// on a config-vs-window diff: a `pixel_multiplier != 1` boot (the
+    /// window's physical size × the mult, the `create_window`'s note)
+    /// must NOT shrink on the first frame — the C++'s boot/recreation
+    /// renders at `width × pixelMult`, GameWindow.hpp:93, and only an
+    /// EXPLICIT resolution change moves the C++ window to the raw
+    /// resolution, MenuGame.cpp:1047). The `onEvent(Resized)` config-
+    /// follow half writes the user/WM size into the config — the
+    /// same-frame follow-up diff then compares against the followed
+    /// value (a no-op `set_inner_size` early-return, the
+    /// `Window::set_inner_size`'s docs), so the window is never snapped
+    /// back over the user's own resize.
+    resolution_sync: std::cell::Cell<(u32, u32)>,
     /// C++ `hg` (main.cpp:414-421) — the composition's engine handle.
     pub game: Rc<HexagonGame<GameApiState>>,
     /// The 029n1 (K6) pack-shader source: the shared `HGAssets` the
@@ -3336,6 +3369,14 @@ impl WindowedClient {
             cursor_visible,
             cursor_last_mouse: std::cell::Cell::new(None),
             cursor_last_keys: std::cell::Cell::new([false; oh_render::input::KEY_BITS]),
+            // 053 — the first frame's followed value = the boot config's
+            // resolution (the C++'s boot: the window is created at it,
+            // main.cpp:304-310 — no `changeResolutionTo` fired, so the
+            // first frame's sync must not re-fire it).
+            resolution_sync: std::cell::Cell::new({
+                let cfg = config.read().expect("config poisoned");
+                (cfg.get_width(), cfg.get_height())
+            }),
             game,
             assets,
             config,
@@ -3557,6 +3598,7 @@ impl WindowedClient {
             cursor_visible,
             cursor_last_mouse,
             cursor_last_keys,
+            resolution_sync,
         } = self;
         let _ = &composed; // keep it alive until the end of the scope
         let mut timer = timer;
@@ -3616,6 +3658,7 @@ impl WindowedClient {
                     &cursor_visible,
                     &cursor_last_mouse,
                     &cursor_last_keys,
+                    &resolution_sync,
                     &fps_bits,
                     &app_draw,
                     &touch_overlay,
@@ -3668,6 +3711,7 @@ impl WindowedClient {
             cursor_visible,
             cursor_last_mouse,
             cursor_last_keys,
+            resolution_sync,
             fps_bits,
             // 029n1 (K6) + 031: fields the shared `tick_fields` contract gained
             // after lane 026 branched (the pack-shader provider's `Assets`, and
@@ -3730,6 +3774,7 @@ impl WindowedClient {
                 &cursor_visible,
                 &cursor_last_mouse,
                 &cursor_last_keys,
+                &resolution_sync,
                 &fps_bits,
                 &_app_draw,
                 &touch_overlay,
@@ -3758,6 +3803,7 @@ impl WindowedClient {
             &self.cursor_visible,
             &self.cursor_last_mouse,
             &self.cursor_last_keys,
+            &self.resolution_sync,
             &self.fps_bits,
             &self._app_draw,
             &self.touch_overlay,
@@ -3786,6 +3832,7 @@ impl WindowedClient {
             &self.cursor_visible,
             &self.cursor_last_mouse,
             &self.cursor_last_keys,
+            &self.resolution_sync,
             &self.fps_bits,
             &self._app_draw,
             &self.touch_overlay,
@@ -3852,6 +3899,14 @@ impl WindowedClient {
         cursor_visible: &std::rc::Rc<std::cell::Cell<bool>>,
         cursor_last_mouse: &std::cell::Cell<Option<Vec2>>,
         cursor_last_keys: &std::cell::Cell<[bool; oh_render::input::KEY_BITS]>,
+        // 053 — the resolution the live window last followed (the
+        // `WindowedClient::resolution_sync` field's docs): the desktop
+        // menu-state sync's trigger (the C++'s setter-driven
+        // `changeResolutionTo` — the config's resolution CHANGED since
+        // the last frame, NOT a config-vs-window diff). Android / wasm:
+        // the sync block is desktop-only (inert-by-design, its docs) —
+        // the parameter's documented-unused half.
+        resolution_sync: &std::cell::Cell<(u32, u32)>,
         // 029e3 — the window's FPS slot (the C++ `window->getFPS()`;
         // the `WindowTouchRenderer`'s docs): the frame's `runFPS` result
         // is published here so the NEXT frame's engine tick (the
@@ -3880,6 +3935,10 @@ impl WindowedClient {
             [Option<oh_math::ssvs::Vec2>; oh_render::input::FINGER_COUNT],
         >,
     ) {
+        // 053 — the `resolution_sync`'s android / wasm inertness (the
+        // sync block's desktop gate): the parameter's unused half.
+        #[cfg(any(target_os = "android", target_os = "emscripten"))]
+        let _ = resolution_sync;
         // C++ `while(gameEngine->isRunning())` loop head (GameWindow.hpp:
         // 121) — the SIGINT flag (the safe port of the C++ handler, main
         // .cpp:340-349; module docs: the SIGINT bullet): the handler's
@@ -3914,6 +3973,81 @@ impl WindowedClient {
         // 9-zone grid's thirds + `refresh_camera`'s view math + the
         // `drawOnlineStatus` identity view) reads it.
         render_size.update(window.get_width(), window.get_height());
+        // 053 — the C++'s LIVE resolution change (the 025g /
+        // creation-frozen-surface deviation's closure), at the C++'
+        // loop-head position (before update / draw), desktop + MENU
+        // state only (the C++'s two `changeResolutionTo` call sites are
+        // both menu-state: the options items' `setCurrentResolution`
+        // + `renderWindow.setSize` pair (MenuGame.cpp:1046-1047) and
+        // the `onEvent(Resized)` handler (MenuGame.cpp:261-263) — the
+        // game state has NO Resized handler: an in-game OS resize must
+        // not snap the window back to the config resolution, so the
+        // `GameSlot::Menu` gate is the C++'s state gate; the else-drain
+        // discards the game-state's edges (the C++'s no-handler half —
+        // a menu RETURN must not fire a stale follow). Android / wasm:
+        // inert by design — the activity window's surface is the
+        // screen's (the C++ has no android build) and the web canvas is
+        // the page's CSS box (the browser owns its size; the C++ has no
+        // web build): on both the "resolution" setting has no window to
+        // drive.
+        #[cfg(not(any(target_os = "android", target_os = "emscripten")))]
+        if engine.current() == GameSlot::Menu {
+            // The `onEvent(Resized)` half (MenuGame.cpp:261-263 →
+            // `changeResolutionTo(event.size)` → `Config::
+            // setCurrentResolution`, MenuGame.cpp:1046): a user/WM
+            // resize in the menu updates the config to the new size —
+            // the C++'s guard's early-return (MenuGame.cpp:1041-1044)
+            // is the value check: a resize to the already-configured
+            // resolution rewrites nothing (the auto-resolution flag
+            // included). The port's own `set_inner_size` / the
+            // `set_fullscreen` style transition's deliveries are NOT
+            // edges (the `Window` fold's triage — the C++'s guard never
+            // fires on its own `setSize`'s delivery: the config is
+            // already the new size by then).
+            if let Some((ww, wh)) = window.take_resized_edge() {
+                let same = {
+                    let cfg = config.read().expect("config poisoned");
+                    cfg.get_width() == ww && cfg.get_height() == wh
+                };
+                if !same {
+                    config
+                        .write()
+                        .expect("config poisoned")
+                        .set_current_resolution(ww, wh);
+                }
+            }
+            // The `changeResolutionTo`'s setSize half (MenuGame.cpp:
+            // 1047) + the `Config::setFullscreen`'s resize half (Config.
+            // cpp:644-645): the window follows the config's resolution
+            // when the resolution CHANGED (the `resolution_sync`'s
+            // trigger — the C++'s setter-driven shape, the field's
+            // docs): the options item's write (the
+            // `ConfigMenuAdapter::set_resolution`, the C++
+            // `setCurrentResolution(w, h)` half, MenuGame.cpp:1046) and
+            // the fullscreen toggle's resolution-mode switch (`Config::
+            // getWidth()` / `getHeight()`'s fullscreen/windowed switch,
+            // Config.cpp:1102-1111) land on the live winit window here,
+            // one frame after the menu write (the 29w sync's timing
+            // note: the frame AFTER the menu write is the frame the
+            // change lands in). The `Window::set_inner_size`'s docs:
+            // the bookkeeping moves with the request; the GL surface +
+            // the viewport follow on the `Resized` delivery (the fold's
+            // `gl.resize` arm).
+            let (cw, ch) = {
+                let cfg = config.read().expect("config poisoned");
+                (cfg.get_width(), cfg.get_height())
+            };
+            if (cw, ch) != resolution_sync.get() {
+                window.set_inner_size(cw, ch);
+            }
+            resolution_sync.set((cw, ch));
+        } else {
+            // The C++'s no-Resized-handler-in-the-game-state half (the
+            // handler is MenuGame's, MenuGame.cpp:261-263): an in-game
+            // resize updates no config — drain the edge (a menu return
+            // must not fire a stale follow).
+            let _ = window.take_resized_edge();
+        }
         // C++ `if(mustRecreate) recreateWindow();` (GameWindow.hpp:123) —
         // 29w: the port mirrors the SPLIT (the module docs' per-frame
         // order bullet): the STORE half — the per-frame config → window
@@ -3960,9 +4094,11 @@ impl WindowedClient {
             // rebuild needed for it; on android/wasm the setter stores only
             // — inert-by-design, its docs). The C++'s `setFullscreen` also
             // resizes the render window to the config resolution (Config.
-            // cpp:644-645) — the port's live window resize is the 025g
-            // creation-frozen-surface deviation (its own lane), so the
-            // style is the port's fullscreen observable.
+            // cpp:644-645) — 053: that resize half is the 053 sync block
+            // above this one (the config's mode-switched `getWidth()` /
+            // `getHeight()` reaching the live window's
+            // `set_inner_size` — the creation-frozen-surface deviation is
+            // closed; the style stays the port's fullscreen observable).
             if window.get_fullscreen() != cfg_fullscreen {
                 window.set_fullscreen(cfg_fullscreen);
             }

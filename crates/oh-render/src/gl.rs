@@ -91,8 +91,11 @@ use glutin::context::Version;
 #[cfg(not(target_os = "emscripten"))]
 use glutin::context::{
     ContextAttributes, ContextAttributesBuilder, GlProfile, NotCurrentGlContext,
-    PossiblyCurrentGlContext,
 };
+// 053 — the desktop `GlSurface::resize`'s context-bound half (the
+// android GlParts has no GLX/EGL surface to resize — inert-by-design).
+#[cfg(not(any(target_os = "emscripten", target_os = "android")))]
+use glutin::context::PossiblyCurrentGlContext;
 #[cfg(not(target_os = "emscripten"))]
 use glutin::display::{Display, DisplayApiPreference, GlDisplay};
 #[cfg(not(target_os = "emscripten"))]
@@ -1097,6 +1100,21 @@ impl GlParts {
         unsafe { gl.get_parameter_i32(glow::SAMPLES) }.max(0) as u32
     }
 
+    /// The live GL viewport (the 053 resize's measured observable — the
+    /// `resize`'s `gl.viewport`'s read-back: the C++'s render target's
+    /// size IS the `sf::View`'s mapping space, so the viewport is the
+    /// port's "the backbuffer moved" proof alongside the winit window's
+    /// `inner_size`).
+    #[must_use]
+    pub fn viewport(&self) -> [i32; 4] {
+        let mut v = [0i32; 4];
+        let gl = &self.gl;
+        unsafe {
+            gl.get_parameter_i32_slice(glow::VIEWPORT, &mut v);
+        };
+        v
+    }
+
     /// Clear the default framebuffer to `color` (RGBA `f32`) and read back the
     /// centre pixel — a genuine offscreen `glClear` → `glReadPixels` check that
     /// a live GL context renders and is readable. Returns the read-back RGBA.
@@ -1230,6 +1248,55 @@ impl GlParts {
         let gl = &self.gl;
         unsafe {
             gl.viewport(0, 0, w as i32, h as i32);
+        }
+    }
+
+    /// Desktop (053 — the resolution's LIVE change; the 025g /
+    /// creation-frozen-surface deviation's closure): the `Event::Resized`
+    /// fold's resize half — the C++ SFML window's render-target half,
+    /// following a folded size (a user/WM resize, or the port's own
+    /// `Window::set_inner_size` delivery — `changeResolutionTo`'s
+    /// `renderWindow.setSize`, MenuGame.cpp:1047, + the `Config::
+    /// setFullscreen`'s `renderWindow.setSize(res)`, Config.cpp:644):
+    ///
+    /// * the backbuffer — glutin's `WindowSurface::resize` (the GLX
+    ///   no-op: the GLX backbuffer follows the X window itself — glutin
+    ///   0.32.3's `api/glx/surface.rs:293` "This isn't supported with
+    ///   GLXDrawable"; the EGL native-window resize, the same file's
+    ///   `api/egl/surface.rs:404`);
+    /// * the GL viewport — a surface resize does NOT re-set the GL
+    ///   viewport (the web arm's same note: without this call the
+    ///   rendering would stay clipped / stretched to the old size);
+    /// * the size bookkeeping (`width`/`height` — `GlDrawTarget::new`'
+    ///   initial view reads them, the `Window`'s `set_size` half moves
+    ///   in `window.rs`'s `Resized` fold alongside this call).
+    ///
+    /// The GL objects SURVIVE the resize (the context is not lost — this
+    /// is what separates a live resize from 29w's recreation: no cache
+    /// reset, no texture re-upload, no `onRecreation` hook). A no-op at
+    /// the current size (the per-event cost is then a compare); the
+    /// GL-less (failed-recreation) state is a documented no-op (the
+    /// `present`'s same shape). Android: the activity window's surface
+    /// stays the creation-size screen surface (the `Event::Resized`
+    /// fold's android arm is the bookkeeping only — the C++ has no
+    /// android build to match a live EGL resize against).
+    #[cfg(not(any(target_os = "emscripten", target_os = "android")))]
+    pub fn resize(&mut self, width: u32, height: u32) {
+        let w = width.max(1);
+        let h = height.max(1);
+        if w == self.width && h == self.height {
+            return;
+        }
+        if let (Some(surface), Some(context)) = (self._surface.as_ref(), self._context.as_ref()) {
+            if let (Some(w), Some(h)) = (NonZero::new(w), NonZero::new(h)) {
+                surface.resize(context, w, h);
+            }
+            self.width = w;
+            self.height = h;
+            let gl = &self.gl;
+            unsafe {
+                gl.viewport(0, 0, w as i32, h as i32);
+            }
         }
     }
 
