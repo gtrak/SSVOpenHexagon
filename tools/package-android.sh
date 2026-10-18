@@ -152,7 +152,13 @@ echo "== aapt dump badging =="
 
 echo
 echo "== APK contents (the 25b spec surface: lib/arm64-v8a + assets) =="
-unzip -l "$APK" | grep -E "arm64-v8a|assets/Packs/|^.*assets/config.json|AndroidManifest" | head -20
+# No `| head` here: an early-exiting reader (head -20) SIGPIPEs the grep
+# mid-stream on a slow runner (unzip -l still trickling its ~229-entry
+# listing), and `set -o pipefail` turns that into a red job (issue 045,
+# run 39104852496: "grep: write error: Broken pipe", exit 2 — after the
+# APK itself had built + signed fine). The full match list is the audit
+# record this section exists to be.
+unzip -l "$APK" | grep -E "arm64-v8a|assets/Packs/|^.*assets/config.json|AndroidManifest"
 unzip -l "$APK" | tail -3
 
 # The asset tree spot-check: the Packs + config.json must be IN the APK
