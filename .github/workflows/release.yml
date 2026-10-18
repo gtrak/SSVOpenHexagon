@@ -64,7 +64,21 @@ name: Release
 #   branch", Branch: `gh-pages`, folder: / (root). Then the game is
 #   served from https://gtrak.github.io/SSVOpenHexagon/ — the page and
 #   its wasm/data artifacts live in the SAME directory (inline, no
-#   external CDN).
+#   external CDN). has_pages is false today — nothing serves until the
+#   operator flips it.
+#
+# GH-PAGES PUBLISHERS (issue 040): this job is no longer the only one.
+# ci.yml's pages job also writes the gh-pages branch, on every
+# default-branch push (the continuous deploy the operator asked for). Both
+# carry concurrency { group: gh-pages, cancel-in-progress: false }, so a
+# master push and a tag push never write the branch at once (a race that
+# half-writes the branch is exactly the kind of thing nobody diagnoses
+# later). Who wins on a tag: both are kept — a tag cut on master's HEAD
+# publishes identical bytes from both (no observable winner); a tag on an
+# older or non-master commit gets its release deploy here, and the next
+# master push re-pins the page to master (the operator's intent: the live
+# page follows master; the released bytes are captured in the release's
+# artifact zip either way).
 
 on:
   push:
@@ -282,6 +296,13 @@ jobs:
   gh-pages:
     name: gh-pages (the wasm build inline)
     needs: [gate, wasm]
+    # Issue 040 — ci.yml's pages job (default-branch pushes) is the other
+    # publisher of this branch; same concurrency group, so the two
+    # serialize (queue, never cancel) instead of racing the gh-pages
+    # branch.
+    concurrency:
+      group: gh-pages
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - name: Download the web artifact

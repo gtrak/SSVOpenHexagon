@@ -17,10 +17,12 @@
 #   * `cargo build --release -p oh-web --target wasm32-unknown-emscripten`
 #     from the REPO ROOT (the --preload-file path `_RELEASE` resolves
 #     relative to it).
-#   * the build artifacts land at:
-#       target/wasm32-unknown-emscripten/release/oh-web.js   (the loader)
-#       target/wasm32-unknown-emscripten/release/oh_web.wasm
-#       target/wasm32-unknown-emscripten/release/deps/oh_web.data
+#   * the build artifacts land at (issue 040: honour CARGO_TARGET_DIR the
+#     way tools/gate.sh does for LOG_DIR — every lane and the emsdk
+#     container run with it set, a hardcoded target/ broke staging):
+#       ${CARGO_TARGET_DIR:-target}/wasm32-unknown-emscripten/release/oh-web.js   (the loader)
+#       ${CARGO_TARGET_DIR:-target}/wasm32-unknown-emscripten/release/oh_web.wasm
+#       ${CARGO_TARGET_DIR:-target}/wasm32-unknown-emscripten/release/deps/oh_web.data
 #     (the .data — the preloaded _RELEASE tree — stays in deps/: the
 #     lane-036 serve recipe cites it from there; cargo only hoists the
 #     primary outputs to release/).
@@ -44,6 +46,15 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
+
+# Issue 040 — where cargo put the build outputs. Honoured exactly the way
+# tools/gate.sh honours it for LOG_DIR: ${CARGO_TARGET_DIR:-target}. Lanes
+# and the emsdk container always set it (often outside the repo), so the
+# staging cp's must follow it — a hardcoded target/ failed with
+# `cp: cannot stat 'target/wasm32-unknown-emscripten/release/oh-web.js'`.
+# (A relative value resolves against the repo root, the same cwd cargo
+# builds from — the same semantics gate.sh relies on.)
+OUT="${CARGO_TARGET_DIR:-target}"
 
 TARGET="wasm32-unknown-emscripten"
 
@@ -82,6 +93,10 @@ cargo build --release -p oh-web --target "$TARGET"
 # ---------------------------------------------------------------------
 # The serve directory (the page + the artifacts inline, same directory)
 # ---------------------------------------------------------------------
+# The staging lives at the repo-root target/ REGARDLESS of CARGO_TARGET_DIR
+# (issue 040): it is this script's own output, not cargo's, and a fixed path
+# keeps the CI upload path (ci.yml's pages job) and the report's contract
+# independent of wherever the build output was pointed.
 STAGE_ROOT="${REPO_ROOT}/target/package/web"
 STAGE="${STAGE_ROOT}/_WEB"
 ZIP="${STAGE_ROOT}/open-hexagon-web.zip"
@@ -91,10 +106,10 @@ rm -rf "$STAGE_ROOT"
 mkdir -p "$STAGE"
 
 cp crates/oh-web/site/index.html "$STAGE/"
-cp "target/${TARGET}/release/oh-web.js" "$STAGE/"
-cp "target/${TARGET}/release/oh_web.wasm" "$STAGE/"
+cp "${OUT}/${TARGET}/release/oh-web.js" "$STAGE/"
+cp "${OUT}/${TARGET}/release/oh_web.wasm" "$STAGE/"
 # The .data stays in deps/ (module docs) — the preloaded _RELEASE tree.
-cp "target/${TARGET}/release/deps/oh_web.data" "$STAGE/"
+cp "${OUT}/${TARGET}/release/deps/oh_web.data" "$STAGE/"
 
 for f in index.html oh-web.js oh_web.wasm oh_web.data; do
     [ -s "${STAGE}/${f}" ] || { echo "error: serve-dir file missing or empty: ${STAGE}/${f}" >&2; exit 1; }

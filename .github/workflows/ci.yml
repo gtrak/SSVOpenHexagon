@@ -30,12 +30,37 @@ name: CI
 #                   the full release build + the serve-dir staging + zip —
 #                   the SAME command the release workflow runs; per push
 #                   it is the compile proof, the release workflow uploads
-#                   the artifact).
+#                   the artifact). On default-branch pushes it ALSO hands
+#                   the staged _WEB directory to the pages job (artifact).
+#   pages         — Issue 040 — the CONTINUOUS gh-pages deploy: every push
+#                   to the default branch publishes the wasm build, so
+#                   https://gtrak.github.io/SSVOpenHexagon/ always
+#                   reflects master. Gated to default-branch pushes of
+#                   this repo only — never PRs (event = pull_request),
+#                   never tag pushes (ref = refs/tags/...), never forks
+#                   (the github.repository guard: a fork's push must not
+#                   be able to publish). It shares the gh-pages
+#                   concurrency group with release.yml's gh-pages job,
+#                   because after issue 040 the branch has TWO publishers
+#                   (this job on master pushes, the release job on tag
+#                   pushes) and a race that half-writes the branch is
+#                   exactly the kind of thing nobody diagnoses later.
 #
 # ONE SOURCE OF TRUTH: every job invokes a tools/ script (tools/gate.sh,
 # tools/build-windows.sh, tools/check-android.sh, tools/package-web.sh) —
 # no build command exists inline in a workflow, so a local run and a CI
 # run cannot drift. That drift is exactly how the Windows hole happened.
+#
+# THE PAGES PUBLISHERS (issue 040): ci.yml's pages job (this file) and
+# release.yml's gh-pages job both write the gh-pages branch, so both carry
+# concurrency { group: gh-pages, cancel-in-progress: false } and serialize.
+# Who wins on a tag: both are kept. A tag cut on master's HEAD publishes
+# identical bytes from both (no observable winner); a tag on an older or
+# non-master commit gets its own release deploy, and the next master push
+# re-pins the page to master — which is the operator's intent (the live
+# page follows master; the released bytes are also captured in the
+# release's artifact zip either way). Every write is a complete state
+# (never half-written) because the two publishers never run at once.
 #
 # The pinned toolchain (1.97.1 + clippy + rustfmt) is the one in
 # rust-toolchain.toml; the explicit install steps below mirror it so a
@@ -149,3 +174,64 @@ jobs:
       # and the released artifact cannot drift.
       - name: Build + stage
         run: bash tools/package-web.sh
+
+      # Issue 040 — hand the staged serve directory to the pages job
+      # (different runner: the artifact is the only channel). Default-
+      # branch pushes to THIS repo only — the pages job is gated by the
+      # same predicate, so a fork's push can neither stage nor publish.
+      - name: Upload the staged serve directory (default-branch pushes only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && github.repository == 'gtrak/SSVOpenHexagon'
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-publish
+          path: target/package/web/_WEB
+
+  pages:
+    name: Pages (gh-pages, continuous — default-branch pushes only)
+    needs: wasm
+    # Issue 040 — the operator's directive: gh-pages hosts the wasm build
+    # AUTOMATICALLY, not only on tags. Every push to the default branch
+    # publishes. Never on PRs (event = pull_request), never on tag
+    # pushes (ref = refs/tags/...), never on forks (the github.repository
+    # guard — the spec's "a fork's push must not be able to publish":
+    # a push to a fork's own master would match the bare default-branch
+    # predicate, so the repo check makes the exclusion explicit; the fork
+    # run's GITHUB_TOKEN could only ever write the fork, but this also
+    # keeps forks from burning a build).
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && github.repository == 'gtrak/SSVOpenHexagon'
+    # Serialize with release.yml's gh-pages job (the other publisher of
+    # this branch — tag pushes): queue, never cancel, never race.
+    concurrency:
+      group: gh-pages
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    # peaceiris/actions-gh-pages pushes the branch with GITHUB_TOKEN:
+    # it needs contents: write (no pages: write — the Pages source is
+    # "Deploy a branch", not the Actions flow; see the deploy step).
+    permissions:
+      contents: write
+    steps:
+      - name: Download the staged serve directory
+        uses: actions/download-artifact@v4
+        with:
+          name: web-publish
+          path: web-publish
+
+      - name: Deploy to the gh-pages branch
+        # The staged _WEB contents — page + oh-web.js + oh_web.wasm +
+        # oh_web.data in ONE directory (the inline-deploy contract the
+        # zip-root layout serves) — land at the gh-pages branch root.
+        # The page's asset references are RELATIVE ("./oh-web.js"; the
+        # loader finds oh_web.wasm / oh_web.data beside it), which is
+        # what makes the PROJECT subpath gtrak.github.io/SSVOpenHexagon/
+        # resolve — do not "fix" them into absolute paths.
+        # OPERATOR-SIDE (the workflow cannot set it): Settings -> Pages
+        # -> Source = "Deploy a branch", branch gh-pages, folder /
+        # (root). has_pages is false today — nothing serves until the
+        # operator flips it (a wrong pairing, e.g. "GitHub Actions",
+        # is a silent 404).
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: web-publish
