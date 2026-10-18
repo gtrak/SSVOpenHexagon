@@ -173,6 +173,9 @@ jobs:
         with:
           name: open-hexagon-${{ env.ASSET_TAG }}-linux-x86_64.tar.gz
           path: open-hexagon-${{ env.ASSET_TAG }}-linux-x86_64.tar.gz
+          # 045 — a missing artifact is a FAILED job, not a green job with
+          # a warning (see the windows job's note).
+          if-no-files-found: error
 
   windows:
     name: Windows x86_64 (zip, mingw-gnu cross)
@@ -204,15 +207,24 @@ jobs:
         run: bash tools/package.sh --windows
 
       - name: Zip the staged _RELEASE
+        # ../../../ not ../../: the stage dir is THREE levels deep
+        # (target/package/windows-x86_64-pc-windows-gnu), so the zip lands
+        # at the repo root where the Upload step looks for it (issue 045,
+        # run 39105852798: the zip landed in target/ and the upload
+        # warned — silently, at the v4 default if-no-files-found: warn).
         run: |
           cd target/package/windows-x86_64-pc-windows-gnu
-          zip -qr "../../open-hexagon-${ASSET_TAG}-windows-x86_64.zip" _RELEASE
+          zip -qr "../../../open-hexagon-${ASSET_TAG}-windows-x86_64.zip" _RELEASE
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: open-hexagon-${{ env.ASSET_TAG }}-windows-x86_64.zip
           path: open-hexagon-${{ env.ASSET_TAG }}-windows-x86_64.zip
+          # 045 — a missing artifact is a FAILED job, not a green job
+          # with a warning (the v4 default `warn` is how run 39105852798
+          # shipped a green matrix with no windows artifact).
+          if-no-files-found: error
 
   android:
     name: Android arm64-v8a (APK)
@@ -259,6 +271,9 @@ jobs:
         with:
           name: open-hexagon-${{ env.ASSET_TAG }}-android-arm64-v8a.apk
           path: open-hexagon-${{ env.ASSET_TAG }}-android-arm64-v8a.apk
+          # 045 — a missing artifact is a FAILED job, not a green job with
+          # a warning (see the windows job's note).
+          if-no-files-found: error
 
   wasm:
     name: Web (wasm, emscripten)
@@ -308,6 +323,9 @@ jobs:
         with:
           name: open-hexagon-${{ env.ASSET_TAG }}-web.zip
           path: open-hexagon-${{ env.ASSET_TAG }}-web.zip
+          # 045 — a missing artifact is a FAILED job, not a green job with
+          # a warning (see the windows job's note).
+          if-no-files-found: error
 
   release:
     name: Release (tag pushes only)
