@@ -176,7 +176,24 @@ problem). A 2026-10-17 investigation burned ~10 tool calls on KV-exhaustion and
 model-name theories before this; the layout (localhost = worker sglang, remote
 desktop = compaction) is intentional and should not be "fixed" by pointing
 compaction at the local model — that steals prefill from the workers.
-## 10. The orchestrator pushes to origin at milestones (operator directive, 2026-10-17)
+## 11. C++ extlib citations: `cpp-original/extlibs/*` are SUBMODULES — empty in every LANE worktree
+
+`SSVStart`, `SSVUtils`, `SSVMenuSystem`, `SFML`, `vrm_pp`, `vrm_cmake` are git submodules, and a fresh
+worktree does not check them out: measured here, the main checkout has `SSVStart/include/SSVStart/
+GameSystem/` populated (6 files) while lanes 039/041/044 all show **0 entries**. So a lane CANNOT read a
+C++ extlib source from its own worktree, and any citation of one (e.g. `GameWindow.hpp:90`) is
+unverifiable there.
+
+Two consequences, both mechanical:
+- **Verify extlib citations in the MAIN checkout** (`/home/gary/dev/SSVOpenHexagon/cpp-original/...`),
+  which is the tree the orchestrator and citations refer to; if you genuinely need them locally, run
+  `git submodule update --init cpp-original/extlibs/<name>` and say so.
+- **Never assert a citation you could not read.** Lane 047 did this correctly and it is the model: it
+  fixed the behaviour from the C++ code it COULD read (`main.cpp:306`, `Config.cpp:639`) and explicitly
+  marked the extlib citation as "the spec's citation, not independently verifiable here". A citation
+  you cannot open is a claim, not evidence.
+## 12. The orchestrator pushes to origin at milestones (operator directive, 2026-10-17)
+
 
 Operator: *"run git push from now on at milestones."* The orchestrator pushes `master` to
 `origin` as milestones close (a landing, a batch of fixes, a release), instead of letting the
