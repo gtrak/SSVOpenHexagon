@@ -122,8 +122,10 @@ This port inherits, and stands on, the original:
 - **Super Hexagon by [Terry Cavanagh](https://distractionware.com/)** — the
   original inspiration Vittorio built on (and publicly supports).
 - **FantomenK** and the other chiptune artists (BOSSFIGHT, Dunderpatrullen and
-  more) whose tracks ship in `_RELEASE/` — the game's own credits screen names
-  Vittorio Romeo, FantomenK and Terry Cavanagh.
+  more), whose tracks the shipped pack metadata references — the music OGGs are
+  deliberately NOT shipped (upstream's own distribution model; the decision brief
+  is [docs/music-content.md](docs/music-content.md)) — the game's own credits
+  screen names Vittorio Romeo, FantomenK and Terry Cavanagh.
 - The level-pack authors and artists whose work ships in `_RELEASE/Packs/` and
   `art/`.
 
