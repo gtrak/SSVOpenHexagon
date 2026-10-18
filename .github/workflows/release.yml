@@ -22,6 +22,21 @@ name: Release
 #   gh-pages -> (tag pushes only) the wasm page + artifacts deployed
 #               INLINE on the gh-pages branch
 #
+# SHARED APT PREREQS (045): every ubuntu job installs its apt
+# prerequisites through tools/ci-deps.sh — the ONE place the apt surface
+# lives, called by BOTH workflows. This workflow's gate job used to inline
+# ONLY libudev; the 044 ALSA step (libasound2-dev) had landed in ci.yml
+# only, so this gate has never passed and the build matrix above it never
+# ran (run 39097932008). A new prerequisite is added to the script once
+# and reaches every job.
+#
+# ASSET_TAG (045): github.ref_name — the tag on the tag flow, but the
+# BRANCH name on a workflow_dispatch dry-run, which may carry a '/'
+# (lane/045). A '/' is not a filesystem path, so every job that writes or
+# names an artifact file normalizes ASSET_TAG (slashes -> dashes) in a
+# first step; on the tag flow (no '/' in the ref name) the value is
+# untouched and 037's artifact names hold verbatim.
+#
 # WINDOWS — why mingw-gnu and not the cargo-xwin MSVC target that was
 # asked for: lane 037 verified `cargo install cargo-xwin` + `cargo xwin
 # build --release --target x86_64-pc-windows-msvc` locally (cargo-xwin
@@ -102,11 +117,13 @@ jobs:
       - name: Install the pinned toolchain
         run: rustup toolchain install 1.97.1 --component clippy --component rustfmt
 
-      # 29j1 — gilrs -> libudev-sys on Linux only; ubuntu-latest ships it,
-      # the defensive install mirrors ci.yml's gate job.
-      - name: libudev for the desktop controller backend (Linux only)
-        run: |
-          pkg-config --exists libudev || sudo apt-get install -y libudev-dev
+      # 045 — the apt prerequisites (libudev + ALSA + the mingw-w64 cross
+      # toolchain) live in tools/ci-deps.sh, the single source of truth
+      # both workflows call. This job previously inlined ONLY libudev;
+      # the missing 044 ALSA step (libasound2-dev) is why this gate has
+      # never passed (run 39097932008) and the matrix below never ran.
+      - name: The CI apt prerequisites (tools/ci-deps.sh)
+        run: bash tools/ci-deps.sh
 
       - name: Run the gate
         # The port's own gate, verbatim (the same gate ci.yml's gate job
@@ -122,12 +139,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 045 — ASSET_TAG is github.ref_name: on a workflow_dispatch dry-run
+      # it is the BRANCH name, which may carry a '/' (lane/045) — not a
+      # valid artifact file name. Normalize it (slashes -> dashes) for the
+      # steps below; the tag flow's ref name has no '/' and the value is
+      # untouched (037's artifact names, verbatim).
+      - name: Filesystem-safe ASSET_TAG (a dispatch's branch name may carry '/')
+        run: |
+          if [[ "${ASSET_TAG}" == */* ]]; then
+            echo "ASSET_TAG=${ASSET_TAG//\//-}" >> "$GITHUB_ENV"
+          fi
+
       - name: Install the pinned toolchain
         run: rustup toolchain install 1.97.1
 
-      - name: libudev (build-time dep of the desktop controller backend)
-        run: |
-          pkg-config --exists libudev || sudo apt-get install -y libudev-dev
+      # 045 — the host release build needs the same apt prerequisites as
+      # the gate (libudev + ALSA; tools/ci-deps.sh, the shared source of
+      # truth — this job used to inline libudev only and would have died
+      # at alsa-sys).
+      - name: The CI apt prerequisites (tools/ci-deps.sh)
+        run: bash tools/ci-deps.sh
 
       - name: Build + stage + smoke (the packaged binary is tested headless)
         run: bash tools/package.sh
@@ -150,12 +181,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 045 — same ASSET_TAG normalization as the linux job (a dispatch's
+      # branch name may carry a '/'; the tag flow is untouched).
+      - name: Filesystem-safe ASSET_TAG (a dispatch's branch name may carry '/')
+        run: |
+          if [[ "${ASSET_TAG}" == */* ]]; then
+            echo "ASSET_TAG=${ASSET_TAG//\//-}" >> "$GITHUB_ENV"
+          fi
+
       - name: Install the pinned toolchain
         run: rustup toolchain install 1.97.1
 
-      - name: MinGW cross toolchain (preinstalled on ubuntu-latest; defensive)
-        run: |
-          command -v x86_64-w64-mingw32-gcc || sudo apt-get install -y mingw-w64
+      # 045 — the MinGW cross toolchain (preinstalled on ubuntu-latest;
+      # defensive) comes from tools/ci-deps.sh, the shared apt-
+      # prerequisite script.
+      - name: The CI apt prerequisites (tools/ci-deps.sh)
+        run: bash tools/ci-deps.sh
 
       - name: Cross build (release) + stage (the .exe smoke is skipped by the script on a Linux runner)
         # See the file header for why this is mingw-gnu and not cargo-xwin
@@ -179,6 +220,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # 045 — same ASSET_TAG normalization as the linux job (a dispatch's
+      # branch name may carry a '/'; the tag flow is untouched).
+      - name: Filesystem-safe ASSET_TAG (a dispatch's branch name may carry '/')
+        run: |
+          if [[ "${ASSET_TAG}" == */* ]]; then
+            echo "ASSET_TAG=${ASSET_TAG//\//-}" >> "$GITHUB_ENV"
+          fi
 
       - name: JDK (keytool for the self-distribution keystore; apksigner)
         uses: actions/setup-java@v5
@@ -217,6 +266,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # 045 — same ASSET_TAG normalization as the linux job (a dispatch's
+      # branch name may carry a '/'; the tag flow is untouched).
+      - name: Filesystem-safe ASSET_TAG (a dispatch's branch name may carry '/')
+        run: |
+          if [[ "${ASSET_TAG}" == */* ]]; then
+            echo "ASSET_TAG=${ASSET_TAG//\//-}" >> "$GITHUB_ENV"
+          fi
 
       - name: Install the pinned toolchain
         run: rustup toolchain install 1.97.1
@@ -258,6 +315,16 @@ jobs:
     needs: [gate, linux, windows, android, wasm]
     runs-on: ubuntu-latest
     steps:
+      # 045 — the same ASSET_TAG normalization the build jobs run, so the
+      # download names match what they uploaded (tag flows carry no '/',
+      # so this is a no-op in practice; uniformity keeps the contract in
+      # one shape).
+      - name: Filesystem-safe ASSET_TAG (a dispatch's branch name may carry '/')
+        run: |
+          if [[ "${ASSET_TAG}" == */* ]]; then
+            echo "ASSET_TAG=${ASSET_TAG//\//-}" >> "$GITHUB_ENV"
+          fi
+
       - name: Collect the linux artifact
         uses: actions/download-artifact@v4
         with:
@@ -305,6 +372,15 @@ jobs:
       cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
+      # 045 — the same ASSET_TAG normalization the wasm job ran, so the
+      # download name matches the uploaded artifact (a dispatch dry-run
+      # reaches this job; the deploy step below stays push-gated).
+      - name: Filesystem-safe ASSET_TAG (a dispatch's branch name may carry '/')
+        run: |
+          if [[ "${ASSET_TAG}" == */* ]]; then
+            echo "ASSET_TAG=${ASSET_TAG//\//-}" >> "$GITHUB_ENV"
+          fi
+
       - name: Download the web artifact
         uses: actions/download-artifact@v4
         with:

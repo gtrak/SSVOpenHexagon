@@ -47,9 +47,12 @@ name: CI
 #                   exactly the kind of thing nobody diagnoses later.
 #
 # ONE SOURCE OF TRUTH: every job invokes a tools/ script (tools/gate.sh,
-# tools/build-windows.sh, tools/check-android.sh, tools/package-web.sh) —
-# no build command exists inline in a workflow, so a local run and a CI
-# run cannot drift. That drift is exactly how the Windows hole happened.
+# tools/build-windows.sh, tools/check-android.sh, tools/package-web.sh,
+# and tools/ci-deps.sh for the apt prerequisites) — no build command or
+# apt prerequisite exists inline in a workflow, so a local run and a CI
+# run cannot drift. That drift is exactly how the Windows hole happened
+# (and how the 044 ALSA step reached this file but not release.yml's
+# gate job — issue 045).
 #
 # THE PAGES PUBLISHERS (issue 040): ci.yml's pages job (this file) and
 # release.yml's gh-pages job both write the gh-pages branch, so both carry
@@ -93,28 +96,19 @@ jobs:
       - name: Install the pinned toolchain (mirrors rust-toolchain.toml)
         run: rustup toolchain install 1.97.1 --component clippy --component rustfmt
 
-      # 29j1 — the desktop controller backend (gilrs -> libudev-sys on
-      # LINUX only) needs the `libudev` system library at build time, so
-      # the gate's `cargo build/test --workspace` needs it on the ubuntu
-      # leg (present on ubuntu-latest; the defensive install mirrors the
-      # mingw pattern). The windows leg does not need it (libudev-sys is
-      # a Linux-only dep of gilrs-core).
-      - name: libudev for the desktop controller backend (Linux only)
+      # 045 — the apt prerequisites (libudev + ALSA + the mingw-w64 cross
+      # toolchain) live in tools/ci-deps.sh, the single source of truth
+      # both workflows call, so the next prerequisite cannot drift. The
+      # history is in the script's header: 044's ALSA step (libasound2-
+      # dev) was inlined in THIS job only, release.yml's gate job never
+      # got it, and the release matrix's gate died of the same alsa-sys
+      # build-script failure (run 39097932008). libudev (the desktop
+      # controller backend, 29j1) and ALSA (the audio backend, 044) are
+      # Linux-only deps; the windows leg needs neither (the script
+      # no-ops off-Linux; the if: keeps the windows leg one step leaner).
+      - name: The CI apt prerequisites (tools/ci-deps.sh)
         if: runner.os == 'Linux'
-        run: |
-          pkg-config --exists libudev || sudo apt-get install -y libudev-dev
-
-      # 044 — the audio backend (rodio -> cpal -> alsa-sys on LINUX only)
-      # links the system ALSA library; alsa-sys's build script needs
-      # `alsa.pc`. It is NOT on the ubuntu-latest image — the gate's
-      # `cargo build --workspace` failed exactly here (run 39088375527:
-      # "Package 'alsa' was not found in the pkg-config search path").
-      # The windows leg does not need it (cpal's ALSA backend is
-      # Linux-only).
-      - name: ALSA for the audio backend (Linux only)
-        if: runner.os == 'Linux'
-        run: |
-          pkg-config --exists alsa || sudo apt-get install -y libasound2-dev
+        run: bash tools/ci-deps.sh
 
       - name: Run the gate
         # git-bash on the windows runner / the default bash on ubuntu.
@@ -129,9 +123,11 @@ jobs:
       - name: Install the pinned toolchain (mirrors rust-toolchain.toml)
         run: rustup toolchain install 1.97.1 --component clippy --component rustfmt
 
-      - name: MinGW cross toolchain (preinstalled on the image; defensive)
-        run: |
-          command -v x86_64-w64-mingw32-gcc || sudo apt-get install -y mingw-w64
+      # 045 — the mingw-w64 cross toolchain (preinstalled on the image;
+      # the defensive install) comes from tools/ci-deps.sh, the shared
+      # apt-prerequisite script (see the gate job above).
+      - name: The CI apt prerequisites (tools/ci-deps.sh)
+        run: bash tools/ci-deps.sh
 
       # cargo check --workspace --all-targets --target x86_64-pc-windows-gnu —
       # the fast cross signal (incl. the libsodium cross-prebuild; see the
