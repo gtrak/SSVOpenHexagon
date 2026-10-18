@@ -4033,7 +4033,17 @@ pub fn create_window(config: &Config, base_dir: &Path) -> Window {
     // (Version.hpp:47).
     let title = "Open Hexagon 2.1.7 - by Vittorio Romeo - https://vittorioromeo.info";
 
-    let mut window = Window::create(physical_w.max(1), physical_h.max(1), title);
+    // C++ main.cpp:304-310 — the window creation takes the C++'s
+    // `antialiasing_level` (main.cpp:307) as the context's MSAA sample
+    // count (050: the level now reaches the context it gates — the C++'s
+    // `recreateWindow` `ContextSettings`, GameWindow.hpp:91; the
+    // setter-below keeps the C++'s order + the store half).
+    let mut window = Window::create(
+        physical_w.max(1),
+        physical_h.max(1),
+        title,
+        config.get_antialiasing_level(),
+    );
     // Restore the logical size members (the C++ `setSize(logical)`).
     // Emscripten (issue 32 §2.3): NOT here — the web window's size IS
     // the real canvas size (the CSS box × the device pixel ratio,

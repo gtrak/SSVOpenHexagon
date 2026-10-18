@@ -37,7 +37,7 @@ the table. Anything re-verified by the orchestrator says so.
 | `vsync` | `main.cpp:308` → SFML `eglSwapInterval` | `Window::set_vsync` → `GlParts::set_swap_interval` (live interval) | **APPLIED** | **APPLIED** (25j's live EGL swap interval) | **INERT** — browser rAF is display-vsynced; no swap-interval API |
 | `limit_fps` | `main.cpp:309` → `setFPSLimited` | `set_fps_limited` → `effective_framerate_limit` → `ControlFlow::WaitUntil` | **APPLIED** | **MISSING — see K2** (the value reaches the pacing logic, but winit's android event loop never blocks while a redraw is pending and 025i keeps one pending, so the cap is not enforced: menu ~500 fps, in-game ~360 fps against the C++'s paced 200, CPU 76–71 % vs the C++'s lower burn) | **INERT** — rAF paces frames |
 | `max_fps` | `main.cpp:310` → `setMaxFPS` | `set_max_fps` → throttle | **APPLIED** | **MISSING — see K2** (as above) | **INERT** — rAF paces frames |
-| `antialiasing_level` | `main.cpp:307` → SFML msaa context; `MenuGame.cpp:1447-1464` | read + recorded only; GL configs have **no msaa samples** (`finish_gl` plain `ConfigTemplateBuilder`; android EGL no samples; wasm `antialias: false`) | **MISSING** | **MISSING** | **MISSING** |
+| `antialiasing_level` | `main.cpp:307` → SFML msaa context; `MenuGame.cpp:1447-1464` | level → context creation: the `pick_msaa_config` shared tail (gl.rs — smallest config with samples ≥ level; no config ≥ level → largest samples BELOW + the SFML-style downgrade warning, the pinned fork's `evaluateFormat`/post-creation-check shape, `GlContext.cpp:733-749`/`:974-988`); wasm `antialias = level > 0` (WebGL2's `antialias` is a BOOLEAN — the browser picks the sample count, the level stated as non-honourable-exactly at the create site + logged with the measured `GL_SAMPLES`) | **APPLIED** (050: the level now selects the MSAA context config; the scene renders to the DEFAULT framebuffer — no FBO anywhere in `oh-render` — so the context's samples ARE the effect, SFML's own model. MEASURED `GL_SAMPLES` (Mesa 4.5, Xvfb): 4→4, 8→8, 0→0, 2→4 (no 2-sample config; smallest ≥), 16/32→8 + warning) | **APPLIED** (050: the level goes into the Android EGL config pick through the SAME tail — the real risk handled: no matching EGL config → closest-available fallback + the named warning; `check-android.sh` green; the device's `GL_SAMPLES` is PENDING — adb unreachable) | **APPLIED** (050: the honest boolean mapping above — the level's exact value is NOT expressible in WebGL2, so "applied" means `antialias=true` iff level > 0 and the browser's own count (its `GL_SAMPLES`) is the observable; the emscripten check green in the emsdk container; the browser's actual count is PENDING — no browser on this box) |
 | `pixel_multiplier` | `main.cpp:305` → `GameWindow.hpp:93` (×pixelMult) | physical = logical × mult at `create` (`windowed.rs:3946`, `android.rs:255`) | **APPLIED** | **APPLIED** | **INERT** — canvas is CSS-box × DPR, not config × mult |
 
 ### The correction applied to this table (orchestrator)
@@ -104,11 +104,26 @@ menu seam) · `show_level_info` (`update.rs:203`, `graphics.rs:693`) · `show_ti
   `RealJoystick` via `load_all_joystick_binds`). Android/wasm **INERT-BY-DESIGN** — no controller
   hardware, and the C++'s `Joystick::isConnected(0) == false` state is equally inert without one.
 
-## Filed but unfixed
+## Filed but unfixed → FIXED by lane 050 (the record)
 
-**`antialiasing_level` is MISSING on all three targets.** The contexts are created with no msaa samples
-(verified by the orchestrator: `gl.rs:541` `antialias: false`, and no `multisampling` anywhere in
-`oh-render`) while the C++ applies SFML msaa (`main.cpp:307`, `MenuGame.cpp:1447-1464`). Fixing it means
-plumbing a sample count through all three GL backends *and* selecting a config that has that sample
-count (not merely the first config), with a real risk that an Android EGL config lacks the requested
-samples. **Size: MEDIUM-LARGE** — its own lane.
+**`antialiasing_level` was MISSING on all three targets** (this section's original finding, since
+repaired). The contexts were created with no msaa samples (verified by the orchestrator: `gl.rs:541`
+`antialias: false`, and no `multisampling` anywhere in `oh-render`) while the C++ applies SFML msaa
+(`main.cpp:307`, `MenuGame.cpp:1447-1464`). Filed **Size: MEDIUM-LARGE** — its own lane.
+
+**The 050 shape diagnosis closed the size question the other way: it was the SMALL shape.** The
+scene renders to the DEFAULT framebuffer (no `glBindFramebuffer` anywhere in `oh-render`; the
+`RenderTexture` is a CPU-side analog; `render_states_for_stage`/the 029n1 pack shaders select
+per-stage shader/blend state only — never a framebuffer target), so a multisampled context IS the
+whole fix — SFML's own model (`recreateWindow`'s `ContextSettings{0, 0, antialiasingLevel, 0, 0}`,
+GameWindow.hpp:91, applied before the window exists; the C++ has no offscreen render target in its
+draw path either). No multisampled-FBO + resolve work was needed. What landed (the section-A row
+above is the applied state): the level plumbed into all three context creations (glutin's config
+pick — NOT a hard `with_multisampling` filter: it would return zero configs when the driver offers
+only HIGHER sample counts, and it `debug_assert`s a power of two the C++ menu's reachable level 1
+isn't; the pick mirrors the pinned SFML enumerate-and-score instead), the Android EGL fallback +
+named warning (the "no matching config" risk), and the wasm boolean mapping stated honestly. The
+acceptance is the MEASURED `GL_SAMPLES` (`glGetIntegerv` — available on all three targets), not the
+intent: the desktop half is measured on this box (Mesa 4.5 over Xvfb — the table's numbers); the
+Android device half and the browser half are PENDING (adb down / no browser here — the create-time
+logs are the standing probe for both).

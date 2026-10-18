@@ -172,18 +172,31 @@ pub struct GlBackend {
 
 #[cfg(not(target_os = "emscripten"))]
 impl GlBackend {
-    /// Bootstrap a real GL context of `width`×`height`. Returns `None`
+    /// Bootstrap a real GL context of `width`×`height`.
+    /// `antialiasing_level` is the config's level — the C++'s
+    /// `ContextSettings::antialiasing` sample count (`main.cpp:307` →
+    /// `GameWindow.hpp:91`); 0 = no MSAA request. Returns `None`
     /// headless (no display / GPU).
-    pub fn try_create(width: u32, height: u32, title: &str) -> Option<Self> {
-        std::panic::catch_unwind(AssertUnwindSafe(|| Self::create(width, height, title)))
-            .ok()
-            .and_then(|o| o)
+    pub fn try_create(
+        width: u32,
+        height: u32,
+        title: &str,
+        antialiasing_level: u32,
+    ) -> Option<Self> {
+        std::panic::catch_unwind(AssertUnwindSafe(|| {
+            Self::create(width, height, title, antialiasing_level)
+        }))
+        .ok()
+        .and_then(|o| o)
     }
 
-    /// Bootstrap a real GL context of `width`×`height`. Returns `None`
-    /// headless (no display / GPU).
+    /// Bootstrap a real GL context of `width`×`height`.
+    /// `antialiasing_level` is the context's MSAA sample count request
+    /// (0 = off); the config pick + the downgrade warning are
+    /// `pick_msaa_config` (the 050 shape, module docs above). Returns
+    /// `None` headless (no display / GPU).
     #[allow(deprecated)] // pre-`run_app` window creation uses `EventLoop::create_window` + `WindowAttributes::new`, both superseded by `ActiveEventLoop` in winit 0.30
-    fn create(width: u32, height: u32, title: &str) -> Option<Self> {
+    fn create(width: u32, height: u32, title: &str, antialiasing_level: u32) -> Option<Self> {
         let event_loop = EventLoop::new().ok()?;
         let width = NonZero::new(width).unwrap_or(NonZero::new(1).unwrap());
         let height = NonZero::new(height).unwrap_or(NonZero::new(1).unwrap());
@@ -257,7 +270,14 @@ impl GlBackend {
             .with_context_api(ContextApi::OpenGl(None))
             .with_profile(GlProfile::Compatibility)
             .build(Some(window_handle));
-        let parts = finish_gl(display, window, width.get(), height.get(), &ctx_attrs)?;
+        let parts = finish_gl(
+            display,
+            window,
+            width.get(),
+            height.get(),
+            &ctx_attrs,
+            antialiasing_level,
+        )?;
 
         Some(Self { event_loop, parts })
     }
@@ -330,7 +350,8 @@ impl GlBackend {
 }
 
 /// The shared GL bootstrap tail (desktop `create` + the android
-/// `create_android_parts`, issue 25b SG2): pick the FIRST config, then
+/// `create_android_parts`, issue 25b SG2): pick the config for the
+/// requested MSAA level ([`pick_msaa_config`] — the 050 shape), then
 /// `finish_gl_on_config` (build the window surface on the winit
 /// window's raw handle, create + make current the context with the
 /// given attributes, load the `glow` API, and wrap everything in the
@@ -341,7 +362,9 @@ impl GlBackend {
 ///
 /// `width`/`height` are the SURFACE (framebuffer) size: the desktop's
 /// requested physical window size (clamped to 1, the `create`'s `NonZero`
-/// semantics), the android native window's screen size.
+/// semantics), the android native window's screen size. `msaa_level` is
+/// the config's `antialiasing_level` (0 = no MSAA request, the C++'s
+/// level-0 arm — SFML's `ContextSettings::antialiasing = 0`).
 #[cfg(not(target_os = "emscripten"))]
 fn finish_gl(
     display: Display,
@@ -349,12 +372,11 @@ fn finish_gl(
     width: u32,
     height: u32,
     ctx_attrs: &ContextAttributes,
+    msaa_level: u32,
 ) -> Option<GlParts> {
     let width = NonZero::new(width).unwrap_or(NonZero::new(1).unwrap());
     let height = NonZero::new(height).unwrap_or(NonZero::new(1).unwrap());
-    let config = unsafe { display.find_configs(ConfigTemplateBuilder::new().build()) }
-        .ok()?
-        .next()?;
+    let config = pick_msaa_config(&display, msaa_level)?;
     finish_gl_on_config(
         display,
         window,
@@ -365,9 +387,119 @@ fn finish_gl(
     )
 }
 
+/// The 050 config pick: the `antialiasing_level` → context MSAA wiring
+/// (the C++'s own model — `main.cpp:307` stores the level, the first
+/// `GameWindow::recreateWindow` reads it into
+/// `sf::ContextSettings{0, 0, antialiasingLevel, 0, 0}` (GameWindow.hpp:
+/// 91) BEFORE the render window exists; the scene renders to the DEFAULT
+/// framebuffer — `GlDrawTarget` binds no FBO anywhere in `oh-render` — so
+/// a multisampled context IS the whole fix, exactly SFML's shape).
+///
+/// SFML's own selection (pinned fork `dacceddbd`) enumerates ALL the
+/// display's configs and SCORES them: `evaluateFormat`'s
+/// `antialiasingDiff` (GlContext.cpp:733-749) weights a SHORTFALL (fewer
+/// samples than requested) ×100000 — so the smallest-samples-≥-request
+/// config wins when one exists, a short config is only picked when nothing
+/// better is available, and the post-creation check warns (GlContext.cpp:
+/// 974-988) instead of failing. This mirrors that shape over glutin's
+/// backend-abstracted `GlConfig::num_samples` (the `EGL_SAMPLES` /
+/// `GLX_SAMPLES` / `WGL_SAMPLES_ARB` read-back, glutin 0.32.3's
+/// per-backend config impls):
+///
+/// * **level 0** → the FIRST config (the pre-050 port behaviour — a plain
+///   template's first pick; the C++'s level 0 requests no MSAA);
+/// * **level > 0, a config ≥ level exists** → the
+///   smallest-samples-≥-level config (NOT the first config: a plain
+///   template's first pick is commonly the 0-sample one — the pick the
+///   pre-050 port made, which is why the level was inert);
+/// * **level > 0, no config ≥ level** → the config with the LARGEST
+///   sample count BELOW the level (SFML's scoring's own answer: the
+///   shortfall penalty is monotonic in the shortfall, so the closest
+///   available config wins — level 8 over a `{0, 4}` device picks the
+///   4-sample config, not 0; the `GlContext.cpp:974-988` warning is the
+///   "report which happened" half). Only when NO config carries ANY
+///   samples at all does the pick fall to the first config (the pre-050
+///   behaviour — all configs are equally short, the other scoring terms
+///   decide, and the port's documented prior behaviour is the tie-break).
+///
+/// Deliberately NOT a hard `ConfigTemplateBuilder::with_multisampling(n)`
+/// filter: that pushes `EGL_SAMPLES = n` into `eglChooseConfig` (glutin
+/// 0.32.3 `api/egl/config.rs:122-124`) and returns ZERO configs when the
+/// driver offers only HIGHER sample counts (the C++'s SFML would take
+/// those — the scoring's `antialiasingDiff < 0` arm, ×1 — and a hard
+/// filter would silently lose MSAA entirely); it also `debug_assert`s a
+/// power of two (glutin 0.32.3 `config.rs:143-147`), which the C++
+/// menu's reachable level 1 (the `0 → 1 → 2 → 4 → 8 → 16` cycle,
+/// MenuGame.cpp:1450-1464) is not (drivers carry no 1-sample configs —
+/// the C++'s level 1 resolves to the smallest ≥1, the ×100000-shortfall
+/// scoring's own answer).
+#[cfg(not(target_os = "emscripten"))]
+fn pick_msaa_config(display: &Display, msaa_level: u32) -> Option<glutin::config::Config> {
+    // The PLAIN template — the same config universe the pre-050 tail
+    // queried; the MSAA filter is applied HERE, over each config's
+    // `num_samples` (the SFML enumerate-and-score shape, module above).
+    let configs: Vec<glutin::config::Config> =
+        unsafe { display.find_configs(ConfigTemplateBuilder::new().build()) }
+            .ok()?
+            .collect();
+    let first = configs.first()?;
+    if msaa_level == 0 {
+        return Some(first.clone());
+    }
+    // The smallest-samples-≥-level config (among the non-shortfall configs
+    // the `evaluateFormat` AA term rewards the SMALLEST excess: samples 4
+    // beats 8 for a level-4 request).
+    let mut best: Option<&glutin::config::Config> = None;
+    for c in &configs {
+        let samples = c.num_samples() as u32;
+        if samples < msaa_level {
+            continue;
+        }
+        match best {
+            Some(b) if b.num_samples() <= c.num_samples() => {}
+            _ => best = Some(c),
+        }
+    }
+    match best {
+        Some(c) => {
+            eprintln!(
+                "[oh-render] context MSAA: requested level {msaa_level} — \
+                 config with {} samples",
+                c.num_samples()
+            );
+            Some(c.clone())
+        }
+        None => {
+            // No config carries ≥ `msaa_level` samples: SFML's scoring
+            // (GlContext.cpp:733-749) still picks the CLOSEST available
+            // config — the shortfall penalty is monotonic in the
+            // shortfall, so the LARGEST sample count under the request
+            // wins (level 16 over `{0, 4, 8}`: the 8-sample config; a
+            // level-8 request on a `{0, 4}` Android device: the 4-sample
+            // config, not 0). No config with ANY samples at all → the
+            // first config (all equally short — the pre-050 pick).
+            let pick = configs
+                .iter()
+                .filter(|c| c.num_samples() > 0)
+                .max_by_key(|c| c.num_samples())
+                .unwrap_or(first);
+            let available: Vec<u8> = configs.iter().map(|c| c.num_samples()).collect();
+            eprintln!(
+                "[oh-render] context MSAA: requested level {msaa_level} but no \
+                 config carries that many samples (available: {available:?}) — \
+                 falling back to the closest config ({} samples); the scene \
+                 runs with fewer samples than requested (the SFML downgrade \
+                 warning's analogue, pinned GlContext.cpp:974-988)",
+                pick.num_samples()
+            );
+            Some(pick.clone())
+        }
+    }
+}
+
 /// The tail's config-explicit half: the surface/context/glow bootstrap
 /// over a caller-picked config (the desktop/android `finish_gl`'s
-/// first-config pick + the `try_create_gles` probe's GLES3-filtered
+/// MSAA-aware pick + the `try_create_gles` probe's GLES3-filtered
 /// pick).
 #[cfg(not(target_os = "emscripten"))]
 fn finish_gl_on_config(
@@ -388,6 +520,13 @@ fn finish_gl_on_config(
     let context = not_current.make_current(&surface).ok()?;
     let gl =
         unsafe { glow::Context::from_loader_function_cstr(|name| display.get_proc_address(name)) };
+    // The 050 acceptance observable: the context's ACTUAL sample count
+    // (`glGetIntegerv(GL_SAMPLES)`) — the driver's answer to the request,
+    // not the request (a downgrade reports here; the pick's warning above
+    // says which config was available).
+    eprintln!("[oh-render] context GL_SAMPLES = {}", unsafe {
+        gl.get_parameter_i32(glow::SAMPLES)
+    });
     Some(GlParts {
         gl,
         width: width.get(),
@@ -414,7 +553,7 @@ fn finish_gl_on_config(
 /// ensure_android_gl` degradation: headless frames, once).
 #[cfg(target_os = "android")]
 #[allow(deprecated)] // `WindowAttributes::new` (winit 0.30's superseded ctor) — the android platform ignores the attributes anyway (screen-sized activity window)
-pub fn create_android_parts(el: &ActiveEventLoop) -> Option<GlParts> {
+pub fn create_android_parts(el: &ActiveEventLoop, antialiasing_level: u32) -> Option<GlParts> {
     // The screen size (the C++ render window's physical size — the
     // `GameWindow::run`'s framebuffer; `GlParts.width/height` drive the
     // `GlDrawTarget`'s view + the `read_framebuffer`/screenshot readback).
@@ -441,7 +580,19 @@ pub fn create_android_parts(el: &ActiveEventLoop) -> Option<GlParts> {
     let ctx_attrs = ContextAttributesBuilder::new()
         .with_context_api(ContextApi::Gles(Some(Version::new(3, 0))))
         .build(None);
-    finish_gl(display, window, width, height, &ctx_attrs)
+    // The 050 level (the C++ main.cpp:307 → the C++ `recreateWindow`'s
+    // `ContextSettings` sample count, GameWindow.hpp:91): the Android
+    // EGL config carries the request — `pick_msaa_config`'s enumerate +
+    // the real risk it handles (no Android EGL config may carry the
+    // requested samples: the fallback + the warning, not a failure).
+    finish_gl(
+        display,
+        window,
+        width,
+        height,
+        &ctx_attrs,
+        antialiasing_level,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -521,11 +672,18 @@ pub struct GlBackend {
 impl GlBackend {
     /// Bootstrap the WebGL2 context on the page's `<canvas id="c">` (the
     /// W1 selector — the web page MUST provide it; the `title` is the
-    /// page's `<title>`, a no-op here). Returns `None` when the canvas is
+    /// page's `<title>`, a no-op here). `antialiasing_level` maps to the
+    /// WebGL context's `antialias` BOOLEAN (the 050 honest mapping, below).
+    /// Returns `None` when the canvas is
     /// missing or WebGL2 is unavailable (the `Window::create` headless
     /// degradation — the desktop no-display arm).
     #[must_use]
-    pub fn try_create(width: u32, height: u32, _title: &str) -> Option<Self> {
+    pub fn try_create(
+        width: u32,
+        height: u32,
+        _title: &str,
+        antialiasing_level: u32,
+    ) -> Option<Self> {
         let canvas: web_sys::HtmlCanvasElement = web_sys::window()?
             .document()?
             .get_element_by_id("c")?
@@ -538,7 +696,13 @@ impl GlBackend {
             alpha: false,
             depth: false,
             stencil: false,
-            antialias: false,
+            // The 050 honest mapping: WebGL2's `antialias` is a BOOLEAN —
+            // the browser picks the sample count (typically 4), so the
+            // config's LEVEL cannot be honoured exactly on the web target
+            // (unlike the desktop/android contexts, where the level IS the
+            // requested sample count). 0 = off, nonzero = on; the
+            // `GL_SAMPLES` read-back below is the browser's actual answer.
+            antialias: antialiasing_level > 0,
             premultiplied_alpha: false,
             preserve_drawing_buffer: false,
             power_preference: 0, // EM_WEBGL_POWER_PREFERENCE_DEFAULT
@@ -584,6 +748,17 @@ impl GlBackend {
                 emscripten_gl::emscripten_webgl_get_proc_address(name.as_ptr())
             })
         };
+        // The 050 acceptance observable: the browser's ACTUAL sample count
+        // (`glGetIntegerv(GL_SAMPLES)`) — the boolean mapping's answer
+        // (the level's non-honourable-exactly caveat, the task's wasm
+        // constraint, stated at the create site).
+        eprintln!(
+            "[oh-render] WebGL2 antialias = {} (antialiasing_level \
+             {antialiasing_level} → boolean; the browser picks the sample \
+             count) — GL_SAMPLES = {}",
+            attrs.antialias,
+            unsafe { gl.get_parameter_i32(glow::SAMPLES) }
+        );
         Some(Self {
             parts: GlParts {
                 gl,
@@ -720,6 +895,20 @@ impl GlParts {
     pub fn version_string(&self) -> Option<String> {
         let v = self.gl.version();
         Some(format!("GL {}.{}", v.major, v.minor))
+    }
+
+    /// `glGetIntegerv(GL_SAMPLES)` — the live context's ACTUAL sample count
+    /// (0 = the default framebuffer is not multisampled). The 050
+    /// acceptance observable on all three targets: the config's
+    /// `antialiasing_level` is the context REQUEST (the C++'s
+    /// `ContextSettings::antialiasing`, GameWindow.hpp:91); this read-back
+    /// is the driver/browser's ANSWER (a downgrade reports here, not in
+    /// the request — the C++'s own post-creation check is the analogue,
+    /// pinned SFML fork `GlContext.cpp:974-988`).
+    #[must_use]
+    pub fn gl_samples(&self) -> u32 {
+        let gl = &self.gl;
+        unsafe { gl.get_parameter_i32(glow::SAMPLES) }.max(0) as u32
     }
 
     /// Clear the default framebuffer to `color` (RGBA `f32`) and read back the

@@ -85,7 +85,10 @@ fn pixel_at(gl: &glow::Context, x: u32, y: u32) -> [u8; 4] {
 /// `None` = skip (headless); `Some(Ok(()))` = guard passed; `Some(Err(e))`
 /// = real failure on a live context.
 fn run_guard() -> Option<Result<(), String>> {
-    let backend = GlBackend::try_create(800, 450, "oh-render golden frame");
+    // 0 = no MSAA request: the guard's context is a probe, not the game's
+    // window (the 050 level wiring — `pick_msaa_config`'s level-0 arm is
+    // the pre-050 first-config pick, unchanged).
+    let backend = GlBackend::try_create(800, 450, "oh-render golden frame", 0);
     let Some(backend) = backend else {
         eprintln!(
             "SKIP golden_frames: no display/GPU available (headless) — \

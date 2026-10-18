@@ -318,7 +318,10 @@ fn main() {
         std::process::exit(run_gles_column());
     }
 
-    let Some(backend) = GlBackend::try_create(W, H, "pack_shaders_gl (029n1 K6)") else {
+    // 0 = no MSAA request: the example's probe context, not the game's
+    // window (the 050 level wiring — `pick_msaa_config`'s level-0 arm is
+    // the pre-050 first-config pick, unchanged).
+    let Some(backend) = GlBackend::try_create(W, H, "pack_shaders_gl (029n1 K6)", 0) else {
         eprintln!(
             "pack_shaders_gl: SKIPPED (D-011 skip-with-reason) — no GL context on this box \
              (no display / no software GL). §4.2 (the compile guard) and §4.3 (the \

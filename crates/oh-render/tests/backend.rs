@@ -513,7 +513,10 @@ fn window_headless_surface() {
 
 #[test]
 fn gpu_smoke() {
-    let win = Window::create(64, 64, "oh-render-gpu-smoke");
+    // 0 = no MSAA request: the smoke context is a probe, not the game's
+    // window (the 050 level wiring — `antialiasing_level_zero_*` /
+    // `_nonzero_*` below pin the level's behaviour on a live context).
+    let win = Window::create(64, 64, "oh-render-gpu-smoke", 0);
     let Some(parts) = win.gl() else {
         println!(
             "SKIP: no display/GPU in this environment (winit/GL bootstrap failed or is unavailable); headless path active"
@@ -571,6 +574,57 @@ fn gpu_smoke() {
     let _ = std::fs::remove_file(&shot);
 }
 
+// ---------------------------------------------------------------------------
+// 050 — the `antialiasing_level` → context MSAA wiring (the config's level
+// is the C++'s `ContextSettings::antialiasing` sample count — main.cpp:307
+// → GameWindow.hpp:91). The acceptance is the MEASURED `GL_SAMPLES`
+// (`glGetIntegerv` — the authoritative observable on all three targets),
+// not the intent: level 0 MUST report 0 samples (the pre-050 port state was
+// 0 on every target — the finding this pair closes); a nonzero level must
+// land on the driver's actual count (the `>= 1` assert — a downgrade
+// reports here + in the `pick_msaa_config` warning, it is a finding, not a
+// failure; these tests skip headless like the rest of this file, D-011).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn antialiasing_level_zero_reports_zero_gl_samples() {
+    let win = Window::create(64, 64, "oh-render-msaa-zero", 0);
+    let Some(parts) = win.gl() else {
+        println!(
+            "SKIP: no display/GPU in this environment (winit/GL bootstrap failed or is unavailable); headless path active"
+        );
+        return;
+    };
+    assert_eq!(
+        parts.gl_samples(),
+        0,
+        "a level-0 context requests no samples — GL_SAMPLES must be 0"
+    );
+}
+
+#[test]
+fn antialiasing_level_four_reports_the_driver_samples() {
+    let win = Window::create(64, 64, "oh-render-msaa-four", 4);
+    let Some(parts) = win.gl() else {
+        println!(
+            "SKIP: no display/GPU in this environment (winit/GL bootstrap failed or is unavailable); headless path active"
+        );
+        return;
+    };
+    let samples = parts.gl_samples();
+    eprintln!("050 measured: antialiasing_level 4 → GL_SAMPLES {samples}");
+    // Desktop GL (the compatibility context `create` requests — the C++'s
+    // own shape) must offer a ≥4-sample default framebuffer (GL 1.1's
+    // MAX_SAMPLES ≥ 4); a 0 here means no MSAA config at all on this
+    // driver (the `pick_msaa_config` fallback warning names the available
+    // sample counts) — a downgrade, reported, not asserted away.
+    assert!(
+        samples >= 1,
+        "a level-4 context on desktop GL must land on a multisampled \
+         config; driver downgrades print above (GL_SAMPLES {samples})"
+    );
+}
+
 // 025j — the swap-interval wiring: `Window::set_vsync` applies the live
 // interval through `GlParts::set_swap_interval` (glutin's
 // `GlSurface::set_swap_interval` — the pinned SFML's `eglSwapInterval`
@@ -581,7 +635,7 @@ fn gpu_smoke() {
 // test above.
 #[test]
 fn set_vsync_round_trips_and_applies_on_a_live_context() {
-    let mut win = Window::create(64, 64, "oh-render-swap-interval");
+    let mut win = Window::create(64, 64, "oh-render-swap-interval", 0);
     if win.gl().is_none() {
         println!(
             "SKIP: no display/GPU in this environment (winit/GL bootstrap failed or is unavailable); headless path active"
@@ -609,7 +663,7 @@ fn set_vsync_round_trips_and_applies_on_a_live_context() {
 #[cfg(not(target_os = "android"))]
 #[test]
 fn set_fullscreen_round_trips_and_requests_the_winit_window() {
-    let mut win = Window::create(64, 64, "oh-render-fullscreen");
+    let mut win = Window::create(64, 64, "oh-render-fullscreen", 0);
     // The store half always round-trips (headless or not).
     win.set_fullscreen(true);
     assert!(win.get_fullscreen());

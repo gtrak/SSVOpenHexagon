@@ -276,10 +276,14 @@ fn create_android_window(
     // Restore the logical size members (the C++ `setSize(logical)`).
     window.set_size(logical_w as u32, logical_h as u32);
 
-    // C++ main.cpp:305-310 (the setters, in the C++ order) — the
-    // android-platform no-op half (fullscreen / antialiasing / vsync /
-    // fps-limit record the config value; the platform window owns the
-    // actual surface).
+    // C++ main.cpp:305-310 (the setters, in the C++ order). Antialiasing
+    // (main.cpp:307) records the config value here and is APPLIED at the
+    // first `resumed`'s GL materialization (`ensure_android_gl` →
+    // `create_android_parts(el, self.antialiasing_level)` — the C++
+    // `recreateWindow`'s `ContextSettings` sample count, 050); fullscreen /
+    // fps-limit keep their android-platform record halves (the platform
+    // window owns the actual surface; vsync IS applied live at the
+    // materialization — `parts.set_swap_interval`).
     window.set_pixel_mult(pixel_mult);
     window.set_fullscreen(config.get_fullscreen());
     window.set_antialiasing_level(config.get_antialiasing_level());

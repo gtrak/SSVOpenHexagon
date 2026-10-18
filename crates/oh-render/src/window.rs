@@ -780,6 +780,13 @@ pub struct Window {
     /// equivalent).
     pixel_mult: f32,
     fullscreen: bool,
+    /// C++ `GameWindow::antialiasingLevel` (GameWindow.hpp:38, default 3 —
+    /// the `new_inner`'s 3) — the MSAA sample count the C++'s
+    /// `recreateWindow` passes into `sf::ContextSettings` (GameWindow.hpp:
+    /// 91, `main.cpp:307` stores the value). The port applies it at GL
+    /// context creation (the desktop/wasm `create` parameter, the android
+    /// first-`resumed` materialization's `create_android_parts`), and this
+    /// is the C++ setter's store half (GameWindow.hpp:187-190).
     antialiasing_level: u32,
     vsync: bool,
     framerate_limit: f32,
@@ -890,21 +897,30 @@ impl Window {
         Self::new_inner(width, height, "open-hexagon")
     }
 
-    /// Create a real window + GL context. Degrades to a headless window
-    /// (`gl() == None`) when no display / GPU is available.
+    /// Create a real window + GL context. `antialiasing_level` is the
+    /// config's `antialiasing_level` (the C++'s `main.cpp:307` value → the
+    /// C++ `recreateWindow`'s `ContextSettings::antialiasing` sample count,
+    /// GameWindow.hpp:91) — applied to the context being created (050; 0 =
+    /// no MSAA request). Degrades to a headless window (`gl() == None`)
+    /// when no display / GPU is available (the level is still recorded).
     #[cfg(not(target_os = "emscripten"))]
     #[must_use]
-    pub fn create(width: u32, height: u32, title: &str) -> Self {
-        match GlBackend::try_create(width, height, title) {
+    pub fn create(width: u32, height: u32, title: &str, antialiasing_level: u32) -> Self {
+        match GlBackend::try_create(width, height, title, antialiasing_level) {
             Some(backend) => {
-                let base = Self::new_inner(width, height, title);
+                let mut base = Self::new_inner(width, height, title);
+                base.antialiasing_level = antialiasing_level;
                 Self {
                     event_loop: Some(backend.event_loop),
                     gl: Some(backend.parts),
                     ..base
                 }
             }
-            None => Self::new_inner(width, height, title),
+            None => {
+                let mut base = Self::new_inner(width, height, title);
+                base.antialiasing_level = antialiasing_level;
+                base
+            }
         }
     }
 
@@ -926,8 +942,12 @@ impl Window {
     /// to the requested size.
     #[cfg(target_os = "emscripten")]
     #[must_use]
-    pub fn create(width: u32, height: u32, title: &str) -> Self {
-        let base = Self::new_inner(width, height, title);
+    pub fn create(width: u32, height: u32, title: &str, antialiasing_level: u32) -> Self {
+        let mut base = Self::new_inner(width, height, title);
+        // The 050 level (the C++ main.cpp:307 value): recorded up front so
+        // the canvas-missing headless fallback carries it too (the store
+        // half — the GL half applies it below, when the context is made).
+        base.antialiasing_level = antialiasing_level;
         // The canvas (the W1 selector — the page MUST provide it).
         let canvas: web_sys::HtmlCanvasElement = match web_sys::window()
             .and_then(|w| w.document())
@@ -957,8 +977,11 @@ impl Window {
         // The WebGL2 context (`gl.rs` — the emscripten C API + the glow
         // loader; it sets the canvas's backing store to the size it is
         // given — the REAL one); a failure degrades to the headless
-        // frames (the loop still runs on the canvas).
-        let gl = GlBackend::try_create(real_w, real_h, title).map(|backend| backend.parts);
+        // frames (the loop still runs on the canvas). The 050 level maps
+        // to the context's `antialias` boolean there (the browser picks
+        // the sample count — `gl.rs` states + measures it).
+        let gl = GlBackend::try_create(real_w, real_h, title, antialiasing_level)
+            .map(|backend| backend.parts);
         Self {
             gl,
             event_queue: Some(queue),
@@ -1007,22 +1030,31 @@ impl Window {
     /// failure degrades once to the headless frames
     /// (`ensure_android_gl_failed` — the re-`resumed`s after activity
     /// pauses are no-ops, the C++'s no-GL `window == nullptr` equivalent);
-    /// desktop never calls this (the desktop bootstrap is pre-`run`).
+    /// desktop never calls this (the desktop bootstrap is pre-`run`). The
+    /// 050 level: the window's stored `antialiasing_level` (the C++
+    /// main.cpp:307 value, the `create_android_window`'s
+    /// `set_antialiasing_level`) goes into the materialized context — the
+    /// C++'s own shape (the level is read at window creation, the
+    /// `GameWindow::recreateWindow`'s `ContextSettings`, GameWindow.hpp:
+    /// 91; this materialization IS the port's creation).
     #[cfg(target_os = "android")]
     fn ensure_android_gl(&mut self, el: &ActiveEventLoop) {
         if self.gl.is_some() || self.ensure_android_gl_failed {
             return;
         }
-        match crate::gl::create_android_parts(el) {
+        match crate::gl::create_android_parts(el, self.antialiasing_level) {
             Some(parts) => {
                 // C++ `recreateWindow` (GameWindow.hpp:89-95): the render
                 // window is created and IMMEDIATELY
                 // `renderWindow.setVerticalSyncEnabled(vsync)` is applied —
                 // the port's GL materialization here is that creation, so
-                // the stored config value (the `create_android_window`
-                // `window.set_vsync(config.get_vsync())`, the C++ main.cpp:
-                // 308) goes onto the fresh EGL surface now. The explicit
-                // request is load-bearing: the EGL driver's default swap
+                // the stored config values (the `create_android_window`
+                // `window.set_vsync(config.get_vsync())` — the C++ main.cpp:
+                // 308 — and the `set_antialiasing_level` — the C++
+                // main.cpp:307, passed into `create_android_parts` above as
+                // the context's MSAA sample count, 050) go onto the fresh
+                // EGL surface now. The explicit vsync request is
+                // load-bearing: the EGL driver's default swap
                 // interval is 1 (glutin 0.32's `SwapInterval` docs) —
                 // without it the shipped `vsync=false` would run at the
                 // driver's vsync pacing instead of the C++'s explicit
@@ -1301,7 +1333,16 @@ impl Window {
         self.fullscreen
     }
 
-    /// `setAntialiasingLevel`.
+    /// `setAntialiasingLevel` (GameWindow.hpp:187-190: store +
+    /// `mustRecreate` — the next `recreateWindow` re-reads the member into
+    /// the `ContextSettings`, GameWindow.hpp:91). The port applies the
+    /// level at GL context CREATION (the desktop/wasm `create` parameter;
+    /// on android the first-`resumed` materialization reads this stored
+    /// value — the C++'s own shape: the level is read at window creation,
+    /// not live). A change AFTER creation records only: the port's window
+    /// is never recreated at runtime (the C++'s `mustRecreate` deferral
+    /// has no port equivalent — the `set_pixel_mult`'s note, the struct
+    /// field's docs).
     pub fn set_antialiasing_level(&mut self, level: u32) {
         self.antialiasing_level = level;
     }
@@ -2324,6 +2365,22 @@ fn attach_web_listeners(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 050 — the `antialiasing_level` store half (the C++
+    /// `GameWindow::antialiasingLevel` member, GameWindow.hpp:38 default 3 —
+    /// the `new_inner`'s 3 — and the `setAntialiasingLevel` store +
+    /// `mustRecreate`, GameWindow.hpp:187-190; the live-context half is
+    /// `backend.rs`'s `antialiasing_level_*` tests — the 050 acceptance is
+    /// the measured `GL_SAMPLES`):
+    #[test]
+    fn antialiasing_level_stores_and_round_trips() {
+        let mut w = Window::headless(640, 480);
+        assert_eq!(w.get_antialiasing_level(), 3, "the C++ GameWindow default");
+        w.set_antialiasing_level(8);
+        assert_eq!(w.get_antialiasing_level(), 8);
+        w.set_antialiasing_level(0);
+        assert_eq!(w.get_antialiasing_level(), 0);
+    }
 
     /// C++ `GameWindow::msUpdate` / `msDraw` (GameWindow.hpp:36,270-276):
     /// the members are default-initialized (`0`) and the windowed loop
