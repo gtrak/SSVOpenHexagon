@@ -78,3 +78,35 @@ read (you probably need none — console/CDP text is the evidence here), and **s
 the diagnosis shows the fix is a large audio backend rather than a hook, with the cost stated.
 Do not touch lane 039's Android work, do not change desktop/Android audio behaviour, and do not
 weaken the web release/CI wiring lane 040 owns.
+
+## The orchestrator's prior (VERIFY it — the console and the dependency tree win over this)
+
+Three things I checked before dispatching, so you do not spend a cycle rediscovering them:
+
+1. **Expect world (a) — and expect it to be cpal's cfg, not the port's code.** cpal's browser
+   backend is historically gated on `target_os = "unknown"` (the wasm-bindgen path, i.e.
+   `wasm32-unknown-unknown`), while our web target is `wasm32-unknown-emscripten`. Establish the
+   fact from `cargo tree -p cpal --target wasm32-unknown-emscripten` and cpal's own cfg/build
+   script, then STATE which world you measured — the fix's shape depends entirely on it, and if it
+   is (a) the fix must live behind the existing seam (`crates/oh-render/src/audio.rs`'s
+   `AudioDevice`), never in a config flag.
+2. **The parity-faithful sink is OpenAL, because that is what the C++ actually uses.** SFML's audio
+   module is OpenAL, and emscripten ships an OpenAL implementation (`-lopenal`) that maps onto Web
+   Audio. So an emscripten OpenAL sink behind the seam mirrors the original's audio stack — while
+   rodio/cpal is itself the port's deviation. Keep the SFML-unit volume mapping the desktop path
+   already implements (039's device evidence: 100/100 SFML units through to rodio 1.0) so the two
+   paths agree on numbers.
+3. **Browsers require a user gesture before audio starts.** The port should resume/unlock on the
+   first input (032's web input path already exists), and your diagnostic must distinguish "no
+   device" from "device present but suspended" — that distinction is the whole answer to the
+   operator's "there appears to be no sound there".
+
+SCOPE GUARD: the Android music/content question is CLOSED (039, supervisor decision A: the shipped
+_RELEASE has no music OGGs, upstream-faithful). Do not mix content into this lane. This lane is the
+web audio MECHANISM.
+
+ACCEPTANCE: `tools/web-probe.mjs` against a local serve of your build must show your new diagnostic
+lines (world (a) vs (b), and the unlock state), and — if you can produce it — an audible claim backed
+by an observable (Web Audio node/graph state, a decoded-buffer assertion, or an emscripten OpenAL
+error/source count). If headless cannot prove audibility, SAY SO and give the strongest observable
+you have rather than claiming sound. One image read allowed if you need it; bound everything.
