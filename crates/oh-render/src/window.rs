@@ -998,19 +998,67 @@ pub struct Window {
     /// window is sized `width * pixelMult × height * pixelMult` while the
     /// logical `width`/`height` members stay logical); the port applies it
     /// once, at `create` (the caller passes the PHYSICAL size), and records
-    /// the value here for `get_pixel_mult` (the winit window is not
-    /// recreated at runtime, so a later `set_pixel_mult` records but does
-    /// not resize — the C++'s `mustRecreate` deferral has no port
-    /// equivalent).
+    /// the value here for `get_pixel_mult` (29w note: the C++'s
+    /// `setPixelMult` marks `mustRecreate` — GameWindow.hpp:197-200 — but
+    /// the port's `set_pixel_mult` is the BOOT setter only (main.cpp:305's
+    /// call, the `create_window` / `create_android_window`'s), so it stays
+    /// the plain store: the C++'s boot-time mark is covered by its
+    /// initial `mustRecreate{true}` (the first-iteration creation), which
+    /// the port's pre-loop `create` + the flag's `false` start replace —
+    /// marking from the boot setter would rebuild the context on the
+    /// first frame for no change).
     pixel_mult: f32,
     fullscreen: bool,
+    /// C++ `GameWindow::mustRecreate` (GameWindow.hpp:39) — 29w: the
+    /// "the setting changed" half of the C++'s trigger/re-apply split.
+    /// The window-owned setters that the C++ marks (`setFullscreen` /
+    /// `setSize` / `setAntialiasingLevel` / `setVsync` / `setPixelMult`,
+    /// GameWindow.hpp:176-200) set it; the frame loop's
+    /// `if(mustRecreate) recreateWindow()` (GameWindow.hpp:123) consumes
+    /// it through [`Self::maybe_recreate_window`]. The port marks it from
+    /// [`Self::set_antialiasing_level`] ONLY (its docs: the only window-
+    /// owned setting whose re-apply the port cannot do without a context
+    /// rebuild — `set_fullscreen` / `set_vsync` apply their observable
+    /// half live, 047 / 25j; `set_size` / `set_pixel_mult` are the
+    /// port's boot / event-fold bookkeeping, not the C++'s runtime mark
+    /// paths). Starts `false` — the C++'s initial `true` covers its
+    /// first-iteration window CREATION (GameWindow.hpp:39: the window
+    /// does not exist until the first `run()` iteration's
+    /// `recreateWindow`); the port's creation is `Window::create`'s,
+    /// pre-loop, so the flag starts consumed.
+    must_recreate: bool,
+    /// C++ `GameWindow::onRecreation` (GameWindow.hpp:104) — the
+    /// recreation's consumer delegate: `recreate_window` fires it AFTER
+    /// the rebuild + the `inputState.reset` + the flag clear (the C++'s
+    /// order, GameWindow.hpp:96-100). The port's one surviving consumer
+    /// (the egui console's stale GL state — the `WindowedClient::run`
+    /// hook) is the C++'s three consumers' (main.cpp:326's icon /
+    /// MenuGame.cpp:730's menu re-layout / HexagonGame.cpp:339's key
+    /// icons) only GL-state half: the icon + the menu re-layout are the
+    /// surviving winit window's / the per-frame layout's state, the key
+    /// icons' re-upload is the `GlPasses` cache's lazy job (the hook's
+    /// docs, oh-app `windowed`). `None` = headless / pre-install / the
+    /// android+wasm no-op consumptions.
+    on_recreation: Option<Box<dyn FnMut()>>,
     /// C++ `GameWindow::antialiasingLevel` (GameWindow.hpp:38, default 3 —
     /// the `new_inner`'s 3) — the MSAA sample count the C++'s
     /// `recreateWindow` passes into `sf::ContextSettings` (GameWindow.hpp:
     /// 91, `main.cpp:307` stores the value). The port applies it at GL
     /// context creation (the desktop/wasm `create` parameter, the android
-    /// first-`resumed` materialization's `create_android_parts`), and this
-    /// is the C++ setter's store half (GameWindow.hpp:187-190).
+    /// first-`resumed` materialization's `create_android_parts`) AND — 29w
+    /// — at the RUNTIME recreation: [`Self::set_antialiasing_level`] is
+    /// the C++ setter's store + `mustRecreate` half (GameWindow.hpp:
+    /// 187-190, under the `Config::setAntialiasingLevel`'s change guard,
+    /// Config.cpp:703-709); the frame loop's
+    /// [`Self::maybe_recreate_window`] (the C++'s
+    /// `if(mustRecreate) recreateWindow()`, GameWindow.hpp:123) rebuilds
+    /// the desktop context on the new level (`GlParts::recreate` — the
+    /// C++'s `recreateWindow`, GameWindow.hpp:85-101), so a settings-menu
+    /// level change reaches the context WITHOUT a restart (050's recorded
+    /// gap — the level used to reach the context from config at boot
+    /// only). Android / wasm: the store half only — the consumption is the
+    /// documented no-op (the `recreate_window`'s per-platform reasons):
+    /// the level stays for the next boot / activity resume.
     antialiasing_level: u32,
     vsync: bool,
     framerate_limit: f32,
@@ -1136,6 +1184,8 @@ pub struct Window {
 impl Window {
     /// A headless window (no display / GL context). Every SFML surface is
     /// usable; `gl()` is `None` and `run` executes exactly one frame.
+    /// `antialiasing_level` defaults to `Config::default()`'s level (the
+    /// `new_inner`'s comment — zero-divergence first tick, 29w).
     #[must_use]
     pub fn headless(width: u32, height: u32) -> Self {
         Self::new_inner(width, height, "open-hexagon")
@@ -1374,7 +1424,32 @@ impl Window {
             height_px: height,
             pixel_mult: 1.0,
             fullscreen: false,
-            antialiasing_level: 3,
+            must_recreate: false,
+            on_recreation: None,
+            // 29w — `Config::default()`'s level (oh-config's `Config::
+            // default`'s `antialiasing_level` default — 4), NOT the C++'
+            // `antialiasingLevel{3}` member default (GameWindow.hpp:38): that
+            // C++ value is DEAD state — the boot setters (main.cpp:304-310,
+            // `setAntialiasingLevel(mConfig.get().getAntialiasingLevel())`
+            // at :306-307) always run before the first `recreateWindow()`
+            // (the C++'s initial `mustRecreate{true}`, GameWindow.hpp:39,
+            // consumed at :123-124 — the context is always created with the
+            // CONFIG's value), so the 3 never materializes. This inner is
+            // reached with the literal only by `headless` (the test
+            // harness's stand-in for "the window created from the config" —
+            // the production `create` / `create_window` pass the config's
+            // level explicitly, recorded even on the no-GPU degrade, and
+            // `android`/`wasm`'s constructors take it as a parameter): a
+            // divergent default (3 vs the config's 4) would mark a spurious
+            // recreation request on the FIRST tick of every headless client
+            // (the `set_antialiasing_level`'s mark-on-change + the
+            // `must_recreate` consumption), whose `inputState.reset()` half
+            // (GameWindow.hpp:96 — the port's `reset_input_state`) would
+            // wipe the harness's pre-tick input. The C++'s own
+            // first-iteration recreation is the window's CREATION (empty
+            // input state — the reset wipes nothing), so the port's
+            // zero-divergence first tick is the faithful shape.
+            antialiasing_level: 4,
             vsync: false,
             framerate_limit: 0.0,
             fps_limited: false,
@@ -1605,10 +1680,18 @@ impl Window {
     /// `sf::Style::Fullscreen` equivalent (not exclusive). A pre-`run`
     /// request is safe: winit stores a not-yet-visible window's request as
     /// `desired_fullscreen` and applies it on the first visibility notify
-    /// (winit 0.30 X11 `set_fullscreen_inner` / `visibility_notify`). This
-    /// is the creation-time application: the sole desktop caller is
-    /// `oh-app`'s `create_window`, which calls it with the config value
-    /// right after `Window::create`.
+    /// (winit 0.30 X11 `set_fullscreen_inner` / `visibility_notify`).
+    /// Callers: `oh-app`'s `create_window` (the creation-time application,
+    /// the config value right after `Window::create`) + the `WindowedClient`
+    /// per-frame config sync — the C++ `Config::setFullscreen(window, …)`'
+    /// observable half, one frame after the menu's "go windowed" /
+    /// "go fullscreen" item (or LAlt+Enter) wrote the config (29w: 047's
+    /// live-apply shape, NOT a `mustRecreate` mark — the port's winit
+    /// window changes style IN PLACE; the C++'s mark (GameWindow.hpp:
+    /// 176-179) exists because SFML can only change the style by
+    /// recreating the render window (GameWindow.hpp:90), and the port's
+    /// `recreate_window` rebuilds the GL CONTEXT on the SAME window — it
+    /// would not change the style at all).
     ///
     /// Android / wasm: INERT-BY-DESIGN — the platform window (the
     /// activity's immersive window / the page's `<canvas>`) has no
@@ -1635,21 +1718,183 @@ impl Window {
 
     /// `setAntialiasingLevel` (GameWindow.hpp:187-190: store +
     /// `mustRecreate` — the next `recreateWindow` re-reads the member into
-    /// the `ContextSettings`, GameWindow.hpp:91). The port applies the
-    /// level at GL context CREATION (the desktop/wasm `create` parameter;
-    /// on android the first-`resumed` materialization reads this stored
-    /// value — the C++'s own shape: the level is read at window creation,
-    /// not live). A change AFTER creation records only: the port's window
-    /// is never recreated at runtime (the C++'s `mustRecreate` deferral
-    /// has no port equivalent — the `set_pixel_mult`'s note, the struct
-    /// field's docs).
+    /// the `ContextSettings`, GameWindow.hpp:91) — 29w: the port mirrors
+    /// the split. The STORE half: the level member. The MARK half:
+    /// `must_recreate = true` — but ONLY on an ACTUAL change, mirroring
+    /// the C++'s `Config::setAntialiasingLevel` guard (Config.cpp:703-709:
+    /// `if(mValue != antialiasingLevel())` — the window setter is called
+    /// only on a change; the guard also keeps the port's boot setter
+    /// (`create_window`'s `set_antialiasing_level(config level)` — the C++
+    /// main.cpp:307 call, after `Window::create` already stored the same
+    /// value) from marking: the C++'s boot-time mark is covered by its
+    /// initial `mustRecreate{true}` (GameWindow.hpp:39 — the first-
+    /// iteration creation the port does pre-loop in `create`). The RE-APPLY
+    /// half: the frame loop's [`Self::maybe_recreate_window`] (the C++'
+    /// `if(mustRecreate) recreateWindow()`, GameWindow.hpp:123) rebuilds
+    /// the desktop context on the new level (`GlParts::recreate` — the
+    /// C++'s `recreateWindow`, GameWindow.hpp:85-101), so the level now
+    /// reaches the context at RUNTIME, not just at boot (050's recorded
+    /// gap). Android / wasm: the store + mark halves run (the C++'s shape
+    /// — the setter is platform-blind); the consumption is the documented
+    /// no-op (the `recreate_window`'s per-platform reasons — the level
+    /// stays for the next boot / activity resume).
     pub fn set_antialiasing_level(&mut self, level: u32) {
+        if level == self.antialiasing_level {
+            return;
+        }
         self.antialiasing_level = level;
+        // The C++ `GameWindow::setAntialiasingLevel`'s mark (GameWindow.hpp:
+        // 189-190) — the frame loop's `recreate_window` is the re-apply.
+        self.must_recreate = true;
     }
 
     #[must_use]
     pub fn get_antialiasing_level(&self) -> u32 {
         self.antialiasing_level
+    }
+
+    // ---- recreation (29w — the C++ `mustRecreate` → `recreateWindow`) ----
+    /// C++ `GameWindow::onRecreation` (GameWindow.hpp:104) — install the
+    /// recreation's consumer hook: [`Self::recreate_window`] fires it
+    /// AFTER the rebuild + the input-state reset + the flag clear (the
+    /// C++'s order, GameWindow.hpp:96-100: `inputState.reset();
+    /// mustRecreate = false; onRecreation();`). The port's one surviving
+    /// consumer — the egui console's stale GL state, the `WindowedClient::
+    /// run` hook (oh-app `windowed`) — is the C++'s three consumers'
+    /// (main.cpp:326's icon re-apply / MenuGame.cpp:730's menu re-layout /
+    /// HexagonGame.cpp:339's key-icons re-init) only GL-state half: the
+    /// icon lives on the SURVIVING winit window (the port's recreation is
+    /// a new context on the same window, not a new OS window), the menu
+    /// re-layout runs per-frame from the live window size, the key
+    /// icons' re-upload is the `GlPasses` texture cache's lazy job after
+    /// the recreation's cache reset (the `recreate_window`'s docs).
+    /// Re-installs (a second call replaces the hook — the C++ delegate
+    /// supports many consumers, the port's single-hook surface covers its
+    /// single consumer).
+    pub fn set_on_recreation(&mut self, hook: Box<dyn FnMut()>) {
+        self.on_recreation = Some(hook);
+    }
+
+    /// C++ `if(mustRecreate) recreateWindow();` (GameWindow.hpp:123) — the
+    /// frame loop's consumption point (the C++'s loop head; the port's
+    /// `WindowedClient` frame body calls it at the same position, oh-app
+    /// `windowed`'s `tick_fields`). No-op when no window-owned setting has
+    /// marked the flag since the last consumption. Returns whether the
+    /// request was consumed (the frame body's `inputState.reset()` half —
+    /// the C++'s `recreateWindow`'s `inputState.reset()`, GameWindow.hpp:
+    /// 96 — runs at the port's event-model position, its docs).
+    #[must_use]
+    pub fn maybe_recreate_window(&mut self) -> bool {
+        if self.must_recreate {
+            self.recreate_window();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// C++ `GameWindow::recreateWindow`'s `inputState.reset()` (GameWindow.hpp:
+    /// 96) — the recreation's input-state half, as its own operation: the
+    /// port's frame body applies it AFTER this frame's update burst
+    /// consumed the folded events (the port's event model folds the window
+    /// events BEFORE the frame body — winit's `about_to_wait`-driven frame,
+    /// the winit-fold note, oh-app `windowed` — so the C++'s pre-`runEvents`
+    /// position (GameWindow.hpp:123 → :42) is the post-update position here:
+    /// the keys held from BEFORE the recreation are gone for the next frame,
+    /// exactly the C++'s fresh-window input state; this frame's update
+    /// already ran on them — the one-frame input delta, the
+    /// `recreate_window`'s docs). The republish reaches the SHARED sink the
+    /// engine's `Renderer` seam reads (the C++'s live
+    /// `window->getInputState()` liveness — a stale sink would keep the
+    /// pre-recreation key state alive in the engine's `is_key_pressed`
+    /// reads).
+    pub fn reset_input_state(&mut self) {
+        self.input.reset();
+        self.publish_input_state();
+    }
+
+    /// C++ `GameWindow::recreateWindow()` (GameWindow.hpp:85-101) — the
+    /// port's mirror, per platform:
+    ///
+    /// * **desktop + live GL** — the real rebuild: `GlParts::recreate`
+    ///   destroys the live context + surface and builds the new ones on
+    ///   the SAME winit window + display (the C++'s
+    ///   `renderWindow.close()` + `renderWindow.create(VideoMode, title,
+    ///   style, ContextSettings{…, antialiasingLevel, …})`, GameWindow.hpp:
+    ///   86-91 — the winit window's title + style are unchanged, the
+    ///   surface is re-created at the current size) on the STORED
+    ///   `antialiasing_level` (the C++'s `ContextSettings` re-read,
+    ///   GameWindow.hpp:91 — 050's gap closing: a settings-menu level
+    ///   change now reaches the context without a restart). The C++'
+    ///   post-create re-applies, in its order: `setSize(width*pixelMult,
+    ///   height*pixelMult)` (GameWindow.hpp:93 — the port's surface is
+    ///   creation-sized, the 025g note: no size change),
+    ///   `setVerticalSyncEnabled(vsync)` (GameWindow.hpp:94 — the
+    ///   `set_swap_interval` on the fresh surface, load-bearing the same
+    ///   way `ensure_android_gl`'s materialization note says: the new
+    ///   surface starts at the driver default), the
+    ///   `setFramerateLimit(fpsLimited ? maxFPS : 0)` (GameWindow.hpp:95
+    ///   — no port re-apply: the limit is the loop's pacing state, the
+    ///   `effective_framerate_limit` fields, which survive the
+    ///   recreation unchanged).
+    /// * **desktop headless** (no GL) / **android** / **emscripten** — the
+    ///   consumption is the no-op + the hooks: android has no window-
+    ///   style to recreate (the activity window is the platform's; the
+    ///   C++ has no android build to match), the web's GL context is a
+    ///   browser-API matter (050's `antialias` boolean-mapping deviation
+    ///   stands; lane 046 owns the web's fullscreen shape) — on both the
+    ///   stored level stays for the next boot / activity resume. Headless
+    ///   has no GL at all. (In all three the `mustRecreate` flag is
+    ///   still CONSUMED — the C++'s `recreateWindow` clears it
+    ///   unconditionally, GameWindow.hpp:99.)
+    ///
+    /// After the platform half, the C++'s tail in its order:
+    /// `mustRecreate = false` (GameWindow.hpp:99), `onRecreation()`
+    /// (GameWindow.hpp:100 — the [`Self::set_on_recreation`] hook: the
+    /// egui console's stale-GL-state clear). The C++'s `inputState.reset()`
+    /// half (GameWindow.hpp:96 — the recreation clears every held key /
+    /// button / finger: the new window starts with a clean input state)
+    /// is the [`Self::reset_input_state`] operation the frame body applies
+    /// at the port's event-model position (the C++'s reset lands before
+    /// the frame's `runEvents`; the port's events are folded BEFORE the
+    /// frame body — a top-of-frame reset would drop THIS frame's own key
+    /// events, the winit-fold note, oh-app `windowed`: the post-update
+    /// position keeps the C++'s observable — held keys gone for the next
+    /// frame — without eating the current frame's input).
+    fn recreate_window(&mut self) {
+        // C++ `recreateWindow` (GameWindow.hpp:85-101) — the platform
+        // half (the desktop GL rebuild; the android/wasm/headless
+        // documented no-ops, above).
+        #[cfg(not(any(target_os = "emscripten", target_os = "android")))]
+        if let Some(gl) = self.gl.as_mut() {
+            if gl.recreate(self.antialiasing_level) {
+                // C++ GameWindow.hpp:94 — the recreation's
+                // `setVerticalSyncEnabled(vsync)` re-apply (the fresh
+                // surface's swap interval, the `ensure_android_gl`
+                // materialization's load-bearing note, desktop twin).
+                gl.set_swap_interval(self.vsync);
+            }
+        }
+        // C++ GameWindow.hpp:99 — `mustRecreate = false`.
+        // (The C++'s `inputState.reset()` half, GameWindow.hpp:96, is the
+        // `reset_input_state` operation — the frame body's post-update
+        // application, the docs above.)
+        self.must_recreate = false;
+        // C++ GameWindow.hpp:100 — `onRecreation()`.
+        if let Some(hook) = self.on_recreation.as_mut() {
+            hook();
+        }
+    }
+
+    /// C++ `GameWindow::mustRecreate` (GameWindow.hpp:39) — the flag's
+    /// read surface (29w): the C++'s `run` loop head (GameWindow.hpp:123)
+    /// is the only reader; the port's tests + the Xvfb recreation probe
+    /// read it through this (the "the recreation request is set and
+    /// consumed" acceptance, the task's headless half). `false` at rest
+    /// (a setter marks it, the frame loop's consumption clears it).
+    #[must_use]
+    pub fn must_recreate(&self) -> bool {
+        self.must_recreate
     }
 
     // ---- vsync / framerate ------------------------------------------------
@@ -1662,10 +1907,14 @@ impl Window {
         // vsync)` (GameWindow.hpp:94) — the pinned SFML's
         // `eglSwapInterval(display, vsync ? 1 : 0)` (see
         // `GlParts::set_swap_interval`). The port applies the same
-        // OBSERVABLE change — the live EGL swap interval — directly, on the
-        // live context, instead of recreating the winit window (the
-        // documented recreation gap, module docs; the full recreation is
-        // lane 029w's scope).
+        // OBSERVABLE change — the live EGL swap interval — directly, on
+        // the live context, INSTEAD of waiting for the recreation (29w:
+        // the C++'s mark exists because SFML re-applies the interval only
+        // through `recreateWindow`; the port's swap-interval call is the
+        // identical observable, so the setter stays unmarked — the
+        // `set_fullscreen`'s live-apply note is the same shape). The value
+        // IS re-applied by `recreate_window` on the fresh surface when a
+        // recreation does happen (the C++'s order, GameWindow.hpp:94).
         if let Some(gl) = self.gl.as_ref() {
             gl.set_swap_interval(enabled);
         }
@@ -3078,7 +3327,11 @@ mod tests {
     #[test]
     fn antialiasing_level_stores_and_round_trips() {
         let mut w = Window::headless(640, 480);
-        assert_eq!(w.get_antialiasing_level(), 3, "the C++ GameWindow default");
+        assert_eq!(
+            w.get_antialiasing_level(),
+            4,
+            "the config-parity default (the `new_inner`'s comment, 29w)"
+        );
         w.set_antialiasing_level(8);
         assert_eq!(w.get_antialiasing_level(), 8);
         w.set_antialiasing_level(0);
@@ -4164,5 +4417,99 @@ mod tests {
         let (prevent, text) = policy("Dead", "Process", false, false, false, false, true, true);
         assert!(!prevent);
         assert_eq!(text, None);
+    }
+    // 29w — the C++ `mustRecreate` → `recreateWindow` split, headless
+    // (the display half is the Xvfb recreation probe — the `GlParts::
+    // recreate`'s live-context rebuild; these pin the trigger/consume
+    // contract the frame loop drives): the setter's store + mark half
+    // (GameWindow.hpp:187-190) and the loop-head's consumption (the C++'s
+    // `if(mustRecreate) recreateWindow();`, GameWindow.hpp:123 — the
+    // port's `maybe_recreate_window`).
+    #[test]
+    fn antialiasing_level_marks_must_recreate_only_on_an_actual_change() {
+        let mut w = Window::headless(640, 480);
+        // The `new_inner`'s config-parity default (the `Config::default()`
+        // level — the `new_inner`'s comment: the C++'s `antialiasingLevel{3}`
+        // member default, GameWindow.hpp:38, is dead state) + the flag's
+        // consumed start (the C++'s initial `mustRecreate{true}` covers
+        // its first-iteration creation; the port creates pre-loop).
+        assert_eq!(w.get_antialiasing_level(), 4);
+        assert!(!w.must_recreate());
+        // Same value: the C++ `Config::setAntialiasingLevel`'s change
+        // guard (Config.cpp:703-709) — the window setter runs only on a
+        // change; the port's boot setter (after `create` stored the same
+        // value) must not mark.
+        w.set_antialiasing_level(4);
+        assert!(!w.must_recreate());
+        // A change: store + mark (GameWindow.hpp:189-190).
+        w.set_antialiasing_level(8);
+        assert_eq!(w.get_antialiasing_level(), 8);
+        assert!(w.must_recreate());
+    }
+
+    #[test]
+    fn recreate_consumes_the_request_and_fires_the_hook_once() {
+        let mut w = Window::headless(640, 480);
+        let fired = std::rc::Rc::new(std::cell::Cell::new(0));
+        let fired_hook = fired.clone();
+        w.set_on_recreation(Box::new(move || {
+            fired_hook.set(fired_hook.get() + 1);
+        }));
+        // No request: the loop head's check is a no-op (the C++'s
+        // `if(mustRecreate)` false arm, GameWindow.hpp:123).
+        assert!(!w.maybe_recreate_window());
+        assert_eq!(fired.get(), 0);
+        assert!(!w.must_recreate());
+        // The request (the C++ setter's mark — a CHANGE from the
+        // config-parity default 4, GameWindow.hpp:189-190) + the held
+        // input the recreation's `inputState.reset()` (GameWindow.hpp:96)
+        // clears — the frame body's post-update application (the
+        // `maybe_recreate_window`'s bool return's consumer).
+        w.set_antialiasing_level(8);
+        Window::apply_event(
+            &mut w,
+            Event::KeyPressed {
+                code: Key::A,
+                repeated: false,
+            },
+        );
+        assert!(w.get_input_state().is_key_pressed(Key::A));
+        let recreated = w.maybe_recreate_window();
+        assert!(recreated);
+        // Consumed + the hook fired (the C++'s `onRecreation()`,
+        // GameWindow.hpp:100); the reset half is the frame body's call.
+        assert!(!w.must_recreate());
+        assert_eq!(fired.get(), 1);
+        w.reset_input_state();
+        assert!(!w.get_input_state().is_key_pressed(Key::A));
+        // The level stays stored for the next boot (the android/wasm
+        // consumption shape — headless here: no GL to rebuild).
+        assert_eq!(w.get_antialiasing_level(), 8);
+        // A second frame with no new change: no re-fire.
+        assert!(!w.maybe_recreate_window());
+        assert_eq!(fired.get(), 1);
+    }
+
+    #[test]
+    fn recreate_resets_the_shared_input_sink_too() {
+        // The engine's `Renderer` seam reads the SHARED sink (the C++'s
+        // live `window->getInputState()` reads — the recreation's reset
+        // must reach it, not just the window's own state).
+        let mut w = Window::headless(640, 480);
+        let sink: std::sync::Arc<std::sync::RwLock<InputState>> =
+            std::sync::Arc::new(std::sync::RwLock::new(*w.get_input_state()));
+        w.set_input_state_sink(sink.clone());
+        Window::apply_event(
+            &mut w,
+            Event::KeyPressed {
+                code: Key::A,
+                repeated: false,
+            },
+        );
+        assert!(sink.read().expect("poisoned").is_key_pressed(Key::A));
+        w.set_antialiasing_level(8);
+        assert!(w.maybe_recreate_window());
+        w.reset_input_state();
+        assert!(!sink.read().expect("poisoned").is_key_pressed(Key::A));
     }
 }

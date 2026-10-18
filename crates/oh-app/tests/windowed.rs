@@ -1407,3 +1407,91 @@ fn out_of_range_lua_key_codes_are_false_not_panic() {
         .game
         .is_mouse_button_pressed(oh_render::Button::LEFT.0));
 }
+
+// ---------------------------------------------------------------------
+// 29w — window (re)creation: the C++ `mustRecreate` → `recreateWindow`
+// split (GameWindow.hpp:123,179-190) — the task's (b) headless half:
+// the RECREATION REQUEST is SET (the options-menu's antialiasing-level
+// write's store half, through the `tick_fields`'s per-frame config sync
+// — the C++'s `Config::setAntialiasingLevel`'s window-call half,
+// Config.cpp:703-709) and CONSUMED (the frame loop's
+// `maybe_recreate_window` — the C++'s `if(mustRecreate)
+// recreateWindow();`, GameWindow.hpp:123 — firing the `onRecreation`
+// hook, GameWindow.hpp:100, without a restart). The display half (the
+// desktop GL context's rebuild, `GlParts::recreate`) is the Xvfb
+// recreation probe — the headless window here has no GL (the
+// consumption's documented no-op + the input reset + the hook).
+// ---------------------------------------------------------------------
+
+#[test]
+fn options_menu_antialiasing_change_sets_and_consumes_the_recreation_request() {
+    use oh_game::GameApi;
+    use std::sync::atomic::AtomicU32;
+
+    let (mut client, _sandbox) = sandboxed_windowed_client(None);
+    boot_to_level_selection(&mut client);
+    // The headless window's `antialiasing_level` default is the config's
+    // (the `new_inner`'s comment — 29w's zero-divergence first tick), so
+    // no boot store is pending and the flag rests unset (the production
+    // shape: the `create_window`'s create + store pass the config's level
+    // explicitly; the headless harness stands in for it via the default).
+    assert_eq!(client.window.get_antialiasing_level(), 4);
+    assert!(!client.window.must_recreate());
+
+    // The recreation's consumer (the `WindowedClient::run`'s hook shape —
+    // the egui console's stale-GL-state clear; here: a fire counter).
+    let fired = Arc::new(AtomicU32::new(0));
+    let fired_hook = fired.clone();
+    client.window.set_on_recreation(Box::new(move || {
+        fired_hook.fetch_add(1, Ordering::SeqCst);
+    }));
+
+    // No new change: no fire (the C++'s `if(mustRecreate)` false arm,
+    // GameWindow.hpp:123).
+    tick(&mut client);
+    assert_eq!(fired.load(Ordering::SeqCst), 0);
+
+    // The options menu's antialiasing item (the C++ MenuGame.cpp:1446-
+    // 1464's `Config::setAntialiasingLevel(window, 8)`): the port's menu
+    // path is the `ConfigMenuAdapter::set_antialiasing`'s config write;
+    // the per-frame sync is the window-call half, one frame later (the
+    // C++'s own timing — its setter runs mid-update, the recreation the
+    // next frame's loop head).
+    client
+        .config
+        .write()
+        .expect("config poisoned")
+        .set_antialiasing_level(8);
+    tick(&mut client);
+    // The store half landed AND the request was consumed in the same
+    // frame (the sync's mark + the loop head's consumption):
+    assert_eq!(client.window.get_antialiasing_level(), 8, "the store half");
+    assert!(
+        !client.window.must_recreate(),
+        "the consumption (no restart needed)"
+    );
+    assert_eq!(fired.load(Ordering::SeqCst), 1, "the onRecreation hook");
+
+    // No new change: no re-fire (the flag was consumed, not re-set).
+    tick(&mut client);
+    assert_eq!(fired.load(Ordering::SeqCst), 1);
+    assert!(!client.window.must_recreate());
+
+    // The recreation's `inputState.reset()` half (GameWindow.hpp:96): a
+    // key held across the recreation is released — the window's own state
+    // AND the shared sink the engine's `Renderer` seam reads (the
+    // recreation's `publish_input_state` republish, the C++'s live
+    // `getInputState()` liveness).
+    set_key(&mut client, Key::A, true);
+    assert!(client.window.get_input_state().is_key_pressed(Key::A));
+    client
+        .config
+        .write()
+        .expect("config poisoned")
+        .set_antialiasing_level(16);
+    tick(&mut client);
+    assert_eq!(fired.load(Ordering::SeqCst), 2);
+    assert!(!client.window.get_input_state().is_key_pressed(Key::A));
+    assert!(!client.game.is_key_pressed(Key::A.0));
+    set_key(&mut client, Key::A, false);
+}

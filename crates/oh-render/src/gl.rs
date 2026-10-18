@@ -91,6 +91,7 @@ use glutin::context::Version;
 #[cfg(not(target_os = "emscripten"))]
 use glutin::context::{
     ContextAttributes, ContextAttributesBuilder, GlProfile, NotCurrentGlContext,
+    PossiblyCurrentGlContext,
 };
 #[cfg(not(target_os = "emscripten"))]
 use glutin::display::{Display, DisplayApiPreference, GlDisplay};
@@ -137,13 +138,18 @@ pub struct GlParts {
 
     /// Keep-alives (drop order: glow context, glutin context, surface, window,
     /// display last — so the GL context drops before its surface/window).
+    /// 29w: `Option` — the `GlParts::recreate`'s close-first ordering takes
+    /// the context/surface out (the C++'s `recreateWindow` close-before-
+    /// create, GameWindow.hpp:86-91) and back in on success; a failed
+    /// recreation leaves the window GL-less (the None state, the
+    /// `recreate`'s failure docs).
     /// Emscripten (W1): the canvas element (keeps the page's
     /// `<canvas id="c">` alive for the window's life) + the emscripten
     /// context handle instead.
     #[cfg(not(target_os = "emscripten"))]
-    _context: PossiblyCurrentContext,
+    _context: Option<PossiblyCurrentContext>,
     #[cfg(not(target_os = "emscripten"))]
-    _surface: Surface<WindowSurface>,
+    _surface: Option<Surface<WindowSurface>>,
     #[cfg(not(target_os = "emscripten"))]
     _window: WinitWindow,
     #[cfg(not(target_os = "emscripten"))]
@@ -497,20 +503,29 @@ fn pick_msaa_config(display: &Display, msaa_level: u32) -> Option<glutin::config
     }
 }
 
-/// The tail's config-explicit half: the surface/context/glow bootstrap
-/// over a caller-picked config (the desktop/android `finish_gl`'s
-/// MSAA-aware pick + the `try_create_gles` probe's GLES3-filtered
-/// pick).
+/// The shared context-creation tail (29w): the surface + context + glow
+/// bootstrap over a caller-picked config, on the caller's display + the
+/// caller's window handle. `finish_gl_on_config` (the boot creation) wraps
+/// the result in a fresh `GlParts`; `GlParts::recreate` (the C++
+/// `recreateWindow`, GameWindow.hpp:85-101) swaps it into the LIVE
+/// `GlParts` — one creation path, two entry points (the 29w spec: reuse
+/// the existing creation path, do not write a second one). `width` /
+/// `height` are the surface (framebuffer) size; the result's context is
+/// CURRENT on the calling thread by the time it returns (the `glow`
+/// loader resolved against it).
 #[cfg(not(target_os = "emscripten"))]
-fn finish_gl_on_config(
-    display: Display,
-    window: WinitWindow,
+fn create_gl_context_on(
+    display: &Display,
+    window_handle: raw_window_handle::RawWindowHandle,
     width: u32,
     height: u32,
     config: &glutin::config::Config,
     ctx_attrs: &ContextAttributes,
-) -> Option<GlParts> {
-    let window_handle = window.window_handle().ok()?.as_raw();
+) -> Option<(
+    PossiblyCurrentContext,
+    Surface<WindowSurface>,
+    glow::Context,
+)> {
     let width = NonZero::new(width).unwrap_or(NonZero::new(1).unwrap());
     let height = NonZero::new(height).unwrap_or(NonZero::new(1).unwrap());
     let surface_attrs =
@@ -523,19 +538,44 @@ fn finish_gl_on_config(
     // The 050 acceptance observable: the context's ACTUAL sample count
     // (`glGetIntegerv(GL_SAMPLES)`) — the driver's answer to the request,
     // not the request (a downgrade reports here; the pick's warning above
-    // says which config was available).
+    // says which config was available). The 29w recreation prints it too
+    // (the runtime level change's answer, the standing probe).
     eprintln!("[oh-render] context GL_SAMPLES = {}", unsafe {
         gl.get_parameter_i32(glow::SAMPLES)
     });
+    Some((context, surface, gl))
+}
+
+/// The tail's config-explicit half: the surface/context/glow bootstrap
+/// over a caller-picked config (the desktop/android `finish_gl`'s
+/// MSAA-aware pick + the `try_create_gles` probe's GLES3-filtered
+/// pick). `window` MOVES into the `GlParts` (winit's `Window` is not
+/// `Clone` — the handle is read first).
+#[cfg(not(target_os = "emscripten"))]
+fn finish_gl_on_config(
+    display: Display,
+    window: WinitWindow,
+    width: u32,
+    height: u32,
+    config: &glutin::config::Config,
+    ctx_attrs: &ContextAttributes,
+) -> Option<GlParts> {
+    let window_handle = window.window_handle().ok()?.as_raw();
+    let (context, surface, gl) =
+        create_gl_context_on(&display, window_handle, width, height, config, ctx_attrs)?;
     Some(GlParts {
         gl,
-        width: width.get(),
-        height: height.get(),
+        width: NonZero::new(width)
+            .unwrap_or(NonZero::new(1).unwrap())
+            .get(),
+        height: NonZero::new(height)
+            .unwrap_or(NonZero::new(1).unwrap())
+            .get(),
         passes: RefCell::new(crate::gl_passes::GlPasses::new()),
         batch: RefCell::new(BatchSlot::default()),
         pack_shaders: RefCell::new(crate::pack_shaders::PackShaderCache::default()),
-        _context: context,
-        _surface: surface,
+        _context: Some(context),
+        _surface: Some(surface),
         _window: window,
         _display: display,
     })
@@ -775,6 +815,152 @@ impl GlBackend {
 }
 
 impl GlParts {
+    /// C++ `GameWindow::recreateWindow()` (GameWindow.hpp:85-101) — the
+    /// port's desktop GL half (29w): the LIVE context is destroyed +
+    /// rebuilt on the SAME winit window + display (the C++ closes +
+    /// recreates the whole `sf::RenderWindow`; the port's winit window
+    /// survives — only the context + surface + every GL object in this
+    /// struct are rebuilt). The stored `antialiasing_level` (the C++
+    /// `recreateWindow`'s `ContextSettings` re-read, GameWindow.hpp:91)
+    /// is the new context's MSAA request — the whole point of the lane:
+    /// a runtime level change reaches the context without a restart
+    /// (050's recorded gap, the `set_antialiasing_level`'s store half
+    /// finally has its re-apply half).
+    ///
+    /// The creation path is REUSED, not duplicated: [`pick_msaa_config`]
+    /// (the 050 enumerate-and-score, the C++'s own `evaluateFormat`
+    /// answer over the driver's configs) + [`create_gl_context_on`] (the
+    /// shared surface/context/glow tail the boot `create` runs). The
+    /// desktop context attributes are the `GlBackend::create`'s, verbatim
+    /// (explicit desktop GL + COMPATIBILITY profile — the 029n1
+    /// pack-shaders' load-bearing request, the module docs). The surface
+    /// is re-created at the current `width`/`height` (the C++'s
+    /// `recreateWindow` sizes the render window `width × height` —
+    /// GameWindow.hpp:90-93 — and the port's desktop surface is
+    /// creation-sized, the 025g note, so "current" = "creation": no
+    /// size change, no new behaviour).
+    ///
+    /// The C++'s `recreateWindow` order (GameWindow.hpp:85-101) is
+    /// CLOSE-FIRST (the `renderWindow.close()` at :86-87, then the
+    /// `create` at :88-91) and the port follows it: the old context is
+    /// made non-current on this thread (`make_not_current_in_place`)
+    /// and the old surface is taken out (dropped) BEFORE the new
+    /// surface is created — on the port's EGL display (the Linux
+    /// `DisplayApiPreference::Egl`, the `GlBackend::create`'s note)
+    /// EGL makes exactly ONE window surface per native window, so the
+    /// old `eglCreateWindowSurface` drawable must be gone before the
+    /// new one can be created on the same X window (the recreation
+    /// probe's finding: the create-first ordering's
+    /// `create_window_surface` fails while the old drawable lives —
+    /// X11/EGL one-surface-per-window). The port therefore has the same
+    /// no-render-context moment the C++ has between its `close()` and
+    /// its `create()`. The old CONTEXT itself is dropped only AFTER the
+    /// new one is current (the drop-order note: a context still current
+    /// on this thread must not be dropped — it drops at the
+    /// `self._context = Some(context)` assignment, after the shared
+    /// tail's `make_current`). The `passes` /
+    /// `batch` / `pack_shaders` caches (every program / VAO / VBO /
+    /// texture / the font atlas — GL objects of the DEAD context, names
+    /// that would be dangling after the swap) are replaced fresh: the
+    /// next draw lazily re-uploads + re-compiles on the new context
+    /// (the C++'s `onRecreation` consumers do the same re-init — the
+    /// key icons' texture re-upload, HexagonGame.cpp:339, the menu's
+    /// `mustRefresh`, MenuGame.cpp:730 — here the lazy caches' job; the
+    /// `Window`'s `onRecreation` hook covers the one stale consumer that
+    /// lives outside this struct, the egui console's GL state).
+    ///
+    /// `false` when the driver refuses (no config / the context
+    /// creation fails): the window is left GL-less (the C++'s
+    /// close-without-recreate shape — its `recreateWindow`'s
+    /// `create()` failure leaves the `renderWindow` closed and the
+    /// loop's draws on it no-ops; the port's twin: the old surface is
+    /// already dropped + the old context made non-current, so the
+    /// window's draws no-op; the `gl` loader + the window + display
+    /// keep the bookkeeping) and the caller still consumes the
+    /// `mustRecreate` flag (the C++'s
+    /// `recreateWindow` clears it unconditionally, GameWindow.hpp:99 —
+    /// a per-frame retry would log-spam + hammer the driver); the level
+    /// stays stored for the next boot. Desktop only: the android
+    /// activity window + the web's canvas have no window-style to
+    /// recreate (the per-platform reasons, the `Window`'s
+    /// `recreate_window` docs; the C++ has no android/web build at all).
+    #[cfg(not(any(target_os = "emscripten", target_os = "android")))]
+    #[must_use]
+    pub fn recreate(&mut self, msaa_level: u32) -> bool {
+        eprintln!(
+            "[oh-render] window recreation (the C++ mustRecreate → recreateWindow, \
+             GameWindow.hpp:85-101) — rebuilding the GL context at level {msaa_level}"
+        );
+        let Some(window_handle) = self._window.window_handle().ok() else {
+            eprintln!("[oh-render] window recreation failed (window handle gone) — the old context stays live");
+            return false;
+        };
+        // The raw handle (the winit view's `as_raw` — the `GlBackend::
+        // create`'s same handle read before the window moved into the
+        // `GlParts`).
+        let window_handle = window_handle.as_raw();
+        // The C++ `recreateWindow` re-reads the stored member into the
+        // `ContextSettings` (GameWindow.hpp:91) — the 050 pick on the
+        // NEW level (its `[oh-render] context MSAA:` pick log + the
+        // shared tail's `GL_SAMPLES` read-back print the driver's
+        // answer to the changed request).
+        let Some(config) = pick_msaa_config(&self._display, msaa_level) else {
+            eprintln!(
+                "[oh-render] window recreation failed (no GL config) — the old context stays live"
+            );
+            return false;
+        };
+        // The `GlBackend::create`'s desktop context attributes, verbatim
+        // (the compatibility profile's 029n1 note — the pack shaders'
+        // fixed-function vertex stage only exists there).
+        let ctx_attrs = ContextAttributesBuilder::new()
+            .with_context_api(ContextApi::OpenGl(None))
+            .with_profile(GlProfile::Compatibility)
+            .build(Some(window_handle));
+        // The C++ `recreateWindow`'s CLOSE-FIRST order (GameWindow.hpp:
+        // 86-87 before its :88-91 `create`) — the docs above: the old
+        // context non-current on this thread + the old surface taken out
+        // (dropped) before the new surface is created on the same native
+        // window (the X11/EGL one-surface-per-window constraint).
+        if let Some(ctx) = self._context.as_ref() {
+            let _ = ctx.make_not_current_in_place();
+        }
+        let old_surface = self._surface.take();
+        drop(old_surface);
+        // The shared creation tail (the boot `create`'s own): surface +
+        // context + make-current + the glow loader.
+        let (context, surface, gl) = match create_gl_context_on(
+            &self._display,
+            window_handle,
+            self.width,
+            self.height,
+            &config,
+            &ctx_attrs,
+        ) {
+            Some(t) => t,
+            None => {
+                eprintln!(
+                    "[oh-render] window recreation failed (context creation) — \
+                     the window is left GL-less (the C++'s close-without-\
+                     recreate shape; the old context drops with this `false`)"
+                );
+                return false;
+            }
+        };
+        // The swap: the OLD context drops at this assignment (the new
+        // context is current on this thread, the old one no longer — the
+        // drop-order note); the caches lose their dead-context GL
+        // objects (the lazy re-upload / re-compile is the next draw's job).
+        self._context = Some(context);
+        self._surface = Some(surface);
+        self.gl = gl;
+        self.passes.replace(crate::gl_passes::GlPasses::new());
+        self.batch.replace(BatchSlot::default());
+        self.pack_shaders
+            .replace(crate::pack_shaders::PackShaderCache::default());
+        true
+    }
+
     /// The winit window this GL context lives on (issue 014b: the egui
     /// console's `egui-winit` state + `egui_glow` painter need the winit
     /// window — sizes / clipboard display handle / the event hook's
@@ -1057,15 +1243,21 @@ impl GlParts {
     /// the emscripten C API).
     pub fn present(&self) {
         #[cfg(not(target_os = "emscripten"))]
-        if let Err(e) = self._surface.swap_buffers(&self._context) {
-            // The android lifecycle: `BadSurface` at pause/lock (the
-            // EGLSurface destroyed under the app). The C++ SFML window
-            // survives focus loss; a panic here aborts the whole game on
-            // the phone's first screen lock (the on-device finding: the
-            // config-save clean exit at the lock). Log once per surface
-            // state and continue — the next `resumed` recreates the
-            // surface path; desktop GL surfaces don't hit this.
-            eprintln!("[GlParts] swap_buffers failed ({e:?}) — frame not presented (android pause/lifecycle)");
+        // 29w: the failed-recreation GL-less state (the `GlParts::
+        // recreate`'s failure docs — the C++'s close-without-recreate
+        // twin: the C++'s draws on its closed `renderWindow` no-op too)
+        // is a documented no-op.
+        if let (Some(surface), Some(context)) = (self._surface.as_ref(), self._context.as_ref()) {
+            if let Err(e) = surface.swap_buffers(context) {
+                // The android lifecycle: `BadSurface` at pause/lock (the
+                // EGLSurface destroyed under the app). The C++ SFML window
+                // survives focus loss; a panic here aborts the whole game on
+                // the phone's first screen lock (the on-device finding: the
+                // config-save clean exit at the lock). Log once per surface
+                // state and continue — the next `resumed` recreates the
+                // surface path; desktop GL surfaces don't hit this.
+                eprintln!("[GlParts] swap_buffers failed ({e:?}) — frame not presented (android pause/lifecycle)");
+            }
         }
     }
 
@@ -1094,11 +1286,16 @@ impl GlParts {
                 true => SwapInterval::Wait(NonZero::new(1).expect("const 1 is non-zero")),
                 false => SwapInterval::DontWait,
             };
-            if let Err(e) = self._surface.set_swap_interval(&self._context, interval) {
-                // The C++'s `eglCheck` logs and carries on (the request is
-                // re-applied on every recreation — GameWindow.hpp:94 — and the
-                // next `set_vsync` re-applies it here): log and continue.
-                eprintln!("[GlParts] set_swap_interval failed ({e:?})");
+            // 29w: the failed-recreation GL-less state (the `GlParts::
+            // recreate`'s failure docs) is a documented no-op.
+            if let (Some(surface), Some(context)) = (self._surface.as_ref(), self._context.as_ref())
+            {
+                if let Err(e) = surface.set_swap_interval(context, interval) {
+                    // The C++'s `eglCheck` logs and carries on (the request is
+                    // re-applied on every recreation — GameWindow.hpp:94 — and the
+                    // next `set_vsync` re-applies it here): log and continue.
+                    eprintln!("[GlParts] set_swap_interval failed ({e:?})");
+                }
             }
         }
         // Emscripten (W1): a documented no-op — the WebGL swap interval is

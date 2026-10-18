@@ -13,7 +13,12 @@
 //!
 //! ```text
 //! while(gameEngine->isRunning()) {
-//!     [mustRecreate → recreateWindow]     // not ported: created once
+//!     [mustRecreate → recreateWindow]     // 29w: the port mirrors the split — the
+//!                                          //   per-frame config → window sync (the C++
+//!                                          //   Config setters' store half) marks
+//!                                          //   `must_recreate`, `Window::recreate_window`
+//!                                          //   rebuilds the desktop GL context (the C++
+//!                                          //   `recreateWindow`, GameWindow.hpp:85-101)
 //!     renderWindow.setActive(true)        // the GL context is current by construction
 //!     this->clear()                       // sf::Color::Transparent (GameWindow.hpp:126,157-160)
 //!     gameEngine->refreshTimer()          // GameTimer::refresh no-op (GameTimer.hpp:26-37)
@@ -39,12 +44,14 @@
 //!   C++'s stb-based `loadFromFile` always yields RGBA8, which is what the
 //!   winit `window::Icon` takes), and `create_window` sets it on the window
 //!   (`Window::set_icon` → `GlParts::set_icon` → winit
-//!   `set_window_icon`; headless: recorded only). The C++'s
-//!   `onRecreation` re-apply (main.cpp:326) has NO port hook: the port's
-//!   winit window is created once and never recreated at runtime (module
-//!   docs: the `pixel_mult` note — the C++'s `mustRecreate`/`recreateWindow`
-//!   deferral, GameWindow.hpp:89-93, has no port equivalent), so the icon
-//!   is set exactly once, at creation. The C++'s load-failure log
+//!   `set_window_icon`; headless: recorded only). The C++'s `onRecreation`
+//!   re-apply (main.cpp:326) has NO port work: 29w's recreation rebuilds
+//!   the GL CONTEXT on the SAME winit window (the C++'s recreation is a
+//!   new OS window, so its `onRecreation += resetIcon` re-sets the icon;
+//!   the port's icon lives on the surviving winit window and stays set —
+//!   the port's one real `onRecreation` consumer is the egui console's
+//!   stale GL state, `WindowedClient::run`'s hook). The C++'s
+//!   load-failure log
 //!   ("Failed to load icon image", main.cpp:318) is ported too.
 //! * **SIGINT** — C++ `main.cpp:340-349` (block `334-350`) installs a
 //!   `SIGINT` handler that stops the engine; its own `TODO (P2): UB`
@@ -3530,7 +3537,7 @@ impl WindowedClient {
             steam: _steam,
             discord: _discord,
             composed,
-            window,
+            mut window,
             engine,
             timer,
             menu,
@@ -3565,6 +3572,29 @@ impl WindowedClient {
         // `None` until the first shown frame (the GL-gated lazy
         // creation), so most frames this is a cheap check.
         let hook_ilc = ilc.clone();
+        // 29w — C++ `window.onRecreation` (GameWindow.hpp:104) — the port's
+        // surviving consumer. The C++'s three consumers degrade on the
+        // port: the icon re-apply (main.cpp:326) is the SURVIVING winit
+        // window's own state (the port's recreation is a new GL context on
+        // the same window, not a new OS window); the menu's re-layout
+        // (MenuGame.cpp:730's `refreshCamera` / `adjustMenuOffset` /
+        // `mustRefresh`) runs per-frame from the live window size anyway
+        // (the `render_size` slot's per-frame refresh, above); the key
+        // icons' texture re-init (HexagonGame.cpp:339) is the `GlPasses`
+        // texture cache's lazy re-upload after the recreation's cache
+        // reset (the C++ re-uploads its `sf::Texture`s on the new context;
+        // the port re-uploads through the same lazy cache). The one stale
+        // consumer that lives OUTSIDE `GlParts` is the egui console's GL
+        // state (its `egui_glow` painter's textures + shaders, compiled on
+        // the DEAD context): clear the lazy slot — the next shown frame
+        // re-creates the console on the new context (the C++'s own re-init
+        // shape: ImGui re-binds its textures after a context change).
+        {
+            let ilc_hook = ilc.clone();
+            window.set_on_recreation(Box::new(move || {
+                ilc_hook.borrow_mut().take();
+            }));
+        }
         window.run_with_event_hook(
             Some(Box::new(move |winit_window, event| {
                 if let Some(console) = hook_ilc.borrow_mut().as_mut() {
@@ -3885,23 +3915,69 @@ impl WindowedClient {
         // `drawOnlineStatus` identity view) reads it.
         render_size.update(window.get_width(), window.get_height());
         // C++ `if(mustRecreate) recreateWindow();` (GameWindow.hpp:123) —
-        // the port creates the window once (no runtime recreation; module
-        // docs). The vsync half of that recreation IS live-applicable: the
-        // C++'s `recreateWindow` ends with `renderWindow.setVerticalSync
-        // Enabled(vsync)` (GameWindow.hpp:94 — the pinned SFML's
-        // `eglSwapInterval(display, vsync ? 1 : 0)`), and the options'
-        // "vsync" toggle (MenuGame.cpp:1425-1426 → `Config::setVsync`,
-        // Config.cpp:685-689) writes the CONFIG here — the C++'s
-        // `mustRecreate` re-applies it on the next iteration's recreation.
-        // The port applies the same observable change — the live EGL swap
-        // interval — without recreating the winit window (the documented
-        // recreation gap; the full recreation is lane 029w's scope).
-        // The `!=` gate: the EGL request only on an ACTUAL change (the
-        // per-frame cost is a single `RwLock` read + a bool compare).
-        let cfg_vsync = config.read().expect("config poisoned").get_vsync();
-        if window.get_vsync() != cfg_vsync {
-            window.set_vsync(cfg_vsync);
+        // 29w: the port mirrors the SPLIT (the module docs' per-frame
+        // order bullet): the STORE half — the per-frame config → window
+        // sync below (the C++'s `Config::setVsync` / `setAntialiasingLevel`
+        // / `setFullscreen` window-call halves — Config.cpp:685-689 /
+        // :703-709 / :639-648 — each stores the value on the window AND
+        // the window's setter marks `mustRecreate`, GameWindow.hpp:
+        // 176-200) — then the REBUILD half: `maybe_recreate_window` (the
+        // desktop GL context rebuild — the C++'s `recreateWindow`,
+        // GameWindow.hpp:85-101; the android/wasm/headless consumption is
+        // the documented no-op — the android activity window has no
+        // window-style to recreate, the web's GL context is a browser-API
+        // matter (050's boolean-mapping deviation; lane 046 owns the web's
+        // fullscreen shape), headless has no GL at all; the C++ has no
+        // android/wasm build at all, so there is no C++ behaviour to
+        // match there either). The sync runs BEFORE the consumption so
+        // the frame AFTER the menu write is the frame the change lands in
+        // (the C++'s own timing: its setter runs mid-update and the
+        // recreation lands the NEXT frame's loop head, GameWindow.hpp:123).
+        {
+            let cfg = config.read().expect("config poisoned");
+            let cfg_vsync = cfg.get_vsync();
+            let cfg_antialiasing = cfg.get_antialiasing_level();
+            let cfg_fullscreen = cfg.get_fullscreen();
+            // The vsync half (25j): the C++'s recreation re-applies
+            // `setVerticalSyncEnabled` (GameWindow.hpp:94); the port applies
+            // the same OBSERVABLE change — the live swap interval — directly
+            // (`set_vsync`'s observable half: no rebuild needed for it).
+            if window.get_vsync() != cfg_vsync {
+                window.set_vsync(cfg_vsync);
+            }
+            // The antialiasing half (29w): the STORE half only — the level
+            // reaches the context through the `must_recreate` mark the
+            // setter sets + the `maybe_recreate_window` consumption below
+            // (the C++'s `recreateWindow` re-reads the stored member into
+            // the `ContextSettings`, GameWindow.hpp:91 — the rebuild).
+            if window.get_antialiasing_level() != cfg_antialiasing {
+                window.set_antialiasing_level(cfg_antialiasing);
+            }
+            // The fullscreen half (047): the C++'s recreation re-creates the
+            // window in the fullscreen style (GameWindow.hpp:90); the port
+            // applies the same OBSERVABLE change — the window style — live
+            // on the winit window (`set_fullscreen`'s observable half: no
+            // rebuild needed for it; on android/wasm the setter stores only
+            // — inert-by-design, its docs). The C++'s `setFullscreen` also
+            // resizes the render window to the config resolution (Config.
+            // cpp:644-645) — the port's live window resize is the 025g
+            // creation-frozen-surface deviation (its own lane), so the
+            // style is the port's fullscreen observable.
+            if window.get_fullscreen() != cfg_fullscreen {
+                window.set_fullscreen(cfg_fullscreen);
+            }
         }
+        // The REBUILD half (29w) — the C++'s `if(mustRecreate)
+        // recreateWindow();` (GameWindow.hpp:123) at exactly this loop-head
+        // position (before clear / update / draw, so the frame that
+        // consumes the request draws on the rebuilt context): the GL
+        // rebuild + the `onRecreation` hook + the flag clear. (The C++'
+        // `recreateWindow`'s `inputState.reset()` half, GameWindow.hpp:96,
+        // lands at the port's event-model position — the post-update-burst
+        // application below, the `reset_input_state`'s docs: the port's
+        // events are folded before the frame body, so a top-of-frame reset
+        // would drop THIS frame's own key events.)
+        let recreated = window.maybe_recreate_window();
         // C++ `renderWindow.setActive(true);` (GameWindow.hpp:125) — the
         // GL context is current by construction (glutin).
         // C++ `this->clear();` (GameWindow.hpp:126; `clear` at :157-160,
@@ -4019,6 +4095,17 @@ impl WindowedClient {
             engine.update_from_timer(ft);
         });
         engine.on_post_update();
+        // 29w — the C++ `recreateWindow`'s `inputState.reset()` half
+        // (GameWindow.hpp:96), at the port's event-model position (the
+        // `Window::reset_input_state`'s docs — the C++'s pre-`runEvents`
+        // position, GameWindow.hpp:123 → :42, is the post-update position
+        // here: the port's events are folded BEFORE the frame body, so
+        // this frame's update burst already consumed them; the keys held
+        // from before the recreation are gone for the next frame — the
+        // C++'s fresh-window input state).
+        if recreated {
+            window.reset_input_state();
+        }
         // 29u1 — apply the menu's cursor state to the window (the C++
         // `MenuGame::setMouseCursorVisible` → `window.setMouseCursorVisible`,
         // MenuGame.cpp:3641-3644): the frame's key/mouse detection (above,
@@ -4204,7 +4291,11 @@ pub fn create_window(config: &Config, base_dir: &Path) -> Window {
     // `antialiasing_level` (main.cpp:307) as the context's MSAA sample
     // count (050: the level now reaches the context it gates — the C++'s
     // `recreateWindow` `ContextSettings`, GameWindow.hpp:91; the
-    // setter-below keeps the C++'s order + the store half).
+    // setter-below keeps the C++'s order + the store half — 29w: a no-op
+    // there, `create` already stored the same value, so the setter's
+    // `must_recreate` mark (the C++'s boot-time mark, covered by its
+    // initial `mustRecreate{true}` — the `set_antialiasing_level`'s
+    // docs) does not fire on the first frame).
     let mut window = Window::create(
         physical_w.max(1),
         physical_h.max(1),
@@ -4233,9 +4324,10 @@ pub fn create_window(config: &Config, base_dir: &Path) -> Window {
     window.set_max_fps(config.get_max_fps() as f32);
 
     // C++ main.cpp:312-328 — `Assets/icon.png` via `sf::Image` +
-    // `setIcon` (re-applied on `onRecreation` — no port hook: the port's
-    // window is never recreated at runtime, module docs: the Icon bullet).
-    // The decode is the screenshot's `png` dependency (`Image::load_png`
+    // `setIcon` (the C++'s `onRecreation += resetIcon` re-apply is the
+    // surviving winit window's own state on 29w's recreation — module
+    // docs: the Icon bullet). The decode is the screenshot's `png`
+    // dependency (`Image::load_png`
     // — the C++'s stb-based `loadFromFile`, always RGBA8). OFF on
     // emscripten (W2 — a browser canvas has no window icon; the tab's
     // favicon is the PAGE's, not the canvas's).
@@ -4277,6 +4369,13 @@ pub fn frame(
     timer: &mut TimerStatic,
     target: &mut dyn DrawTarget,
 ) {
+    // C++ `if(mustRecreate) recreateWindow();` (GameWindow.hpp:123) — the
+    // loop head's rebuild half (29w; the test harness mirrors the C++
+    // body's order: the recreation lands before the frame's clear; the
+    // `inputState.reset()` half, GameWindow.hpp:96, is the post-update
+    // application below — the port's event-model position, the
+    // `reset_input_state`'s docs).
+    let recreated = window.maybe_recreate_window();
     if let Some(gl) = window.gl() {
         gl.clear(COLOR_TRANSPARENT); // C++ `this->clear()` (GameWindow.hpp:126)
     }
@@ -4290,6 +4389,13 @@ pub fn frame(
         engine.update_from_timer(ft);
     });
     engine.on_post_update();
+    // 29w — the recreation's `inputState.reset()` half (GameWindow.hpp:96),
+    // the port's event-model position (the `frame`'s input is current by
+    // then — the caller's events are folded already: the post-update
+    // reset is the C++'s pre-`runEvents` position's equivalent).
+    if recreated {
+        window.reset_input_state();
+    }
     // C++ `runDraw` (GameEngine.hpp:89-94).
     engine.draw(target);
     // C++ `renderWindow.display()` (GameWindow.hpp:145 — the swap after

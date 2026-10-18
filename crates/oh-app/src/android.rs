@@ -277,13 +277,18 @@ fn create_android_window(
     window.set_size(logical_w as u32, logical_h as u32);
 
     // C++ main.cpp:305-310 (the setters, in the C++ order). Antialiasing
-    // (main.cpp:307) records the config value here and is APPLIED at the
-    // first `resumed`'s GL materialization (`ensure_android_gl` →
-    // `create_android_parts(el, self.antialiasing_level)` — the C++
-    // `recreateWindow`'s `ContextSettings` sample count, 050); fullscreen /
-    // fps-limit keep their android-platform record halves (the platform
-    // window owns the actual surface; vsync IS applied live at the
-    // materialization — `parts.set_swap_interval`).
+    // (main.cpp:307) records the config value here (29w: the store half +
+    // the `mustRecreate` mark — the `Window::set_antialiasing_level`'s
+    // docs; the consumption is the documented android no-op, the
+    // `recreate_window`'s per-platform reasons: the activity window has
+    // no window-style to recreate, the C++ has no android build) and is
+    // APPLIED at the first `resumed`'s GL materialization (`ensure_
+    // android_gl` → `create_android_parts(el, self.antialiasing_level)` —
+    // the C++ `recreateWindow`'s `ContextSettings` sample count, 050); a
+    // runtime level change stays stored for the next activity resume.
+    // Fullscreen / fps-limit keep their android-platform record halves
+    // (the platform window owns the actual surface; vsync IS applied live
+    // at the materialization — `parts.set_swap_interval`).
     window.set_pixel_mult(pixel_mult);
     window.set_fullscreen(config.get_fullscreen());
     window.set_antialiasing_level(config.get_antialiasing_level());
