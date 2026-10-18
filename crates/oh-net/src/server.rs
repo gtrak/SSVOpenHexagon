@@ -2359,7 +2359,18 @@ mod tests {
             let mut buf = [0u8; 1];
             let res = self.stream.read(&mut buf);
             match res {
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                // The read window expired with no frame. The blocking
+                // read-timeout's error kind is platform-mapped: Unix maps
+                // the expired poll to `WouldBlock`, Winsock's
+                // WSAETIMEDOUT (10060) to `TimedOut` — both mean "no
+                // frame within the window" (the non-blocking
+                // `WouldBlock` the production frame reader matches is a
+                // different mechanism and is platform-uniform).
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) => {}
                 other => panic!("expected no frame, got {other:?}"),
             }
             self.stream
