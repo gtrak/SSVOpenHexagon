@@ -117,3 +117,43 @@ then a `## Report` appended here: the reproduction steps per symptom, the root c
 — the operator may be describing timing or a level-specific path you cannot recreate, and a
 precise negative ("could not reproduce symptom 2; here is the exact sequence I tried, with
 logs") is a good outcome. Do not claim a fix for a symptom you could not reproduce.
+
+## CORRECTION on Symptom 2 (operator, same session) — it is NOT the `ignore_inputs` bug
+
+Operator, verbatim: *"symptom 2 isn't quite right, it's asking for 'Y' or 'joystick 6' inputs, and
+there's no way to press it. In general the android build needs different input defaults than the
+desktop build."*
+
+Verified in the C++ tree, both halves:
+- **'Y' is the REPLAY trigger**: `src/SSVOpenHexagon/Global/Config.cpp` has
+  `X(triggerReplay, trig, "t_replay", cil{cmb{{k::Y}}})`, and the end-of-level prompt is built
+  literally at `HexagonGame.cpp:806` (`status.replayInput += " OR JOYSTICK " + joystickButton`)
+  and `:808` (`status.replayInput = "PRESS " + status.replayInput + " TO REPLAY\n"`). So the
+  screen asks for a keyboard/joystick input a touch-only device cannot produce — **no swallowed
+  input, just no affordance.** The `ignore_inputs` hypothesis is therefore DROPPED (it remains a
+  real hypothesis only for a genuinely dead menu after a game→menu drop; do not spend the lane on
+  it unless the enumeration in §Next shows that shape).
+- **The C++ has NO Android-specific bind defaults**: `Config.cpp`'s bind table carries no
+  platform `#if` (only unrelated `__clang__` pragmas). So the upstream Android build has this
+  same gap — which makes the fix a **sanctioned DEVIATION (the F28 / issue-031 class)**, not a
+  parity repair.
+
+### The generalised requirement (the operator's actual ask)
+
+Enumerate the C++'s entire default bind table (every `X(trigger…, trig, "t_…", cil{…})` row in
+`Config.cpp`) and, per action, state whether it is reachable on a touch-only device TODAY — via
+the issue-031 overlay (whose buttons are exactly `Exit, Focus, Swap, RotateCCW, RotateCW`), the
+menu's 9-zone grid (`MenuGame.cpp:2801-2834`), the touch→mouse conversion, or nothing. **The
+"nothing" rows are the work list**; a first read says the gameplay gaps are at least Replay,
+Restart and Pause, with screenshot/lua-console being desktop-only by nature.
+
+Implement the gaps through the mechanism that already exists rather than a new one: the overlay
+drives the SAME per-`Tid` two-state inputs the keyboard drives
+(`two_state(Tid::Focus, …)`, `crates/oh-app/src/windowed.rs:1648-1649`), so buttons driving
+`Tid::Replay`/`Tid::Restart`/`Tid::Pause` inherit rebinding and the replay-bit record for free.
+Keep the overlay platform-neutral (031's design: enabled on Android, inherited by wasm). And
+settle "different defaults" explicitly — either the overlay covers everything (recommended:
+discoverable, and F28's precedent) or `oh-config` diverges per platform; **desktop defaults must
+not change**, whichever route is chosen, and the choice gets a `deviations.md` F-row citing that
+the C++ has no Android bind defaults. The end-of-level hint should also stop telling a phone user
+to press 'Y' (the C++ builds that string from the binds; say what you did about it).
