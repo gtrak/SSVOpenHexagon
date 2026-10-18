@@ -189,9 +189,10 @@ fn divergent_field(expected: &str, got: &str) -> Option<&'static str> {
 /// `field: hash` with frames + draws + final results intact). A C++
 /// built with MSVC would produce the port's bits, not the column's —
 /// so the state hash is NOT assertable against this column on Windows.
-/// What IS platform-stable (and still asserted here): the frame numbers
-/// + the per-frame draw counts (game-event level) + the final result
-/// (score/time carry no transcendentals in their accumulation).
+/// What IS platform-stable (and still asserted here): the frame
+/// numbers, the per-frame draw counts (game-event level), and the final
+/// result — score and time carry no transcendentals in their
+/// accumulation.
 #[cfg(windows)]
 fn divergent_field(expected: &str, got: &str) -> Option<&'static str> {
     let exp_parts: Vec<&str> = expected.split(' ').collect();
