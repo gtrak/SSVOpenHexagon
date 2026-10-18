@@ -635,3 +635,67 @@ fn set_fullscreen_round_trips_and_requests_the_winit_window() {
         "expected a cleared (windowed) fullscreen state, got {fs:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// issue 049 (K2) — the C++ SFML frame-limiter arithmetic (host-pinned: the
+// device pacing itself is the operator's on-device confirmation, the device
+// cannot be reproduced here). The C++ paces inside `Window::display()` —
+// the pinned SFML `dacceddbd`'s `src/SFML/Window/Window.cpp:207-219`:
+// after the swap, `sleep(m_frameTimeLimit − m_clock.getElapsedTime());
+// m_clock.restart();` — with SFML's `sleep` a no-op for negative
+// durations (`src/SFML/System/Sleep.cpp:41-48`).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn frame_limiter_sleep_matches_the_cpp_arithmetic() {
+    use oh_render::window::frame_limiter_sleep;
+    use std::time::Duration;
+
+    // The C++ `setFramerateLimit(0)` arm (`Window.cpp:175-181` —
+    // `Time::Zero`, the `fpsLimited` false / `max_fps` 0 configuration):
+    // no limit, no sleep, whatever the iteration took.
+    assert_eq!(frame_limiter_sleep(0.0, Duration::ZERO), Duration::ZERO);
+    assert_eq!(
+        frame_limiter_sleep(0.0, Duration::from_millis(20)),
+        Duration::ZERO
+    );
+
+    // The shipped config (`limit_fps=true, max_fps=200`): a 0 ms
+    // iteration sleeps the FULL frame time — 1/200 s = 5 ms exactly
+    // (the f32 `1.0/200.0` floors to 5_000_000 ns).
+    assert_eq!(
+        frame_limiter_sleep(200.0, Duration::ZERO),
+        Duration::from_millis(5)
+    );
+
+    // The subtraction (`sleep(1/limit − elapsed)`, `Window.cpp:216`): a
+    // 3 ms iteration sleeps the remaining 2 ms.
+    assert_eq!(
+        frame_limiter_sleep(200.0, Duration::from_millis(3)),
+        Duration::from_millis(2)
+    );
+
+    // The SFML `sleep`'s negative no-op: an iteration that already ran
+    // exactly the frame time (5 ms) — or far past it (a heavy 20 ms
+    // frame, the in-game GPU-limited case) — sleeps 0 (the C++'s "a ≥5 ms
+    // iteration sleeps 0").
+    assert_eq!(
+        frame_limiter_sleep(200.0, Duration::from_millis(5)),
+        Duration::ZERO
+    );
+    assert_eq!(
+        frame_limiter_sleep(200.0, Duration::from_millis(20)),
+        Duration::ZERO
+    );
+
+    // A non-shipped limit (the options slider's 60): 1/60 s, within the
+    // f32 frame-time rounding (the C++'s own `seconds(1.f / limit)`
+    // carries the same f32 precision — `Window.cpp:178`).
+    let sleep60 = frame_limiter_sleep(60.0, Duration::ZERO);
+    let ideal = Duration::from_secs_f64(1.0 / 60.0);
+    let diff = sleep60.abs_diff(ideal);
+    assert!(
+        diff < Duration::from_micros(1),
+        "60 fps frame time: {sleep60:?} vs the ideal {ideal:?} (diff {diff:?})"
+    );
+}

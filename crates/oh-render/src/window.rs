@@ -15,8 +15,9 @@
 //! + `apply_event`), and invokes the per-frame handler once. `Window::headless`
 //!   (no display) still runs exactly one frame so the headless game path works.
 
+use std::time::Duration;
 #[cfg(not(target_os = "emscripten"))]
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 #[cfg(target_os = "emscripten")]
 use wasm_bindgen::closure::Closure;
@@ -708,6 +709,56 @@ impl ReleasedEdges {
 }
 
 // ---------------------------------------------------------------------------
+// issue 049 (K2) — the C++ SFML frame limiter's arithmetic (pure +
+// host-testable)
+// ---------------------------------------------------------------------------
+
+/// issue 049 (K2) — the C++ SFML `Window::display()`'s frame-limiter
+/// ARITHMETIC, extracted pure so the host gate pins it (the device pacing
+/// itself is the operator's on-device confirmation — the device cannot be
+/// reproduced here).
+///
+/// The pinned SFML (`dacceddbd`, the `GIT_TAG` in `cpp-original/
+/// CMakeLists.txt`'s CPM block) paces inside the display —
+/// `src/SFML/Window/Window.cpp:207-219`:
+///
+/// ```cpp
+/// void Window::display()
+/// {
+///     // Display the backbuffer on screen
+///     if (setActive())
+///         m_context->display();
+///
+///     // Limit the framerate if needed
+///     if (m_frameTimeLimit != Time::Zero)
+///     {
+///         sleep(m_frameTimeLimit - m_clock.getElapsedTime());
+///         m_clock.restart();
+///     }
+/// }
+/// ```
+///
+/// i.e. sleep `1/limit − elapsed` AFTER the swap, the frame clock
+/// restarted each paced display (`m_clock`, `Window.hpp:284`, restarted
+/// at `initialize()`, `Window.cpp:230`). SFML's `sleep` (the fork's
+/// `src/SFML/System/Sleep.cpp:41-48`) is a NO-OP for a negative duration
+/// (`if (duration >= Time::Zero) sleepImpl(duration)`), so an iteration
+/// that already ran at least the frame time (≥ 5 ms at the shipped
+/// `max_fps=200`) sleeps 0 — `saturating_sub` is that clamp. A `0` / non-
+/// finite limit has no `m_frameTimeLimit` (SFML's `setFramerateLimit`
+/// stores `Time::Zero` for `limit == 0`, `Window.cpp:175-181`).
+#[must_use]
+pub fn frame_limiter_sleep(limit_fps: f32, elapsed: Duration) -> Duration {
+    // The C++'s `m_frameTimeLimit != Time::Zero` arm: `setFramerateLimit`
+    // takes an `unsigned int` (`Window.cpp:175`), so `0` — and anything
+    // non-positive / `NaN` — stores `Time::Zero` (no limit, no sleep).
+    if limit_fps.is_nan() || limit_fps <= 0.0 {
+        return Duration::ZERO;
+    }
+    Duration::from_secs_f32(1.0 / limit_fps).saturating_sub(elapsed)
+}
+
+// ---------------------------------------------------------------------------
 // Window
 // ---------------------------------------------------------------------------
 
@@ -771,6 +822,19 @@ pub struct Window {
     // Desktop: always `false` (the desktop bootstrap is pre-`run`).
     #[cfg(target_os = "android")]
     ensure_android_gl_failed: bool,
+    // issue 049 (K2): the C++ SFML `Window::display()`'s frame-limiter
+    // clock (the fork's `Window.hpp:284` `m_clock` — `Clock::restart()` at
+    // `initialize()`, `Window.cpp:230`, and after every paced display,
+    // `Window.cpp:217`). Android only: on Android the winit `WaitUntil`
+    // deadline never blocks (the K2 short-circuit — the
+    // `RunHandler::about_to_wait` note), so the pacing must live in the
+    // frame (the C++'s own site); the desktop's `WaitUntil` blocks the
+    // loop itself and the web's rAF is the display pacer. `None` = not yet
+    // started (the C++ clock starts at window creation — the first paced
+    // display is milliseconds after it, so its sleep is the full frame
+    // time there too).
+    #[cfg(target_os = "android")]
+    framerate_clock: Option<Instant>,
     // issue 25b SG5 (space clarified by issue 025g): the down-finger
     // positions (the window's CURRENT size coordinates — the winit touch
     // positions pass through UNSCALED, `RunHandler::window_event`: the
@@ -1007,6 +1071,8 @@ impl Window {
             dom_listeners: Vec::new(),
             #[cfg(target_os = "android")]
             ensure_android_gl_failed: false,
+            #[cfg(target_os = "android")]
+            framerate_clock: None,
             finger_down_positions: std::collections::HashMap::new(),
             touch_position_sink: None,
             input_state_sink: None,
@@ -1295,6 +1361,36 @@ impl Window {
         } else {
             0.0
         }
+    }
+
+    /// issue 049 (K2): the C++ SFML `Window::display()`'s frame limiter, at
+    /// the port's equivalent point (the frame — the update, the draw, and
+    /// the swap — has just run: SFML paces AFTER the swap,
+    /// `Window.cpp:207-219`). No-op when no limit is in force (the C++
+    /// `m_frameTimeLimit == Time::Zero` arm: `fpsLimited` false or
+    /// `maxFPS == 0` — `effective_framerate_limit` is the shared
+    /// configuration the desktop path paces with, `limit_fps` / `max_fps`
+    /// / `vsync` precedence unchanged: the vsync swap interval applies
+    /// independently, as in the C++'s `recreateWindow` — `GameWindow.hpp:94`
+    /// `setVerticalSyncEnabled` + `:95` `setFramerateLimit` together). The
+    /// 025i per-frame `request_redraw` is UNTOUCHED (it is the ANR fix —
+    /// and precisely what makes the winit deadline useless here; the
+    /// sleep, not the loop, is the C++'s throttle).
+    #[cfg(target_os = "android")]
+    fn pace_display(&mut self) {
+        let limit = self.effective_framerate_limit();
+        if limit <= 0.0 {
+            return;
+        }
+        let now = Instant::now();
+        // The clock's start (the SFML `m_clock` — `None` = the C++ clock
+        // started at window creation; the first sleep is the full frame
+        // time, as the C++'s first post-creation display).
+        let elapsed = now - self.framerate_clock.unwrap_or(now);
+        std::thread::sleep(frame_limiter_sleep(limit, elapsed));
+        // The SFML `m_clock.restart()` — after EVERY paced display
+        // (the C++ restarts whether or not the sleep clamped to 0).
+        self.framerate_clock = Some(Instant::now());
     }
 
     // ---- cursor / icon / focus -------------------------------------------
@@ -1858,6 +1954,28 @@ impl<F: FnMut(&mut Window)> ApplicationHandler<()> for RunHandler<'_, F> {
             el.exit();
             return;
         }
+        // issue 049 (K2): the C++ SFML frame limiter, at the C++'s own
+        // site — AFTER the frame (the swap) has run. ANDROID ONLY: the
+        // `WaitUntil` deadline below is never honoured on Android —
+        // winit 0.30.13's android `poll_events_with_timeout`
+        // (`src/platform_impl/android/mod.rs:549-555`: `pending_redraw` —
+        // set by 025i's per-frame `request_redraw` below, and `true`
+        // before the next poll — short-circuits the wait to
+        // `Duration::ZERO`) — so the deadline never blocks and the loop
+        // free-ran (the K2 on-device numbers: menu ~500 fps, in-game
+        // ~360 fps against the C++'s paced 200). The C++ paces with a
+        // sleep in `Window::display()` after the swap (SFML pinned
+        // `dacceddbd`, `Window.cpp:207-219`), so the port paces at the
+        // equivalent point; the 025i redraw request stays (the ANR fix —
+        // every iteration still draws + reads input, and now also spends
+        // its sub-frame time the way the C++'s main thread does; the
+        // per-iteration sleep is ≤ 1/min `max_fps` — 5 ms at the shipped
+        // 200 — nowhere near Android's 5 s input-dispatch ANR window).
+        // Desktop keeps its winit `WaitUntil` (it blocks there — no
+        // redraw-pending short-circuit in the desktop backends); the web
+        // is paced by rAF.
+        #[cfg(target_os = "android")]
+        self.window.pace_display();
         // Pace the next frame: the C++ SFML `setFramerateLimit` sleep (the
         // shipped `_RELEASE/config.json` has `limit_fps=true`, `max_fps=200`,
         // `vsync=false`). `WaitUntil` when a framerate limit is in force,

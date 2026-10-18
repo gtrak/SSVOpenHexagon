@@ -68,3 +68,77 @@ if that citation is wrong, say so, because the whole root cause rests on it.
 `crates/oh-render/src/window.rs` (the pacing) + the register/audit records. Do not touch the game's
 fixed-timestep logic (the cap is presentation pacing, not simulation), do not change desktop behaviour,
 do not remove 025i's redraw policy, and append a `## Report`.
+
+## Report
+
+**The cited answer — "is the cap enforced on Android?" — was NO, and the mechanism is verified
+end-to-end in the pinned sources (all read directly by this lane):**
+
+1. **winit's short-circuit** (the whole root cause rests on it — verified in the pinned registry
+   source, `~/.cargo/registry/src/index.crates.io-*/winit-0.30.13/`, the `Cargo.lock` pin):
+   `src/platform_impl/android/mod.rs` — `EventLoop::run` pumps `pump_events(None, …)` in a bare
+   loop (`mod.rs:495-508`), which calls `poll_events_with_timeout` (`:543`); there,
+   `self.pending_redraw |= self.redraw_flag.get_and_reset()` (`:549`), then
+   `timeout = if self.running && (self.pending_redraw || …has_incoming()) { Some(Duration::ZERO) }
+   else { …the `ControlFlow::WaitUntil` deadline, `:556-562`… }` (`:551-555`) — i.e. the
+   deadline is computed ONLY in the arm that is unreachable while a redraw is pending.
+   `request_redraw()` sets `redraw_flag` (`:122`). The spec's `:549-554` citation is correct
+   (the short-circuit block is `:551-555`, one line off).
+2. **The port's call path**: `RunHandler::about_to_wait` (`crates/oh-render/src/window.rs`)
+   runs the frame, sets `ControlFlow::WaitUntil(now + 1/limit)` when
+   `effective_framerate_limit() > 0`, and — 025i's ANR fix — calls
+   `gl.winit_window().request_redraw()` after EVERY frame. So `pending_redraw` is `true` before
+   every poll → `Duration::ZERO` wait → the loop free-runs regardless of the deadline. K2's
+   on-device numbers (menu ~500 / in-game ~360 fps vs the C++'s paced 200) follow.
+
+**The fix (bounded — landed `88f353df`):** the C++'s own answer, mirrored at the C++'s own site.
+SFML's frame limiter is a SLEEP in `Window::display()` — the pinned SFML `dacceddbd` (the
+`GIT_TAG` in `cpp-original/CMakeLists.txt`'s CPM block): `src/SFML/Window/Window.cpp:207-219`
+(`m_context->display()` → `sleep(m_frameTimeLimit − m_clock.getElapsedTime()); m_clock.restart();`),
+`:175-181` (`setFramerateLimit` → `Time::Zero` for 0), `:230` (the `initialize()` clock start),
+`Window.hpp:284` (`m_clock`), and the negative-sleep no-op in `src/SFML/System/Sleep.cpp:41-48`.
+The port now has `frame_limiter_sleep(limit, elapsed)` (pure, ungated — `1/limit − elapsed`,
+saturated at 0) + `Window::pace_display` (android-only: the `effective_framerate_limit()` gate —
+`limit_fps`/`max_fps` precedence, vsync's swap interval independent, exactly as the C++'s
+`recreateWindow` applies `:94` `setVerticalSyncEnabled` + `:95` `setFramerateLimit` together),
+called in `about_to_wait` AFTER the frame (the swap, `tick_fields`'s `target.present()`) ran.
+025i's per-frame `request_redraw` is UNTOUCHED — it is the ANR fix, and it is precisely what
+defeats the deadline; "stop requesting redraws" was never on the table (nor "just use
+WaitUntil"). The per-iteration sleep ≤ 1/min `max_fps` (5 ms at the shipped 200) is nowhere near
+Android's 5 s input-dispatch ANR window, and the C++ does this exact sleep on this exact thread
+in its Android build. Desktop pacing is byte-unchanged (`WaitUntil`/`Poll` as before); the wasm
+path is byte-unchanged (rAF paces it; the new function is pure std, the `pace_display` call is
+android-gated).
+
+**Citations I actually read (hygiene §11):** the SFML sources from the populated oracle-deps copy
+`/home/gary/.cache/ohoracle-deps/sfml-fork` (commit `dacceddbd` — the CMakeLists pin; the
+`cpp-original/extlibs/SFML` submodule dir is empty in BOTH the lane worktree and the main
+checkout, so the main-checkout path in the spec could not be read there); SSVStart's
+`GameWindow.hpp` from the main checkout (`cpp-original/extlibs/SSVStart/…`, populated: `:95` the
+limit apply, `:117-142` the `run()` loop, `:142` the `display()` call); winit from the pinned
+cargo-registry source (above). **One register citation corrected:** the K2 row's SFML pin
+`2f11710` (`Window.cpp:372-384` / `:440`) was stale — the actual CPM pin is `dacceddbd` and its
+`display()` is at `Window.cpp:207-219` (the limiter logic itself matches the row's description
+verbatim; only the pin hash + line numbers were wrong).
+
+**Tests / gates:** host gate 5/5 green (`cargo test` workspace; the new
+`frame_limiter_sleep_matches_the_cpp_arithmetic` pins the arithmetic — 0 → 0; 200 fps: 0 ms →
+5 ms full frame, 3 ms → 2 ms, 5 ms → 0, 20 ms → 0 (the "≥ frame time sleeps 0" arm), 60 fps →
+1/60 s within f32 rounding; `backend` 15 → 16 tests). `cargo check --target
+aarch64-linux-android` (whole workspace) green — the android branch is invisible to the host
+gate (hygiene §4). The audit doc's two Android cells needed no further change: the
+orchestrator's `e96134de` already corrected them to "MISSING — see K2", and this fix is the
+repair that row assigned to this lane (the record half was pre-done, per the dispatch).
+
+**What I could NOT establish — the device half is the operator's (the ADB listener is down):**
+when the phone returns, re-measure exactly as K2's probe did — shipped `limit_fps=true,
+max_fps=200`: (a) MENU fps and IN-GAME fps from the port's own log lines (the
+`msDraw`/`msUpdate`-adjacent frame timing the 025j session used — expect ≈200 fps, not ~500/
+~360), and the process CPU settling to the C++'s paced lower burn (vs the 76–71 % free-run);
+(b) the ANR non-regression: the dropbox `data_app_anr` count stays flat across the session
+(025i's fix — the per-frame redraw — is untouched, but "stays flat" is the confirmation, not the
+assumption). Status: **pacing implemented and host-tested, device unverified.**
+
+**Register:** K2 row updated in the same commit as the change — CLOSED with the fix hash
+(`88f353df`), the device half recorded as the operator's pending probe, the stale SFML pin
+citation corrected.
