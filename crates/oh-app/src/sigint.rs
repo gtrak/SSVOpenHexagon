@@ -59,6 +59,18 @@ pub fn server_line(sig: i32) -> String {
 /// formatting in the signal context). The partial-write / error is ignored
 /// (the C++'s `ssvu::lo` / `std::printf` do not check either; a signal-
 /// context retry loop is not async-signal-safe here).
+/// The stdout file descriptor, per target. POSIX `STDOUT_FILENO` — which
+/// libc ALSO defines on `windows-gnu` (MinGW's unistd, value 1) but NOT on
+/// `windows-msvc` (the MSVC CRT has no POSIX unistd constants; its stdout
+/// handle number is 1 — stdio.h's `_IOUT`). A bare `libc::STDOUT_FILENO`
+/// therefore fails to compile only under MSVC (E0425) — invisible to the
+/// host gate AND to the x86_64-pc-windows-gnu cross-check, which is how it
+/// survived to issue 044's windows-msvc CI leg (run 39088375527).
+#[cfg(target_env = "msvc")]
+const STDOUT_FD: libc::c_int = 1; // the MSVC CRT's `_IOUT` (stdout)
+#[cfg(not(target_env = "msvc"))]
+const STDOUT_FD: libc::c_int = libc::STDOUT_FILENO;
+
 fn write_stdout(bytes: &[u8]) {
     unsafe {
         // The count argument of `write(2)` is `size_t` (usize) on Unix but
@@ -74,13 +86,9 @@ fn write_stdout(bytes: &[u8]) {
         let count: libc::c_uint = bytes.len().min(libc::c_uint::MAX as usize) as libc::c_uint;
         #[cfg(not(windows))]
         let count = bytes.len();
-        // SAFETY: `write(2)` to `STDOUT_FILENO` with a valid user buffer is
+        // SAFETY: `write(2)` to `STDOUT_FD` with a valid user buffer is
         // async-signal-safe (POSIX); the buffer outlives the call.
-        let _ = libc::write(
-            libc::STDOUT_FILENO,
-            bytes.as_ptr() as *const libc::c_void,
-            count,
-        );
+        let _ = libc::write(STDOUT_FD, bytes.as_ptr() as *const libc::c_void, count);
     }
 }
 
