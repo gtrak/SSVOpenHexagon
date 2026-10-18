@@ -123,8 +123,8 @@ It is also a DIFFERENT soundtrack: it would not be the original's music, so a pl
 Hexagon's* tracks still needs option A or D. What it does buy is a game that has music by default, with a
 provenance we own.
 
-Mechanically it fits where the port already has a seam: the audio path is a sink (`seams::Audio` /
-`seams::AudioImpl`), exactly like the Steam and network sinks, so a synthesizer is "our code attached at a
-seam" rather than a change to the ported audio logic. It belongs in `oh-additions` under that crate's
-contract (see `.agents/tasks/issue-057-oh-additions.md`), with the added rule that anything affecting a RUN
-must be driven through recorded inputs or config, never silent state.
+Mechanically it is likely to fit an existing seam — the audio path is a sink, exactly like the Steam and
+network sinks — which would make a synthesizer "our code attached at a seam" rather than a change to the
+ported audio logic. **That is an illustration and not a design**: the operator has said these are not being
+built yet, so nothing here should be read as a plan. Whatever shape it eventually takes belongs in
+`oh-additions` under that crate's contract (see `.agents/tasks/issue-057-oh-additions.md`).

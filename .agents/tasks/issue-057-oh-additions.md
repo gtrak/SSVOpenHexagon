@@ -105,14 +105,19 @@ possible without forking the port:
 > stay inside.
 
 This is the F36 precedent stated generally: invoking the original's own action is what keeps a feature an
-ADDITION rather than a fork. The operator's examples already have C++ knobs to drive — `timescale` for
-slomo and `invincible` for zen are EXISTING config values, and a synthesizer belongs behind
-`seams::Audio`, i.e. our code attached at a seam like the audio and Steam backends.
+ADDITION rather than a fork.
 
-AND ONE MORE RULE FOR THE CRATE'S DOCS, which is the acceptance for any RUN-AFFECTING addition: **an
-addition that changes what happens in a run must be driven through RECORDED INPUTS (so the replay
-reproduces the run) or through config — never through silent state.** A slomo or zen toggle nobody records
-would diverge a replay, and the port's determinism tests would catch it; the docs should hand that
-constraint forward instead of leaving it to be rediscovered.
+**The families above are the NATURE of what the operator wants to build — they are NOT designs, and no
+feature design belongs in this lane or in the crate's docs.** Operator, verbatim: *"we're not implementing
+those yet so don't make too many assumptions, but that is the nature of what i want to build."* So: name
+the families, state the contract, stop. Where a concrete example would help a reader, mark it as an
+ILLUSTRATION, and never let one harden into a plan — this project has already been bitten by prose that
+outlived the thinking behind it.
+
+AND ONE REQUIREMENT FOR THE CRATE'S DOCS — stated as a requirement to satisfy, not as a design: **any
+addition that affects a run will have to be driven through RECORDED INPUTS (so a replay reproduces the
+run) or through config — never through silent state.** That follows from the port's determinism promise
+rather than from any particular feature: a toggle nobody records would diverge a replay, and the
+determinism tests would catch it. Hand the constraint forward instead of leaving it to be rediscovered.
 
 The classification table's "OURS" category therefore means "additions", not "UI".
