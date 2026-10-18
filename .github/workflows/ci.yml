@@ -1,0 +1,151 @@
+name: CI
+
+# Issue 037 — the port's per-push CI, written from scratch (replaces
+# rust.yml; the upstream C++ workflows ci_linux.yml / ci_windows.yml were
+# DELETED — the C++ tree is the archived reference now, verified locally
+# through the container oracle, not a shipped artifact; CI Linux was stuck
+# 'queued' on every push and CI Windows red, consistent with that).
+#
+# Job graph (every push + pull request, in parallel):
+#   gate          — the port's own gate (tools/gate.sh: fmt / build /
+#                   clippy -D warnings / test / lua-parity), matrix over
+#                   ubuntu + windows
+#   windows-cross — the x86_64-pc-windows-gnu cross-check (tools/
+#                   build-windows.sh --check) on ubuntu. THIS JOB IS THE
+#                   ONE THAT PROVED ITS WORTH: it is what catches
+#                   Windows-target regressions that the host gate
+#                   structurally cannot see — the host gate never
+#                   compiles the Windows target, so "the host gate is not
+#                   a Windows gate" (the sibling of "the host gate is not
+#                   a web gate"). Lane 037 found master Windows-red from
+#                   a usize-vs-c_uint in the signal write (the cross-check
+#                   is the only place it was visible). Never drop this
+#                   job.
+#   android       — the fast android-target check (tools/check-android.sh:
+#                   cargo check -p oh-app --target aarch64-linux-android,
+#                   the NDK r27c pin). The slow, signing-dependent release
+#                   APK (tools/package-android.sh) is a RELEASE-workflow
+#                   job, not a per-push one.
+#   wasm          — the emscripten compile proof (tools/package-web.sh:
+#                   the full release build + the serve-dir staging + zip —
+#                   the SAME command the release workflow runs; per push
+#                   it is the compile proof, the release workflow uploads
+#                   the artifact).
+#
+# ONE SOURCE OF TRUTH: every job invokes a tools/ script (tools/gate.sh,
+# tools/build-windows.sh, tools/check-android.sh, tools/package-web.sh) —
+# no build command exists inline in a workflow, so a local run and a CI
+# run cannot drift. That drift is exactly how the Windows hole happened.
+#
+# The pinned toolchain (1.97.1 + clippy + rustfmt) is the one in
+# rust-toolchain.toml; the explicit install steps below mirror it so a
+# pin failure is visible as its own step rather than buried in the gate's
+# log (tools/gate.sh redirects stage output to target/gate.log).
+#
+# THE C++ ORACLE JOB — considered and deliberately left OUT: a
+# workflow_dispatch-only oracle job (the C++ fingerprint column,
+# tools/cpp-oracle/run.sh) is not bounded on a 4-core runner (dependency
+# image build + CPM seeding + submodule init + a long SFML/LuaJIT/game
+# build, several independent failure points stacked in one job) and its
+# paths are in motion while the C++ tree moves into cpp-original/ in
+# parallel. Once that landing settles and the build can be cached, a
+# bounded workflow_dispatch-only oracle job can be added; until then the
+# C++ column stays a local (dev-box) verification, by design.
+
+on: [push, pull_request]
+
+jobs:
+  gate:
+    name: Gate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain (mirrors rust-toolchain.toml)
+        run: rustup toolchain install 1.97.1 --component clippy --component rustfmt
+
+      # 29j1 — the desktop controller backend (gilrs -> libudev-sys on
+      # LINUX only) needs the `libudev` system library at build time, so
+      # the gate's `cargo build/test --workspace` needs it on the ubuntu
+      # leg (present on ubuntu-latest; the defensive install mirrors the
+      # mingw pattern). The windows leg does not need it (libudev-sys is
+      # a Linux-only dep of gilrs-core).
+      - name: libudev for the desktop controller backend (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          pkg-config --exists libudev || sudo apt-get install -y libudev-dev
+
+      - name: Run the gate
+        # git-bash on the windows runner / the default bash on ubuntu.
+        run: bash tools/gate.sh
+
+  windows-cross:
+    name: Cross-check (x86_64-pc-windows-gnu on ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain (mirrors rust-toolchain.toml)
+        run: rustup toolchain install 1.97.1 --component clippy --component rustfmt
+
+      - name: MinGW cross toolchain (preinstalled on the image; defensive)
+        run: |
+          command -v x86_64-w64-mingw32-gcc || sudo apt-get install -y mingw-w64
+
+      # cargo check --workspace --target x86_64-pc-windows-gnu — the fast
+      # cross signal (incl. the libsodium cross-prebuild; see the
+      # script). The Windows-target regression catcher — never drop this
+      # job (see the file header).
+      - name: Cross check
+        run: bash tools/build-windows.sh --check
+
+  android:
+    name: Android (aarch64 check, NDK r27c)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain (mirrors rust-toolchain.toml)
+        run: rustup toolchain install 1.97.1 --component clippy --component rustfmt
+
+      - name: The pinned NDK (r27c — what tools/android-env.sh requires)
+        uses: android-actions/setup-android@v4
+        with:
+          # The script needs $ANDROID_HOME/ndk/27.2.12479018 (its
+          # toolchain bin on PATH) — sdkmanager's ndk; pin layout.
+          packages: "ndk;27.2.12479018"
+
+      - name: Fast android-target check (the release APK is a release-workflow job)
+        run: bash tools/check-android.sh
+
+  wasm:
+    name: Web (wasm compile proof)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain (mirrors rust-toolchain.toml)
+        run: rustup toolchain install 1.97.1 --component clippy --component rustfmt
+
+      - name: Emscripten (emcc on PATH)
+        uses: emscripten-core/setup-emsdk@v16
+
+      # -sWASM_BINDGEN (the root .cargo/config.toml): emcc runs the
+      # wasm-bindgen CLI itself over the linked wasm, so the CLI must be
+      # on the build PATH, version-matched to the lockfile (the script
+      # re-checks the match and fails loudly on drift).
+      - name: wasm-bindgen CLI (the lockfile's version)
+        run: |
+          WBG="$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | grep '^version' | cut -d'"' -f2)"
+          cargo install wasm-bindgen-cli --version "$WBG"
+
+      # The web recipe (tools/package-web.sh: CXXFLAGS=-fwasm-exceptions +
+      # the release build + the serve-dir staging + the zip) — the SAME
+      # command the release workflow runs, so the per-push compile proof
+      # and the released artifact cannot drift.
+      - name: Build + stage
+        run: bash tools/package-web.sh

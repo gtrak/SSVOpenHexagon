@@ -1,0 +1,312 @@
+name: Release
+
+# Issue 037 — release CI: tag-triggered releases + gh-pages.
+#
+# Triggers: pushes to tags (`v*`) and manual `workflow_dispatch` ONLY —
+# deliberately NOT on every push (the per-push gate lives in ci.yml; a
+# release runner on every push would burn time for nothing). On
+# workflow_dispatch every job dry-runs without a tag (no Release is
+# created, no Pages deploy); <tag> below is github.ref_name, which on a
+# dispatch is the branch name.
+#
+# Job graph:
+#   gate     -> the port's own gate (tools/gate.sh on ubuntu — the same
+#               gate ci.yml's gate job runs) so a release can only be cut
+#               from a green tree
+#   linux    -> bash tools/package.sh            -> open-hexagon-<tag>-linux-x86_64.tar.gz
+#   windows  -> bash tools/package.sh --windows  -> open-hexagon-<tag>-windows-x86_64.zip
+#   android  -> bash tools/package-android.sh    -> open-hexagon-<tag>-android-arm64-v8a.apk
+#   wasm     -> bash tools/package-web.sh  -> open-hexagon-<tag>-web.zip
+#   release  -> (tag pushes only) the GitHub Release with all four
+#               artifacts + generated notes
+#   gh-pages -> (tag pushes only) the wasm page + artifacts deployed
+#               INLINE on the gh-pages branch
+#
+# WINDOWS — why mingw-gnu and not the cargo-xwin MSVC target that was
+# asked for: lane 037 verified `cargo install cargo-xwin` + `cargo xwin
+# build --release --target x86_64-pc-windows-msvc` locally (cargo-xwin
+# 0.23.1, the MSVC SDK download succeeds) and the build FAILS on three C
+# dependencies:
+#   * libsodium-sys 0.2.7 (oh-net, the D-004 sodiumoxide pin): its build.rs
+#     runs the vendored autoconf configure with
+#     `--host=x86_64-pc-windows-msvc`, and libsodium 1.0.18's config.sub
+#     rejects the rust msvc triple outright — `Invalid configuration
+#     'x86_64-pc-windows-msvc': OS 'msvc' not recognized` (build script
+#     panic at build.rs:257). The autoconf build cannot target EITHER rust
+#     windows triple; this is the same wall tools/build-windows.sh's header
+#     documents for x86_64-pc-windows-gnu, and it is why that script
+#     prebuilds libsodium for the canonical MinGW triple.
+#   * libsqlite3-sys 0.28.0 (rusqlite, bundled) and libz-sys 1.1.30: cc-rs
+#     selects AR=llvm-lib for the msvc target, but cargo-xwin does not
+#     provide llvm-lib on the build PATH ("failed to find tool
+#     'llvm-lib'"), so their archive steps cannot run.
+# Hence this job uses the already-scripted mingw-gnu release path
+# (tools/package.sh --windows -> tools/build-windows.sh: the full
+# x86_64-pc-windows-gnu cross-build + the libsodium prebuild for the
+# canonical MinGW triple x86_64-w64-mingw32). The resulting .exe is
+# MinGW-based (no MSVC CRT requirement at runtime). If a future
+# libsodium-sys ships a msvc target (or a prebuilt msvc libsodium
+# appears), this job becomes: `cargo install cargo-xwin` +
+# `cargo xwin build --release --target x86_64-pc-windows-msvc` + staging
+# the .exe next to a pristine copy of _RELEASE.
+#
+# ANDROID SIGNING — tools/package-android.sh signs with the project's
+# SELF-DISTRIBUTION keystore (tools/android/openhexagon-release.keystore;
+# generated on first use, fixed password documented in that script's
+# header). That is fine for a non-store release. For store distribution
+# the operator must create the repo secrets ANDROID_RELEASE_KEYSTORE
+# (base64 .keystore), ANDROID_RELEASE_KEYSTORE_PASSWORD and
+# ANDROID_RELEASE_KEYSTORE_ALIAS and extend tools/package-android.sh to
+# consume them — a keystore must NEVER be committed.
+#
+# GH-PAGES OPERATOR-SIDE SETTING (cannot be set from this file):
+#   Settings -> Pages -> Build and deployment -> Source: "Deploy a
+#   branch", Branch: `gh-pages`, folder: / (root). Then the game is
+#   served from https://gtrak.github.io/SSVOpenHexagon/ — the page and
+#   its wasm/data artifacts live in the SAME directory (inline, no
+#   external CDN).
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pages: write
+
+env:
+  ASSET_TAG: ${{ github.ref_name }}
+
+jobs:
+  gate:
+    name: Gate (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install 1.97.1 --component clippy --component rustfmt
+
+      # 29j1 — gilrs -> libudev-sys on Linux only; ubuntu-latest ships it,
+      # the defensive install mirrors ci.yml's gate job.
+      - name: libudev for the desktop controller backend (Linux only)
+        run: |
+          pkg-config --exists libudev || sudo apt-get install -y libudev-dev
+
+      - name: Run the gate
+        # The port's own gate, verbatim (the same gate ci.yml's gate job
+        # runs): fmt / build / clippy -D warnings / test. A release is
+        # only cut from a green tree — this is REUSE, not a
+        # re-implementation.
+        run: bash tools/gate.sh
+
+  linux:
+    name: Linux x86_64 (tar.gz)
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install 1.97.1
+
+      - name: libudev (build-time dep of the desktop controller backend)
+        run: |
+          pkg-config --exists libudev || sudo apt-get install -y libudev-dev
+
+      - name: Build + stage + smoke (the packaged binary is tested headless)
+        run: bash tools/package.sh
+
+      - name: Tar the staged _RELEASE (binary alongside the data, the C++ layout)
+        run: |
+          tar czf "open-hexagon-${ASSET_TAG}-linux-x86_64.tar.gz" \
+            -C target/package/linux-x86_64-unknown-linux-gnu _RELEASE
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-hexagon-${{ env.ASSET_TAG }}-linux-x86_64.tar.gz
+          path: open-hexagon-${{ env.ASSET_TAG }}-linux-x86_64.tar.gz
+
+  windows:
+    name: Windows x86_64 (zip, mingw-gnu cross)
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install 1.97.1
+
+      - name: MinGW cross toolchain (preinstalled on ubuntu-latest; defensive)
+        run: |
+          command -v x86_64-w64-mingw32-gcc || sudo apt-get install -y mingw-w64
+
+      - name: Cross build (release) + stage (the .exe smoke is skipped by the script on a Linux runner)
+        # See the file header for why this is mingw-gnu and not cargo-xwin
+        # MSVC (the libsodium-sys autoconf wall + the missing llvm-lib).
+        run: bash tools/package.sh --windows
+
+      - name: Zip the staged _RELEASE
+        run: |
+          cd target/package/windows-x86_64-pc-windows-gnu
+          zip -qr "../../open-hexagon-${ASSET_TAG}-windows-x86_64.zip" _RELEASE
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-hexagon-${{ env.ASSET_TAG }}-windows-x86_64.zip
+          path: open-hexagon-${{ env.ASSET_TAG }}-windows-x86_64.zip
+
+  android:
+    name: Android arm64-v8a (APK)
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: JDK (keytool for the self-distribution keystore; apksigner)
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Android SDK + the pinned NDK r27c + cargo-apk's packaging trio
+        # The `packages` input is space-separated sdkmanager specs; the NDK
+        # pin is the one tools/android-env.sh requires (27.2.12479018 =
+        # r27c), build-tools 34.0.0 is the aapt/zipalign/apksigner trio
+        # cargo-apk 0.10 packages with.
+        uses: android-actions/setup-android@v4
+        with:
+          packages: "platform-tools ndk;27.2.12479018 build-tools;34.0.0"
+
+      - name: cargo-apk 0.10 (the version tools/package-android.sh is built against)
+        run: cargo install cargo-apk --version 0.10.0
+
+      - name: Build + sign + build-level verify (badging / assets / 16KB align / signature)
+        run: bash tools/package-android.sh
+
+      - name: Rename + upload
+        run: |
+          APK="$(find target -name open-hexagon.apk | head -n1)"
+          [ -n "$APK" ] || { echo "open-hexagon.apk not found under target/" >&2; exit 1; }
+          cp "$APK" "open-hexagon-${ASSET_TAG}-android-arm64-v8a.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: open-hexagon-${{ env.ASSET_TAG }}-android-arm64-v8a.apk
+          path: open-hexagon-${{ env.ASSET_TAG }}-android-arm64-v8a.apk
+
+  wasm:
+    name: Web (wasm, emscripten)
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install 1.97.1
+
+      - name: Emscripten (emcc on PATH)
+        uses: emscripten-core/setup-emsdk@v16
+
+      - name: The emscripten rust target
+        run: rustup target add wasm32-unknown-emscripten
+
+      # -sWASM_BINDGEN (the root .cargo/config.toml): emcc runs the
+      # wasm-bindgen CLI itself over the linked wasm, so the CLI must be
+      # on the build PATH, version-matched to the lockfile (the script
+      # re-checks the match and fails loudly on drift).
+      - name: wasm-bindgen CLI (the lockfile's version)
+        run: |
+          WBG="$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | grep '^version' | cut -d'"' -f2)"
+          cargo install wasm-bindgen-cli --version "$WBG"
+
+      # The web recipe (tools/package-web.sh: CXXFLAGS=-fwasm-exceptions
+      # + the release build + the serve-dir staging + the zip) — the SAME
+      # command ci.yml's wasm job runs, so the per-push compile proof and
+      # the released artifact cannot drift.
+      - name: Build + stage + zip
+        run: bash tools/package-web.sh
+
+      - name: Rename the zip with the tag
+        run: cp target/package/web/open-hexagon-web.zip "open-hexagon-${ASSET_TAG}-web.zip"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-hexagon-${{ env.ASSET_TAG }}-web.zip
+          path: open-hexagon-${{ env.ASSET_TAG }}-web.zip
+
+  release:
+    name: Release (tag pushes only)
+    if: github.event_name == 'push'
+    needs: [gate, linux, windows, android, wasm]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Collect the linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: open-hexagon-${{ env.ASSET_TAG }}-linux-x86_64.tar.gz
+          path: release-assets
+
+      - name: Collect the windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: open-hexagon-${{ env.ASSET_TAG }}-windows-x86_64.zip
+          path: release-assets
+
+      - name: Collect the android artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: open-hexagon-${{ env.ASSET_TAG }}-android-arm64-v8a.apk
+          path: release-assets
+
+      - name: Collect the web artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: open-hexagon-${{ env.ASSET_TAG }}-web.zip
+          path: release-assets
+
+      - name: Create the GitHub Release (generated notes + all four artifacts)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.ASSET_TAG }}
+          files: |
+            release-assets/open-hexagon-${{ env.ASSET_TAG }}-linux-x86_64.tar.gz
+            release-assets/open-hexagon-${{ env.ASSET_TAG }}-windows-x86_64.zip
+            release-assets/open-hexagon-${{ env.ASSET_TAG }}-android-arm64-v8a.apk
+            release-assets/open-hexagon-${{ env.ASSET_TAG }}-web.zip
+          generate_release_notes: true
+
+  gh-pages:
+    name: gh-pages (the wasm build inline)
+    needs: [gate, wasm]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the web artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: open-hexagon-${{ env.ASSET_TAG }}-web.zip
+          path: web-zip
+
+      - name: Unpack the serve directory (the page + the wasm + the data, same directory)
+        run: |
+          mkdir web-publish
+          unzip -q "web-zip/open-hexagon-${ASSET_TAG}-web.zip" -d web-publish
+          ls -l web-publish
+
+      - name: Deploy to the gh-pages branch
+        # Tag pushes only — a workflow_dispatch dry-run must not overwrite
+        # the live page. The page + its artifacts land in the SAME
+        # directory at the gh-pages branch root, so
+        # https://gtrak.github.io/SSVOpenHexagon/ serves the game with no
+        # external CDN. OPERATOR-SIDE: Settings -> Pages -> Source =
+        # "Deploy a branch", branch `gh-pages`, folder / (root) (see the
+        # file header).
+        if: github.event_name == 'push'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: web-publish

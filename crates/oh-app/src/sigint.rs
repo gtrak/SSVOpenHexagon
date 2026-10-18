@@ -61,12 +61,25 @@ pub fn server_line(sig: i32) -> String {
 /// context retry loop is not async-signal-safe here).
 fn write_stdout(bytes: &[u8]) {
     unsafe {
+        // The count argument of `write(2)` is `size_t` (usize) on Unix but
+        // `c_uint` (u32) on the Windows targets (libc declares `write`
+        // differently per platform — a `usize` count is an E0308 there,
+        // found by the Windows cross-build, which the host gate never
+        // compiles). The pre-built line is far shorter than either bound.
+        // On Windows: clamp THEN cast — never `try_into().unwrap()` (a
+        // signal handler must not unwind) and never a partial-write retry
+        // loop (it could live-lock in the signal context; a single
+        // truncated write mirrors the C++'s single-call behavior).
+        #[cfg(windows)]
+        let count: libc::c_uint = bytes.len().min(libc::c_uint::MAX as usize) as libc::c_uint;
+        #[cfg(not(windows))]
+        let count = bytes.len();
         // SAFETY: `write(2)` to `STDOUT_FILENO` with a valid user buffer is
         // async-signal-safe (POSIX); the buffer outlives the call.
         let _ = libc::write(
             libc::STDOUT_FILENO,
             bytes.as_ptr() as *const libc::c_void,
-            bytes.len(),
+            count,
         );
     }
 }
