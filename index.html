@@ -82,20 +82,39 @@
                -webkit-user-select: none; }
       #status { position: fixed; top: 4px; right: 8px; font-size: 11px;
                 opacity: 0.7; }
-      /* issue 046 (F33) - the fullscreen button (#fs): the config's
-         `fullscreen` value's web applier (the port's emscripten window
-         get-or-creates it; this declaration is the committed shell's
-         contract - the Rust fallback's inline style carries the same
-         values). Bottom-right (out of the way in the MENU states; the
-         game states' touch overlay owns the corners - the JS gate
-         below HIDES the button there, `display: none` NOT merely
-         opacity: a hidden element is the only variant that cannot
-         swallow a touch). ~44px touch target, subtle/translucent,
-         `pointer-events: auto` on itself only. The `html:fullscreen`
-         flip is the `fullscreenchange`'s declarative half (the Esc /
-         the Android back's exit updates the button's state - no JS
-         listener needed). */
-      #fs { position: fixed; right: 12px; bottom: 12px; width: 44px; height: 44px;
+      /* issue 046 (F33, relocated by issue 055) - the fullscreen button
+         (#fs): the config's `fullscreen` value's web applier (the port's
+         emscripten window get-or-creates it; this declaration is the
+         committed shell's contract - the Rust fallback's inline style
+         carries the same values). TOP-RIGHT (the operator's "on top
+         right and stay present" - issue 055 overrides 046's bottom-right
+         placement + the game-state `display: none`: after the browser's
+         own fullscreen exit (Esc / the Android back) the stale-config
+         desync made the next tap a no-op, and with the button hidden in
+         the game state there was no way back - the operator was
+         stranded). PRESENT IN EVERY STATE: `display: none` stays the
+         DEFAULT (a pre-JS / legacy page's button cannot swallow a
+         touch - 046's invariant), the gate JS below shows it once the
+         page's script runs. THE COLLISION (the exact failure 046 avoided
+         by hiding the button in-game): the F31 action row (the port's
+         gameplay touch overlay - REPLAY / RESTART / PAUSE in the
+         TOP-RIGHT, `touch_overlay.rs`'s `button_centers`'s top row: PAD
+         12 + BUTTON_HALF 32 - the y 12..76 band in REAL pixels) is drawn
+         for the whole game state (`windowed.rs`'s overlay gate); a DOM
+         button over it would swallow the PAUSE button's touches. The
+         resolution (issue 055's "offset the button below the row" - the
+         row's buttons are lane 054's, untouchable here): the gate JS
+         places the button BELOW the band in EVERY state (the band's
+         bottom edge in CSS px = 76 / devicePixelRatio, + a 12px gap; the
+         `top: 12px` below is the pre-JS fallback spot only - the gate
+         moves it on load). One fixed spot (no state-jump), out of the
+         bottom-right RotateCW corner for good (046's hit-test property,
+         re-asserted by the 055 probe). ~44px touch target,
+         subtle/translucent, `pointer-events: auto` on itself only. The
+         `html:fullscreen` flip is the `fullscreenchange`'s declarative
+         half (the Esc / the Android back's exit updates the button's
+         state - no JS listener needed). */
+      #fs { position: fixed; right: 12px; top: 12px; width: 44px; height: 44px;
             display: none; padding: 0; border: 1px solid rgba(255, 255, 255, 0.25);
             border-radius: 10px; background: rgba(255, 255, 255, 0.10);
             color: #ddd; opacity: 0.55; font-size: 20px; line-height: 1;
@@ -135,15 +154,19 @@
            style="position: fixed; left: -10000px; top: 0; opacity: 0;
                   font-size: 16px;" />
     <div id="status">booting</div>
-    <!-- issue 046 (F33) - the fullscreen button: toggles the ported
-         `fullscreen` config value (the `LinkedValue` - the single
+    <!-- issue 046 (F33, issue 055) - the fullscreen button: toggles the
+         ported `fullscreen` config value (the `LinkedValue` - the single
          source of truth; the LAlt+Enter bind toggles the SAME value,
          so the button and the menu cannot disagree) and applies it
          through the browser Fullscreen API (the port's FINDING: it
          never applied the config anywhere - the C++ did at the window
-         creation, `sf::Style::Fullscreen`). Its visibility is gated
-         by the `ohstatechange` DOM event the port dispatches on the
-         menu <-> game transition edge (the script below). -->
+         creation, `sf::Style::Fullscreen`). issue 055: TOP-RIGHT, present
+         in EVERY state (the `placeFs` gate below: the band offset + the
+         display), and the port re-syncs the config from the browser's
+         ACTUAL state (`document.fullscreenElement`) on every
+         `fullscreenchange` - the config, the button's appearance (the
+         `html:fullscreen` flip) and the browser cannot disagree (the
+         Esc / the Android back's external exit included). -->
     <button id="fs" aria-label="Toggle fullscreen">⛶</button>
     <script type="module">
       // MODULARIZE + EXPORT_ES6 (the 26c.1 recipe): the default export is
@@ -249,25 +272,52 @@
       // probe on `window` (the probe's `window.ohStatus()` - the page's
       // 2 s console poll below stays the no-evaluate fallback).
       window.ohStatus = () => mod.status();
-      // issue 046 (F33) - the #fs button's visibility gate: shown in
-      // the menu states, HIDDEN (display:none - not merely transparent:
-      // a hidden element is the only variant that cannot swallow a
-      // touch - the gameplay touch overlay's RotateCW owns that corner
-      // while playing) in the game state. The port dispatches the
-      // 'ohstatechange' DOM event on the menu <-> game transition EDGE
-      // (the port's house pattern - edge, not per frame; zero lag,
-      // unlike a poll - the F33 register row's signal). The handler
-      // re-reads the port's status() on each edge (the state string's
-      // `menu:` prefix - the boot's LoadingScreen included: a menu
-      // state, the button shows).
-      function gateFs() {
+      // issue 046 (F33, issue 055) - the #fs button's placement +
+      // presence gate: TOP-RIGHT, PRESENT IN EVERY STATE (the operator's
+      // "on top right and stay present" - the pre-055 gate's game-state
+      // `display: none` is GONE: the browser's own fullscreen exit left
+      // the operator unable to reach the button - the exact state where
+      // it was most needed, the desync's "first tap does nothing" made
+      // unrecoverable without it). The F31 action row (the port's
+      // gameplay overlay - REPLAY / RESTART / PAUSE in the top-right,
+      // `touch_overlay.rs`'s `button_centers`'s top row: PAD 12 +
+      // BUTTON_HALF 32 → the y 12..76 band in REAL pixels, drawn for the
+      // whole game state) is the collision 046 avoided by hiding the
+      // button in-game: a DOM button over it swallows the PAUSE button's
+      // touches. The resolution (the 055 spec's "offset the button below
+      // the row" - the row is lane 054's, untouchable here): the button
+      // sits BELOW the band in EVERY state (the band's bottom edge in
+      // CSS px = 76 / devicePixelRatio + a 12px gap): one fixed spot
+      // (no state-jump between the menu and the game), never over the
+      // row (drawn in the game state only anyway), out of the
+      // bottom-right RotateCW corner for good (046's property, the 055
+      // probe re-asserts it). The `resize` re-apply keeps the offset
+      // honest when the DPR changes across a viewport change (the
+      // fullscreen transition's second suspect - the band's CSS
+      // position is DPR-scaled; the event-driven re-apply, the house
+      // pattern - no poll). The port still dispatches the
+      // `ohstatechange` edge (its own state-transition signal - the 046
+      // gate's listener is gone with the state-dependent display; the
+      // button no longer listens for it).
+      function placeFs() {
         const fs = document.getElementById('fs');
         if (!fs) return;
-        const m = /state=([^;\s]+)/.exec(window.ohStatus ? window.ohStatus() : '');
-        fs.style.display = m && m[1].startsWith('menu:') ? 'block' : 'none';
+        const dpr = window.devicePixelRatio || 1;
+        // Below the F31 row's band (76 REAL px = PAD 12 + BUTTON_HALF
+        // 32 × 2 - the top row's y 12..76; the CSS-px conversion is the
+        // DPR divide - the overlay's geometry is the canvas backing
+        // store's space, the DOM's is CSS px).
+        fs.style.top = (76 / dpr + 12) + 'px';
+        // Present in every state (the operator's "stay present"): the
+        // menu's top-right corner is empty of game furniture (the 9-zone
+        // grid's top band is a gesture zone, not a button - the corner
+        // patch under the button is its own visible footprint, the
+        // operator's mandated placement; the 055 probe asserts nothing
+        // else the game owns is swallowed).
+        fs.style.display = 'block';
       }
-      document.addEventListener('ohstatechange', gateFs);
-      gateFs(); // the initial state (the module load's post-boot menu)
+      window.addEventListener('resize', placeFs);
+      placeFs(); // on load (the module load's post-boot menu)
       // issue 046 (F33) - the #fs's requestFullscreen PROMISE's async
       // verdict (the port's Rust binding - Element::request_fullscreen -
       // resolves the call's SYNCHRONOUS result; the browser's async
