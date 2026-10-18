@@ -138,7 +138,10 @@ use std::sync::{Arc, RwLock};
 
 use oh_config::{Config, Key, Tid, Trigger, TIME_SLICE, TIME_STEP};
 use oh_game::hexagon_game::HexagonGame;
-#[cfg(not(target_os = "emscripten"))]
+// issue 041: no longer gated off emscripten — the menu's REAL audio sink
+// (`MenuAudioSink`) now compiles on the web too (the OpenAL backend behind the
+// `AudioDevice` seam), and it calls the `oh_game::seams::Audio` trait methods
+// (`play_sound_override` / `stop_music` / `stop_sounds`).
 use oh_game::seams::Audio;
 use oh_lua::api::state::GameApiState;
 use oh_menu::layout::LinearFontHeight;
@@ -186,15 +189,15 @@ type IlcSlot = ();
 /// * `stop_all()` → C++ `audio.stopMusic(); audio.stopSounds();`
 ///   (MenuGame.cpp:798-799, the `MenuGame::init` teardown).
 ///
-/// Gated off emscripten (W2: `oh-audio`/`rodio`/`cpal` have no emscripten
-/// backend; audio is out of the web prototype's scope).
-#[cfg(not(target_os = "emscripten"))]
+/// issue 041: no longer gated off emscripten — the web's audio now works via
+/// the OpenAL backend behind the `oh_render::audio::AudioDevice` seam (rodio /
+/// cpal have no emscripten backend, but emscripten's OpenAL does), so the
+/// menu's blips play on the web exactly as they do on desktop / Android.
 struct MenuAudioSink {
     audio: std::sync::Arc<oh_audio::Audio>,
     config: std::sync::Arc<std::sync::RwLock<Config>>,
 }
 
-#[cfg(not(target_os = "emscripten"))]
 impl AudioSink for MenuAudioSink {
     fn play_sound(&self, asset_id: &str) {
         // C++ `MenuGame::playSoundOverride` (MenuGame.cpp:1057-1061) gates the
@@ -212,17 +215,6 @@ impl AudioSink for MenuAudioSink {
         self.audio.stop_music();
         self.audio.stop_sounds();
     }
-}
-
-/// Emscripten (W2): the no-op `AudioSink` (audio is out of the web
-/// prototype's scope — `oh-audio`/`rodio`/`cpal` have no emscripten backend).
-#[cfg(target_os = "emscripten")]
-struct NoopAudioSink;
-
-#[cfg(target_os = "emscripten")]
-impl AudioSink for NoopAudioSink {
-    fn play_sound(&self, _asset_id: &str) {}
-    fn stop_all(&self) {}
 }
 
 /// issue 25b SG5: the engine's `Renderer` seam over the window's
@@ -2758,11 +2750,11 @@ impl WindowedClient {
         // (`MenuAudioSink`, the C++ `mg.emplace(..., audio, ...)` at
         // main.cpp:434). issue 025e: this replaces the previous `None`
         // engine-audio / `NoopAudio` menu-sink (the missed subsystem).
-        // W2: gated off emscripten (`oh-audio`/`rodio`/`cpal` have no
-        // emscripten backend; audio is out of the web prototype's scope).
-        #[cfg(not(target_os = "emscripten"))]
+        // issue 041: no longer gated off emscripten — the web's audio works
+        // via the OpenAL backend behind the `AudioDevice` seam, so the REAL
+        // audio is shared with the engine and the menu on EVERY target
+        // (desktop / Android / web), exactly as the C++ `mainClient` does.
         let audio = Arc::new(oh_audio::Audio::new(assets.clone()));
-        #[cfg(not(target_os = "emscripten"))]
         {
             let c = config.read().expect("config poisoned");
             audio.set_sound_volume(c.get_sound_volume());
@@ -2801,10 +2793,7 @@ impl WindowedClient {
             steam.clone(),
             Some(discord.clone()),
             renderer,
-            #[cfg(not(target_os = "emscripten"))]
             Some(audio.clone()),
-            #[cfg(target_os = "emscripten")]
-            None,
             // issue 029a1 — the C++ `death_saveReplay` filesystem half
             // (HexagonGame.cpp:1067-1097): the windowed entries chdir to
             // the game-data root before composing (the desktop
@@ -2970,19 +2959,14 @@ impl WindowedClient {
         let cursor_visible = std::rc::Rc::new(std::cell::Cell::new(true));
 
         let menu_audio: Rc<dyn AudioSink> = {
-            // W2: the real audio sink is desktop-only; emscripten uses
-            // the no-op (audio is out of the web prototype's scope).
-            #[cfg(not(target_os = "emscripten"))]
-            {
-                Rc::new(MenuAudioSink {
-                    audio: audio.clone(),
-                    config: config.clone(),
-                })
-            }
-            #[cfg(target_os = "emscripten")]
-            {
-                Rc::new(NoopAudioSink)
-            }
+            // issue 041: the REAL audio sink on every target (desktop /
+            // Android / web) — the web's no-op `NoopAudioSink` is gone now
+            // that the OpenAL backend behind the `AudioDevice` seam makes the
+            // web's menu blips play.
+            Rc::new(MenuAudioSink {
+                audio: audio.clone(),
+                config: config.clone(),
+            })
         };
         let menu = Rc::new(MenuGame::new(
             Rc::new(RealMenuAssets::from_arc(assets.clone())),

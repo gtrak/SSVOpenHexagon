@@ -24,14 +24,16 @@
 //!   both getters through it.
 //! * `_soundPlayer` (the `ssvs::SoundPlayer`, C++ `Audio.cpp:35`) — the
 //!   one-shot SFX pool. The port models it as a `HashMap<assetId,
-//!   rodio::Player>`: each active sound is a rodio `Player` (kept alive for
-//!   the sound's duration); `stop()` drops the whole map (C++
-//!   `_soundPlayer.stop()`).
-//! * `_music` (`std::optional<sf::Music>`, C++ `Audio.cpp:36`) — the streamed
-//!   level music. The port models it as [`MusicCtx`]: a pure [`Music`] state
+//!   AudioPlayer>` (the portable `oh_render::audio::AudioPlayer` — a rodio
+//!   `Player` on desktop/Android, an OpenAL source on the web): each active
+//!   sound is a player (kept alive for the sound's duration); `stop()` drops
+//!   the whole map (C++ `_soundPlayer.stop()`).
+//! * `_music` (`std::optional<sf::Music>`, C++ `Audio.cpp:36`) — the level
+//!   music. The port models it as [`MusicCtx`]: a pure [`Music`] state
 //!   (offset / volume / pitch / playing / paused / looped / duration — the
 //!   SFML `SoundSource` semantics, the testable "offset math") + a live
-//!   `rodio::Player` streaming the OGG (looped, via `repeat_infinite`).
+//!   [`AudioPlayer`] playing the (fully-decoded, looped) OGG on the same
+//!   device the one-shots use.
 //!
 //! # The C++ `SoundPlayer::Mode` (Override / Abort)
 //!
@@ -59,7 +61,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use oh_render::audio::{AudioDevice, Music, SoundBuffer};
+use oh_render::audio::{emit_diag, AudioDevice, AudioPlayer, Music, SoundBuffer};
 use rodio::Source;
 
 /// The real `hg::Audio` (C++ `Audio::AudioImpl`), over the rodio device.
@@ -79,8 +81,10 @@ struct Inner {
     /// The rodio output device (the `sf::Sound`/`sf::Music` backend). Kept
     /// alive for the whole `Audio` lifetime (dropping it stops the stream).
     device: AudioDevice,
-    /// C++ `ssvs::SoundPlayer`'s active one-shot sounds, by asset id.
-    sounds: HashMap<String, rodio::Player>,
+    /// C++ `ssvs::SoundPlayer`'s active one-shot sounds, by asset id (the
+    /// portable [`AudioPlayer`] — a rodio `Player` on desktop/Android, an
+    /// OpenAL source on the web).
+    sounds: HashMap<String, AudioPlayer>,
     /// C++ `std::optional<sf::Music> _music`.
     music: Option<MusicCtx>,
     /// C++ `_lastLoadedMusicPath` (Audio.cpp:38) — the logical music path
@@ -102,7 +106,7 @@ struct MusicCtx {
     /// paused / looped / duration) — the testable "offset math".
     model: Music,
     /// The live streamed source (looped OGG); `None` when headless.
-    player: Option<rodio::Player>,
+    player: Option<AudioPlayer>,
 }
 
 impl Audio {
@@ -115,14 +119,18 @@ impl Audio {
     pub fn new(assets: Arc<oh_assets::Assets>) -> Self {
         let device = match AudioDevice::try_open_default() {
             Ok(d) => {
-                eprintln!("[oh-audio] audio device opened (live playback)");
+                // issue 041 — `emit_diag` (not `eprintln!`): on the web the
+                // Rust stdio path is swallowed, so this line reaches the
+                // browser console only via the console.log channel.
+                emit_diag("[oh-audio] audio device opened (live playback)");
                 d
             }
             Err(e) => {
-                // The exact `rodio`/`cpal` error (the `{e:#}` chain includes
-                // the `cpal::Error` source — the AAudio/OpenSL detail on the
-                // phone), so a failed sink open is diagnosable in logcat.
-                eprintln!("[oh-audio] no audio device — headless: {e:#}");
+                // The exact platform error (the `rodio`/`cpal` chain on
+                // desktop/Android — the AAudio/OpenSL detail on the phone — or
+                // the OpenAL/Web-Audio detail on the web), so a failed sink
+                // open is diagnosable in logcat / the browser console.
+                emit_diag(&format!("[oh-audio] no audio device — headless: {e}"));
                 AudioDevice::new()
             }
         };
@@ -160,7 +168,7 @@ impl Audio {
         // instance (the previous one is stopped); other active sounds keep
         // playing. Drop the old `Player` (stops it), then play fresh.
         inner.sounds.remove(asset_id);
-        let Some(player) = inner.device.play_samples(
+        let Some(player) = inner.device.play_one_shot(
             buffer.get_sample_rate(),
             buffer.get_channel_count(),
             buffer.samples().to_vec(),
@@ -213,7 +221,7 @@ impl Audio {
             ctx.model.set_volume(vol);
             ctx.model.play();
             if let Some(p) = &ctx.player {
-                p.set_volume((vol / 100.0).clamp(0.0, 1.0));
+                p.set_volume(vol);
                 p.play();
             }
         }
@@ -262,7 +270,7 @@ impl oh_game::seams::Audio for Audio {
         ctx.model.set_playing_offset(seconds); // the offset clamp/wrap math.
         ctx.player = player;
         if let Some(p) = &ctx.player {
-            p.set_volume((vol / 100.0).clamp(0.0, 1.0));
+            p.set_volume(vol);
             p.set_speed(pitch);
             p.play();
         }
@@ -354,7 +362,7 @@ impl oh_game::seams::Audio for Audio {
         ctx.model.set_volume(vol);
         ctx.model.play();
         if let Some(p) = &ctx.player {
-            p.set_volume((vol / 100.0).clamp(0.0, 1.0));
+            p.set_volume(vol);
             p.play();
         }
         true
@@ -401,7 +409,7 @@ impl Audio {
         if let Some(ctx) = inner.music.as_mut() {
             ctx.model.set_volume(vol);
             if let Some(p) = &ctx.player {
-                p.set_volume((vol / 100.0).clamp(0.0, 1.0));
+                p.set_volume(vol);
             }
         }
         // issue 039 — the device's audio triage: the config → `oh-audio`
@@ -427,35 +435,46 @@ impl Audio {
     }
 }
 
-/// Re-open the live music source at `offset` seconds: decode the OGG
-/// (streaming), seek, loop it, and build a `rodio::Player` at the current
-/// volume / pitch. Returns `(player, decoded_duration)`. Headless:
-/// `(None, duration)`.
+/// Re-open the live music source at `offset` seconds: decode the OGG (pure
+/// Rust symphonia via `rodio` — portable across backends), and play it looped
+/// through the portable [`AudioDevice`] at the current volume / pitch.
+/// Returns `(player, decoded_duration)`. Headless: `(None, duration)`.
+///
+/// Note (issue 041): the music is now decoded fully into a PCM buffer (rather
+/// than streamed from the file) before being handed to the backend — this
+/// unifies the desktop and web paths (the web's OpenAL sink plays buffers, not
+/// file streams). The shipped `_RELEASE` content has no music OGGs (issue 039's
+/// scope-guard finding), so this path is not exercised by the shipping build;
+/// the audible result for a real music file is unchanged (same samples /
+/// volume / pitch / loop).
 fn open_music_source(
     device: &AudioDevice,
     path: &Path,
     offset: f32,
     volume: f32,
     pitch: f32,
-) -> (Option<rodio::Player>, f32) {
+) -> (Option<AudioPlayer>, f32) {
     let Ok(file) = std::fs::File::open(path) else {
         // issue 039 — the device's music triage: the C++'s `openFromFile`
         // failure is the `Failed loading music file` line (Audio.cpp:
         // 154-166 — the `Music::open` `Err` arm above logs it); this arm
         // is the re-open at a seek offset (the `setMusicPlayingOffset`
         // path) — the file vanished between the open and the seek.
-        eprintln!(
+        emit_diag(&format!(
             "[oh-audio] music file missing at re-open: '{}'",
             path.display()
-        );
+        ));
         return (None, 0.0);
     };
-    let Ok(mut decoder) = rodio::Decoder::try_from(file) else {
+    let Ok(decoder) = rodio::Decoder::try_from(file) else {
         // issue 039 — the device's music triage: the decode failure
         // (the C++'s `openFromFile`-failed `sf::Music` — silent; the
         // port's line is the diagnostic half the C++'s silent-fail
         // lacks, the 025e evidence-path class).
-        eprintln!("[oh-audio] music OGG decode failed: '{}'", path.display());
+        emit_diag(&format!(
+            "[oh-audio] music OGG decode failed: '{}'",
+            path.display()
+        ));
         return (None, 0.0);
     };
     // The decoded duration (feeds the offset clamp/wrap math — the C++
@@ -464,22 +483,21 @@ fn open_music_source(
         .total_duration()
         .map(|d| d.as_secs_f32())
         .unwrap_or(0.0);
-    // Seek to the offset before wrapping (a `Repeat`-wrapped source can't
-    // seek in place; `try_seek` is best-effort — a format without seeking
-    // just starts at 0).
-    if offset > 0.0 {
-        let _ = decoder.try_seek(std::time::Duration::from_secs_f32(offset));
+    let channels = decoder.channels().get();
+    let sample_rate = decoder.sample_rate().get();
+    // Decode the whole OGG into a PCM buffer (the backend plays buffers, not
+    // file streams — the web's OpenAL sink in particular).
+    let data: Vec<f32> = decoder.into_iter().collect();
+    if data.is_empty() {
+        emit_diag(&format!(
+            "[oh-audio] music OGG decoded empty: '{}'",
+            path.display()
+        ));
+        return (None, duration);
     }
-    let looped = decoder.repeat_infinite(); // C++ `_music->setLoop(true)`.
-    let Some(mixer) = device.mixer() else {
-        return (None, duration); // headless — no live source.
-    };
-    let player = rodio::Player::connect_new(mixer);
-    player.append(looped);
-    player.set_volume((volume / 100.0).clamp(0.0, 1.0));
-    player.set_speed(pitch);
-    player.play();
-    (Some(player), duration)
+    // Loop the source (the C++ `_music->setLoop(true)`) at the offset.
+    let player = device.play_music(sample_rate, channels, data, volume, pitch, offset);
+    (player, duration)
 }
 
 /// Decode (and cache) a registered one-shot OGG into a [`SoundBuffer`].
@@ -499,21 +517,24 @@ fn decode_sound(
             // One-time (cache-miss) diagnostic: the C++ loads the buffer once in
             // `HGAssets`; confirming the OGG decoded on-device (the issue-025e
             // "did it actually play, or is it silent-on-device" evidence).
-            eprintln!(
+            // issue 041 — `emit_diag`: the decoded-buffer assertion must be
+            // visible on the web (the Rust stdio path is swallowed), so a
+            // probe can read that the OGG actually decoded to N samples.
+            emit_diag(&format!(
                 "[oh-audio] decoded sound '{}' ({} samples @ {}Hz {}ch)",
                 asset_id,
                 b.get_sample_count(),
                 b.get_sample_rate(),
                 b.get_channel_count()
-            );
+            ));
             Some(b)
         }
         None => {
-            eprintln!(
+            emit_diag(&format!(
                 "[oh-audio] decode failed for sound '{}' ({}).",
                 asset_id,
                 path.display()
-            );
+            ));
             None
         }
     };

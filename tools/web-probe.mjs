@@ -12,7 +12,10 @@
 //
 // The port logs `status booted=…;exit_code=…;ticks=…;state=menu:<States|game>` through its
 // log_sink (oh-web installs a console.log sink), so the state timeline below is the port's own
-// account of itself — not an inference from pixels.
+// account of itself — not an inference from pixels. issue 041 also surfaces the port's
+// `[oh-audio]` diagnostics (which world the web audio device is in + the unlock / first-play
+// observables) and whether the headless CDP input granted user activation (the gate on the Web
+// Audio context running).
 //
 // Exit: 0 when the module reported booted=true and no console errors occurred (a missing
 // /favicon.ico is tolerated: GitHub Pages serves no favicon and it is not the game's asset);
@@ -87,9 +90,25 @@ const press = async (key) => {
   }
 };
 
+// issue 041 — the web's audio needs a user gesture to unlock the Web Audio
+// context (emscripten auto-resumes on the first key/pointer input). Whether the
+// HEADLESS CDP input actually grants user activation is exactly what decides
+// if the AudioContext can run (and thus if a headless probe can prove
+// audibility). `document.hasUserActivation()` is the browser's own answer; we
+// sample it right after each keypress (transient activation lasts ~5s, so we
+// check before the post-press sleep lets it expire).
+let userActivation = false;
+const checkActivation = async () => {
+  try {
+    const r = await send('Runtime.evaluate', { expression: `document.hasUserActivation ? document.hasUserActivation() : null`, returnByValue: true });
+    if (r.result?.result?.value === true) userActivation = true;
+  } catch { /* the evaluate failed — leave the flag as-is */ }
+};
+
 const perKey = Math.max(4, Math.floor(secs / (keys.length + 1)));
 await sleep(perKey * 1000);
-for (const k of keys) { console.log(`  … pressing ${k}`); await press(k); await sleep(perKey * 1000); }
+for (const k of keys) { console.log(`  … pressing ${k}`); await press(k); await checkActivation(); await sleep(perKey * 1000); }
+await checkActivation();
 await sleep(2000);
 
 // The state timeline comes from the log lines the port emits: status booted=…;state=…
@@ -104,6 +123,17 @@ console.log(`\nweb-probe: ${url}`);
 console.log(`  booted        : ${boots.length ? 'yes' : 'NO'}  (${boots.length} status lines)`);
 console.log(`  last status   : ${lastStatus.slice(0, 120)}`);
 console.log(`  state timeline: ${states.length ? states.join(' -> ') : '(none)'}`);
+// issue 041 — surface the port's own [oh-audio] diagnostics (which world the
+// audio device is in + the unlock/first-play observables). These arrive as
+// console.log (the Rust stdio path is swallowed on the web), so they are in
+// `logs`, not the derived `state=` timeline above.
+const audioDiag = logs.filter((l) => /\[oh-audio\]/.test(l));
+console.log(`  audio diagnostics:`);
+if (audioDiag.length) { for (const l of audioDiag) console.log(`    ${l}`); }
+else { console.log(`    (no [oh-audio] lines — the audio device did not log)`); }
+console.log(`  user activation : ${userActivation
+    ? 'yes — the headless input granted user activation (the AudioContext can run; audibility is real, not just scheduled)'
+    : 'no — the headless input did NOT grant user activation (the AudioContext stays suspended; a real user gesture would resume it — headless cannot prove audibility)'}`);
 console.log(`  probe         : ${await stateOf() ?? '(Module.status not reachable via evaluate)'}`);
 console.log(`  screenshot    : ${shotPath}`);
 console.log(`  non-200       : ${bad.length ? bad.join(' | ') : 'none'}`);

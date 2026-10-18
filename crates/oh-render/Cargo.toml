@@ -90,6 +90,11 @@ web-sys = { version = "0.3.106", features = [
   "PointerEvent",
   "VisibilityState",
   "DomRect",
+  # issue 041 — the web's audio diagnostic probe (the OpenAL backend's
+  # first-gesture "suspended vs running" read): a throwaway AudioContext whose
+  # `.state()` is read on the first input (the autoplay-policy observable).
+  "AudioContext",
+  "AudioContextState",
 ] }
 
 [dev-dependencies]

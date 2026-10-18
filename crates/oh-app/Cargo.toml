@@ -50,16 +50,25 @@ oh-rng = { path = "../oh-rng" }
 # The `IpcDiscordCore` is `#[cfg(not(target_os = "emscripten"))]` (W3);
 # the web path uses `NoDiscordCore`.
 oh-discord = { path = "../oh-discord" }
+# issue 041 — the real audio is now on EVERY target: the `oh_render::audio::
+# AudioDevice` seam picks the backend per target (rodio on desktop/Android,
+# emscripten's OpenAL on the web), so `oh-audio` is a COMMON dep (no longer
+# gated off emscripten). Its `rodio` OGG decode (symphonia, pure Rust) is what
+# the web's one-shot / music decode use; `rodio`/`cpal`'s device sink itself
+# only compiles to a usable sink on desktop/Android (the web's sink is the
+# OpenAL backend in `oh-render`).
+oh-audio = { path = "../oh-audio" }
 
-# The windowed / console / server / steam / audio stack is desktop-only
-# (W2 — the web vertical slice has no online client, no Steam, no audio,
-# no egui console, no SIGINT): `winit` has no emscripten backend (its web
+# The windowed / console / server / steam stack is desktop-only
+# (W2 — the web vertical slice has no online client, no Steam, no egui
+# console, no SIGINT): `winit` has no emscripten backend (its web
 # backend is `target_os = "unknown"`-only), `oh-net`'s C deps (libsodium /
-# sqlite) cannot link via emcc, `oh-steam` depends on `oh-net`, and
-# `oh-audio`'s `rodio`/`cpal` have no emscripten backend. Gating them off
-# `wasm32-unknown-emscripten` (same versions) keeps the desktop build
-# byte-identically unchanged while letting `oh-app` COMPILE for emscripten;
-# the real web client lands in the `oh-web` crate (W5).
+# sqlite) cannot link via emcc, and `oh-steam` depends on `oh-net`. Gating
+# them off `wasm32-unknown-emscripten` (same versions) keeps the desktop
+# build byte-identically unchanged while letting `oh-app` COMPILE for
+# emscripten; the real web client lands in the `oh-web` crate (W5).
+# (issue 041: `oh-audio` is no longer in this group — the web plays audio via
+# the OpenAL backend behind the `AudioDevice` seam, so it is a common dep.)
 [target.'cfg(not(target_os = "emscripten"))'.dependencies]
 # Issue 18 milestone 4: the `-server` wiring (`dispatch.rs::main_server`)
 # — the only `oh_net` consumer in this crate (the `dispatch` module, the
@@ -73,8 +82,6 @@ oh-net = { path = "../oh-net" }
 # backend (feature `steam` = the real SDK, default = `NoSteam`).
 # Gated off emscripten (depends on `oh-net`).
 oh-steam = { path = "../oh-steam" }
-# Issue 025e — the real audio (rodio/cpal — no emscripten backend).
-oh-audio = { path = "../oh-audio" }
 # C++ main.cpp:340-349 — the SIGINT handler, the SAFE port (the C++'s
 # `TODO (P2): UB`, main.cpp:339: the C++ handler called
 # `globalWindow.stop()` — non-atomic engine state — inside the signal

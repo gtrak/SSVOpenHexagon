@@ -6,20 +6,40 @@
 //! volume curves** (per-track mixing, beat-pulse, difficulty curves) are
 //! `oh-audio`'s job, not this crate's — `oh-audio` wraps this surface.
 //!
-//! The actual output device is `rodio` 0.23 (`MixerDeviceSink` + `Player`).
+//! The output device is a **portable seam** (`AudioDevice` + `AudioPlayer`)
+//! with a platform backend behind it:
+//!   * desktop / Android — `rodio` 0.23 (`MixerDeviceSink` + `Player`), the
+//!     issue-025e backend (`mod rodio_backend`);
+//!   * `wasm32-unknown-emscripten` (the web) — emscripten's OpenAL
+//!     (`-lopenal`, the SFML-parity stack: SFML's audio module IS OpenAL, and
+//!     emscripten's OpenAL maps onto Web Audio). `rodio`/`cpal` have NO
+//!     emscripten backend (cpal's browser host is gated on `target_os =
+//!     "unknown"`, so emscripten falls to cpal's null host and `open_default`
+//!     returns `NoDevice`) — the OpenAL sink is the web's real device
+//!     (`mod openal`).
+//!
 //! It is created lazily (`AudioDevice::open_default`); headless builds (no
-//! audio device) simply have no sink and the `play` paths no-op while the
+//! audio device) simply have no backend and the `play` paths no-op while the
 //! object state (volume / pitch / offset / playing) is fully testable.
 //!
 //! SFML semantics mirrored: volume is `0..=100` (default `100`), pitch is
 //! `1.0` by default, `setPlayingOffset` is in seconds and is clamped to the
-//! buffer length unless the source loops.
+//! buffer length unless the source loops. The SFML-unit → linear gain mapping
+//! (`volume / 100.0`) is applied identically by BOTH backends, so the desktop
+//! and web paths agree on the numbers the device actually plays at.
 
 use std::path::PathBuf;
 
 use oh_math::ssvu::math::get_clamped;
 
 use crate::error::RenderError;
+
+// The platform backend(s) behind the portable seam (cfg-gated: rodio on
+// desktop/Android, emscripten's OpenAL on the web).
+#[cfg(target_os = "emscripten")]
+mod openal;
+#[cfg(not(target_os = "emscripten"))]
+mod rodio_backend;
 
 /// `sf::SoundBuffer` — a decoded PCM buffer.
 #[derive(Clone, Debug)]
@@ -229,13 +249,13 @@ impl Sound {
         self.offset
     }
 
-    /// Play into an audio device: build a `rodio::Player` carrying this
-    /// buffer at the current volume / pitch. Returns `None` headless (no
+    /// Play into an audio device: build a portable [`AudioPlayer`] carrying
+    /// this buffer at the current volume / pitch. Returns `None` headless (no
     /// device) or when no buffer is set. The caller keeps the returned
-    /// `Player` alive for the sound's duration.
-    pub fn play_into(&self, device: &AudioDevice) -> Option<rodio::Player> {
+    /// `AudioPlayer` alive for the sound's duration.
+    pub fn play_into(&self, device: &AudioDevice) -> Option<AudioPlayer> {
         let buffer = self.buffer.as_ref()?;
-        device.play_samples(
+        device.play_one_shot(
             buffer.get_sample_rate(),
             buffer.get_channel_count(),
             buffer.samples().to_vec(),
@@ -384,18 +404,175 @@ impl Music {
     }
 }
 
-/// The audio output device (backed by `rodio`).
-#[derive(Debug)]
+/// Emit one audio diagnostic line where it is actually visible:
+/// * emscripten — the browser console (Rust stdio is swallowed by the
+///   emscripten glue's default `/dev/tty` null path, so `eprintln!` never
+///   reaches a human; `console.log` does — the issue-026 sink's channel);
+/// * every other target — `eprintln!` (the desktop/Android logcat path the
+///   issue-039 audio triage lines use, unchanged).
+///
+/// This is the single channel the web's `[oh-audio]` diagnostics travel on, so
+/// a probe (or a human in DevTools) can read which world the device is in and
+/// whether the Web Audio context is unlocked.
+#[cfg(target_os = "emscripten")]
+pub fn emit_diag(msg: &str) {
+    web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(msg));
+}
+#[cfg(not(target_os = "emscripten"))]
+pub fn emit_diag(msg: &str) {
+    eprintln!("{msg}");
+}
+
+/// A portable handle to a sound that is (or will be) playing, abstracting over
+/// the concrete backend (a `rodio::Player` on desktop/Android, an OpenAL
+/// source on the web). The engine (`oh-audio`) holds these and drives
+/// stop / pause / play / volume / speed / position through them without
+/// naming a backend type.
+pub struct AudioPlayer {
+    backend: Box<dyn PlayerBackend>,
+}
+
+impl std::fmt::Debug for AudioPlayer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AudioPlayer").finish_non_exhaustive()
+    }
+}
+
+/// The backend half of an [`AudioPlayer`] (the `rodio::Player` or OpenAL
+/// source). `Send` so the `oh-audio` `Audio` (a `Send + Sync` seam type) can
+/// hold players behind its `Mutex`.
+trait PlayerBackend: Send {
+    /// `stop()` — stop and rewind to 0 (the SFML `SoundSource::stop`).
+    fn stop(&self);
+    /// `pause()`.
+    fn pause(&self);
+    /// `play()` / `resume()`.
+    fn play(&self);
+    /// Set the gain. `v01` is LINEAR `0.0..=1.0` (the caller has already
+    /// applied the SFML-unit → linear mapping).
+    fn set_volume(&self, v01: f32);
+    /// Set the playback rate (the SFML `pitch`).
+    fn set_speed(&self, pitch: f32);
+    /// The current playing position (rodio: output-time; OpenAL: source
+    /// offset). `0` when the position is unknown / not playing.
+    fn get_pos(&self) -> std::time::Duration;
+    /// A short state string for diagnostics (e.g. the AL source state).
+    fn describe(&self) -> String;
+}
+
+impl AudioPlayer {
+    /// `stop()` — stop and rewind to 0.
+    pub fn stop(&self) {
+        self.backend.stop();
+    }
+    /// `pause()`.
+    pub fn pause(&self) {
+        self.backend.pause();
+    }
+    /// `play()` / `resume()`.
+    pub fn play(&self) {
+        self.backend.play();
+    }
+    /// `setVolume` — SFML-style `0..=100` (the SAME mapping the desktop path
+    /// uses: `/100.0` → linear, clamped). Applied identically on the web so
+    /// both backends play at the same gain for a given SFML volume.
+    pub fn set_volume(&self, sfml_units: f32) {
+        self.backend
+            .set_volume((sfml_units / 100.0).clamp(0.0, 1.0));
+    }
+    /// `setPitch` — the playback rate.
+    pub fn set_speed(&self, pitch: f32) {
+        self.backend.set_speed(pitch);
+    }
+    /// `getPlayingOffset` (the live source position, seconds).
+    #[must_use]
+    pub fn get_pos(&self) -> std::time::Duration {
+        self.backend.get_pos()
+    }
+    /// A short state string for diagnostics.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        self.backend.describe()
+    }
+}
+
+/// The portable output-device backend the [`AudioDevice`] seam delegates to.
+/// `Send + Sync` so the `oh-audio` `Audio` can hold the device behind its
+/// `Mutex` (the `Send + Sync` seam bound).
+trait DeviceBackend: Send + Sync {
+    /// Whether a live output sink is attached.
+    fn is_ready(&self) -> bool;
+    /// Play a one-shot `sf::Sound` (interleaved `f32`, plays once from 0).
+    /// `volume` is SFML-style `0..=100`; `pitch` the rate. Returns `None`
+    /// when a parameter is degenerate (the backend keeps the headless no-op
+    /// semantics).
+    fn play_one_shot(
+        &self,
+        sample_rate: u32,
+        channels: u16,
+        samples: Vec<f32>,
+        volume: f32,
+        pitch: f32,
+    ) -> Option<AudioPlayer>;
+    /// Play a looped `sf::Music` (interleaved `f32`, repeats forever) from
+    /// `offset_secs`. `volume` is SFML-style `0..=100`; `pitch` the rate.
+    fn play_music(
+        &self,
+        sample_rate: u32,
+        channels: u16,
+        samples: Vec<f32>,
+        volume: f32,
+        pitch: f32,
+        offset_secs: f32,
+    ) -> Option<AudioPlayer>;
+    /// Resume / unlock the audio on the first user gesture. A no-op on
+    /// desktop/Android (no autoplay policy); on the web the browser requires a
+    /// user gesture before a Web Audio context will run.
+    fn unlock(&self);
+    /// A one-line diagnostic: which world (device present / absent) + the
+    /// unlock (context) state + the last source state / error.
+    fn describe(&self) -> String;
+}
+
+/// The error of a failed default-device open, with the platform's own detail
+/// (the `rodio`/`cpal` error on desktop/Android, the OpenAL/Web-Audio detail
+/// on the web) so a failed open is diagnosable, not silently no-op'd. The
+/// `Display` is just the detail (the caller supplies the "no audio device"
+/// framing — the issue-039 `oh-audio` line does), so it reads
+/// `no audio device — headless: <platform detail>`.
+#[derive(Debug, Clone)]
+pub struct AudioOpenError {
+    /// The platform's own error detail.
+    pub detail: String,
+}
+
+impl std::fmt::Display for AudioOpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.detail)
+    }
+}
+impl std::error::Error for AudioOpenError {}
+
+/// The audio output device (the portable seam over the platform backend:
+/// rodio on desktop/Android, emscripten's OpenAL on the web).
 pub struct AudioDevice {
-    sink: Option<rodio::MixerDeviceSink>,
+    backend: Option<Box<dyn DeviceBackend>>,
+}
+
+impl std::fmt::Debug for AudioDevice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AudioDevice")
+            .field("backend", &self.backend.as_ref().map(|_| "present"))
+            .finish_non_exhaustive()
+    }
 }
 
 impl AudioDevice {
-    /// A headless device with no output sink (used when no audio is desired,
+    /// A headless device with no output backend (used when no audio is desired,
     /// e.g. in tests and the headless game path).
     #[must_use]
     pub fn new() -> Self {
-        Self { sink: None }
+        Self { backend: None }
     }
 
     /// Open the default output device.
@@ -403,54 +580,85 @@ impl AudioDevice {
     /// # Errors
     /// [`RenderError::AudioUnavailable`] when no output device exists.
     pub fn open_default() -> Result<Self, RenderError> {
-        let sink = rodio::DeviceSinkBuilder::open_default_sink()
-            .map_err(|_| RenderError::AudioUnavailable)?;
-        Ok(Self { sink: Some(sink) })
+        Self::try_open_default().map_err(|_| RenderError::AudioUnavailable)
     }
 
-    /// Open the default output device, surfacing the exact `rodio`
-    /// (`cpal`) error — the issue-025e `oh-audio` composition logs this so a
-    /// failed Android/AAudio sink open is diagnosable (not silently no-op'd).
-    pub fn try_open_default() -> Result<Self, rodio::DeviceSinkError> {
-        let sink = rodio::DeviceSinkBuilder::open_default_sink()?;
-        Ok(Self { sink: Some(sink) })
+    /// Open the default output device, surfacing the exact platform error —
+    /// the `oh-audio` composition logs this so a failed sink open is
+    /// diagnosable (not silently no-op'd).
+    pub fn try_open_default() -> Result<Self, AudioOpenError> {
+        #[cfg(not(target_os = "emscripten"))]
+        {
+            let backend = rodio_backend::RodioBackend::open()?;
+            Ok(Self {
+                backend: Some(Box::new(backend)),
+            })
+        }
+        #[cfg(target_os = "emscripten")]
+        {
+            openal::OpenalBackend::open().map(|backend| Self {
+                backend: Some(Box::new(backend)),
+            })
+        }
     }
 
-    /// Whether a live output sink is attached.
+    /// Whether a live output backend is attached.
     #[must_use]
     pub fn is_ready(&self) -> bool {
-        self.sink.is_some()
+        self.backend.as_ref().is_some_and(|b| b.is_ready())
     }
 
-    /// The rodio `Mixer` of the attached sink (`None` headless) — the surface
-    /// a higher layer (issue 025e / `oh-audio`) uses to build its own
-    /// `rodio::Player` (the streamed music source), mirroring how the C++
-    /// `sf::Music` plays on the same device the `sf::Sound`s do.
-    #[must_use]
-    pub fn mixer(&self) -> Option<&rodio::mixer::Mixer> {
-        self.sink.as_ref().map(rodio::MixerDeviceSink::mixer)
-    }
-
-    /// Play an interleaved `f32` buffer: connect a `rodio::Player` and append
-    /// the samples. `volume` is SFML-style `0..=100`; `pitch` the rodio speed.
-    /// Returns `None` when no device is attached (headless).
-    pub fn play_samples(
+    /// Play a one-shot `sf::Sound` (interleaved `f32`, plays once from 0).
+    /// `volume` is SFML-style `0..=100`; `pitch` the rate. Returns `None` when
+    /// no device is attached (headless) or a parameter is degenerate.
+    pub fn play_one_shot(
         &self,
         sample_rate: u32,
         channels: u16,
         samples: Vec<f32>,
         volume: f32,
         pitch: f32,
-    ) -> Option<rodio::Player> {
-        let sink = self.sink.as_ref()?;
-        let channels = std::num::NonZero::new(channels)?;
-        let sample_rate = std::num::NonZero::new(sample_rate)?;
-        let player = rodio::Player::connect_new(sink.mixer());
-        let source = rodio::buffer::SamplesBuffer::new(channels, sample_rate, samples);
-        player.append(source);
-        player.set_volume((volume / 100.0).clamp(0.0, 1.0));
-        player.set_speed(pitch);
-        Some(player)
+    ) -> Option<AudioPlayer> {
+        self.backend
+            .as_ref()
+            .and_then(|b| b.play_one_shot(sample_rate, channels, samples, volume, pitch))
+    }
+
+    /// Play a looped `sf::Music` (interleaved `f32`, repeats forever) from
+    /// `offset_secs`. `volume` is SFML-style `0..=100`; `pitch` the rate.
+    /// Returns `None` when no device is attached (headless) or a parameter is
+    /// degenerate.
+    pub fn play_music(
+        &self,
+        sample_rate: u32,
+        channels: u16,
+        samples: Vec<f32>,
+        volume: f32,
+        pitch: f32,
+        offset_secs: f32,
+    ) -> Option<AudioPlayer> {
+        self.backend
+            .as_ref()
+            .and_then(|b| b.play_music(sample_rate, channels, samples, volume, pitch, offset_secs))
+    }
+
+    /// Resume / unlock the audio on the first user gesture (the web's autoplay
+    /// policy; a no-op on desktop/Android).
+    pub fn unlock(&self) {
+        if let Some(b) = self.backend.as_ref() {
+            b.unlock();
+        }
+    }
+
+    /// A one-line diagnostic: which world (device present / headless) + the
+    /// unlock (context) state + the last source state / error. The web's
+    /// acceptance observable (the `tools/web-probe.mjs` "audio diagnostics"
+    /// section surfaces this line).
+    #[must_use]
+    pub fn describe(&self) -> String {
+        self.backend
+            .as_ref()
+            .map_or_else(|| "no device (headless)".to_string(), |b| b.describe())
     }
 }
 

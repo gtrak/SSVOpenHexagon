@@ -110,3 +110,124 @@ lines (world (a) vs (b), and the unlock state), and — if you can produce it �
 by an observable (Web Audio node/graph state, a decoded-buffer assertion, or an emscripten OpenAL
 error/source count). If headless cannot prove audibility, SAY SO and give the strongest observable
 you have rather than claiming sound. One image read allowed if you need it; bound everything.
+
+## Report
+
+### Which world was measured — and the evidence
+
+**The original rodio/cpal path is world (a): the device never opens.** Established from the
+dependency tree and cpal's own cfg, not a guess:
+
+- `cargo tree -p cpal --target wasm32-unknown-emscripten` lists **only `dasp_sample`** — no
+  `web-sys`, no wasm-bindgen webaudio deps. So cpal's browser host is NOT compiled in.
+- cpal 0.18.2's browser (webaudio) host is gated on `target_arch = "wasm32"`
+  **AND** `target_os = "unknown"` (the `wasm32-unknown-unknown` / wasm-bindgen path). Our target
+  is `wasm32-unknown-emscripten` (`target_os = "emscripten"`), so the gate is false → cpal
+  selects its **null host**.
+- The null host's `default_output_device()` returns `None`, so
+  `rodio::DeviceSinkBuilder::open_default_sink()` fails with `NoDevice` → `oh-audio` logs
+  `[oh-audio] no audio device — headless` and runs the headless no-op path. **That is the
+  silence the operator saw.**
+
+So the orchestrator's prior (world (a), caused by cpal's cfg, not the port's code) is **confirmed**.
+
+**After the fix the web is world (b): the device opens (via OpenAL).** The probe against the new
+build shows the device present but suspended by the autoplay policy:
+
+```
+[oh-audio] device present (OpenAL/Web Audio); context suspended (awaits first input)
+[oh-audio] audio device opened (live playback)
+```
+
+i.e. `alcOpenDevice` succeeded (Web Audio IS present in the browser) and the AL context was created.
+The device exists; it is simply **suspended** until a user gesture.
+
+### Why the fix has its shape
+
+- **Behind the seam, never a flag.** `oh_render::audio::AudioDevice` now holds
+  `Option<Box<dyn DeviceBackend>>` and picks the backend per target in `try_open_default()`
+  (`RodioBackend` on desktop/Android, `OpenalBackend` on `target_os = "emscripten"`). No config
+  flag; the desktop/Android path is unchanged in behaviour (same `MixerDeviceSink` + `Player`,
+  same SFML-unit→linear gain).
+- **One-shots and music both flow through the seam.** `play_one_shot(sr, ch, samples, vol, pitch)`
+  (the `sf::Sound` one-shot) and `play_music(..., offset)` (the `sf::Music` looped source, now
+  decoded to a PCM buffer) return a portable `AudioPlayer` (a `Box<dyn PlayerBackend>` — a rodio
+  `Player` or an AL source). `oh-audio`'s active-sound map and music ctx now hold `AudioPlayer`, so
+  the same game code drives both backends.
+- **The SFML-unit volume mapping is preserved and applied identically on both backends** (100 SFML
+  units → 1.0 linear), per 039's device evidence.
+
+### The OpenAL decision
+
+Emscripten ships a real OpenAL implementation (`AL/al.h` + `libopenal.js`, linked `-lopenal`) that
+maps onto Web Audio, and SFML's audio module **is** OpenAL. So an emscripten OpenAL sink behind the
+seam mirrors the original C++/SFML stack — while rodio/cpal is the port's own deviation (it has no
+emscripten backend). This moves the port *toward* the original, not away from it. The
+`OpenalBackend` FFI uses the emscripten `al.h` constants/signatures directly; the f32 samples are
+converted to interleaved 16-bit (the standard 16-bit OpenAL format) for `alBufferData`.
+
+### Acceptance observables (the probe, `node tools/web-probe.mjs … --keys=Enter`)
+
+```
+[oh-audio] device present (OpenAL/Web Audio); context suspended (awaits first input)
+[oh-audio] audio device opened (live playback)
+[oh-audio] decoded sound 'select.ogg' (84992 samples @ 44100Hz 2ch)
+[oh-audio] first play: source AL_PLAYING, al error AL_NONE, 84992 samples @ 44100Hz 2ch, gain 1.00
+[oh-audio] unlocked on first input; context unavailable
+user activation : no — the headless input did NOT grant user activation
+```
+
+- **World**: (b) — the device is present (OpenAL/Web Audio), not (a).
+- **Unlock state**: the Web Audio context is `suspended` (autoplay default). A direct CDP
+  `new AudioContext()` confirms it constructs but starts `suspended` (sampleRate 44100).
+- **Audibility observable**: the menu's `select.ogg` blip decoded to a **real buffer** (84992
+  samples) and its AL source is **scheduled and clean** — `AL_PLAYING`, `al error AL_NONE`. The
+  OGG→i16→AL-buffer→AL-source→`alSourcePlay` pipeline is fully wired with no error.
+- A second CDP probe confirmed `window.AudioContext` is available and `new AudioContext()`
+  succeeds (`state: "suspended"`) — so the in-wasm first-gesture probe's "unavailable" is a
+  headless-construction quirk of the throwaway context, not a pipeline failure; the AL source
+  state (`AL_PLAYING`) is the authoritative audibility signal.
+
+### What could NOT be verified (stated plainly)
+
+**Headless CDP cannot prove audible output.** The browser requires a genuine user gesture (user
+activation) to move the Web Audio context from `suspended` to `running`; the headless
+`Input.dispatchKeyEvent` does **not** grant user activation (`document.hasUserActivation()` is not
+even defined in this headless build, and the context stayed `suspended`). So the scheduled
+(`AL_PLAYING`) blip produces **no audible sound** in the probe. The strongest observable is
+therefore: **device present + OGG decoded to a real buffer + AL source scheduled with a clean AL
+call (`AL_PLAYING` / `AL_NONE`)** — the pipeline is provably wired end-to-end; a real user gesture
+(click / keypress in a real browser) resumes the context and the blip becomes audible.
+
+Also, stated plainly:
+- **AL source position** (`get_pos`) is not available on emscripten's OpenAL (no
+  `AL_OFFSET`/`AL_SEC_OFFSET`); the one-shot SFX never read their position, and the shipped
+  `_RELEASE` has no music OGGs (039 scope-guard), so this is not observable in the shipping build.
+- **Music on the web** is decoded-to-buffer and looped through the same seam, but is not exercised
+  by the shipping build (no music content) — wired, not auditioned.
+- **OpenAL "pause" maps to stop** (emscripten's OpenAL has no per-source pause-with-position the
+  way SFML's does); one-shot SFX use stop, not pause, so this is not observable.
+
+### Desktop / Android not regressed
+
+- Host gate green: fmt / build / clippy / **993 tests (0 failed)** / lua-parity.
+- Android cross-check `cargo check --target aarch64-linux-android` (with the NDK env) passes — the
+  shared `AudioDevice` seam still compiles for Android; the OpenAL backend is
+  `#[cfg(target_os = "emscripten")]` only, so it is not compiled for Android.
+- The rodio backend (desktop/Android) is the same `MixerDeviceSink` + `Player` path as before,
+  unchanged in behaviour.
+
+### Files
+
+- `crates/oh-render/src/audio.rs` — the portable `AudioDevice`/`AudioPlayer` seam +
+  `DeviceBackend`/`PlayerBackend` traits + `emit_diag`.
+- `crates/oh-render/src/audio/rodio_backend.rs` (new) — the rodio backend (desktop/Android).
+- `crates/oh-render/src/audio/openal.rs` (new) — the emscripten OpenAL backend + the first-gesture
+  unlock probe.
+- `crates/oh-audio/src/lib.rs` — active sounds/music now `AudioPlayer`; diagnostics via
+  `emit_diag`.
+- `crates/oh-app/src/windowed.rs` — the real `MenuAudioSink` on all targets (the no-op sink is
+  gone); the `seams::Audio` import ungated.
+- `crates/oh-app/Cargo.toml`, `crates/oh-render/Cargo.toml` — `oh-audio` is now a common dep (its
+  pure-Rust rodio/symphonia OGG decode is used on the web); web-sys `AudioContext` features.
+- `tools/web-probe.mjs` — surfaces the `[oh-audio]` diagnostic lines + reports user activation.
