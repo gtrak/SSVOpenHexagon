@@ -2634,14 +2634,15 @@ impl Window {
                 }
                 // Drain the DOM event batch into a local (the SFML
                 // `runEvents` batch — `apply_event` per event, the winit
-                // path's same fold).
+                // path's same fold) + the web rAF drain's input cycle
+                // (the `apply_event_batch`'s docs — issue 057's
+                // held-input parity: the persistent level's snapshot is
+                // taken AFTER the fold, so a held press's level
+                // survives the frame — the pre-057 pre-fold save
+                // reverted every held key / button to its pre-frame
+                // level, the operator's "a keypress event that should
+                // have been a keydown").
                 let events: Vec<Event> = r.queue.borrow_mut().drain(..).collect();
-                // issue 046 (F32) — the fast-press visibility (the
-                // `BatchPresses`'s docs): the batch's press edges + the
-                // state's save (the restoration's `saved` half — the
-                // `InputState`'s `Copy`).
-                let presses = BatchPresses::from_events(&events);
-                let saved_input = r.window.input;
                 // issue 055 — the SETTLE re-measure's arm (the
                 // `resize_settle_pending` field's docs): a `Resized` in
                 // this tick's batch was measured at the `resize` event's
@@ -2653,16 +2654,7 @@ impl Window {
                 // scan is BEFORE the apply (the loop moves the `events`
                 // into the fold).
                 let had_resized = events.iter().any(|e| matches!(e, Event::Resized { .. }));
-                for event in events {
-                    Window::apply_event(&mut r.window, event);
-                }
-                // The OR-in (the docs): the frame's update sees the
-                // press edges down (the C++'s poll-inside-the-press
-                // visibility) — the shared sink re-published with them.
-                if !presses.is_empty() {
-                    presses.apply(&mut r.window.input);
-                    r.window.publish_input_state();
-                }
+                let post_drain_input = r.window.apply_event_batch(&events);
                 // The per-frame handler (disjoint field borrows).
                 {
                     let on_frame = &mut r.on_frame;
@@ -2672,14 +2664,11 @@ impl Window {
                 if had_resized {
                     r.window.resize_settle_pending = true;
                 }
-                // The restoration (the docs): the TRUE post-drain state
-                // is the window's state after the frame (the next
-                // frame's update sees the key up — the `Type::Once`
-                // latch's re-arm, the C++'s `refresh`'s `!isDown`).
-                if !presses.is_empty() {
-                    r.window.input = saved_input;
-                    r.window.publish_input_state();
-                }
+                // The cycle's post-frame half (the `restore_event_batch`
+                // docs — exactly the OR-in's inverse: the fast press's
+                // level goes back up, the held press's level stays
+                // down, the fold's rest stands).
+                r.window.restore_event_batch(post_drain_input);
                 if r.window.open {
                     let id = ww
                         .request_animation_frame(
@@ -2891,6 +2880,65 @@ impl Window {
             }
         }
     }
+
+    /// issue 057 (the held-input parity restore) — the web rAF drain's
+    /// input cycle, the PRE-FRAME half: the batch's events fold into
+    /// the PERSISTENT level (the C++'s persistent `inputState` map,
+    /// SSVStart `GameWindow.hpp:60-72` — a down → true, an up → false,
+    /// cleared only on the focus loss / the recreation), then the
+    /// batch's press edges OR in for the frame's update (046's
+    /// fast-press visibility — the `BatchPresses`'s docs: a down+up
+    /// pair inside the batch leaves the level UP after the fold, so
+    /// only the OR makes it visible to this frame's poll). Pure state
+    /// transforms over `self.input` — host-testable without a DOM; the
+    /// emscripten `Window::run`'s rAF drain is the call site (the
+    /// desktop's winit path has no twin: its uncapped spin's
+    /// per-event-wakeup frames never batch a down+up inside one frame,
+    /// so the fold's persistent level is the whole story there).
+    ///
+    /// Returns the POST-FOLD state — the post-frame half's restoration
+    /// target (`None` = no press edges in the batch, nothing to
+    /// restore). The capture is AFTER the fold by construction: a
+    /// press with no release in the batch (a HELD key / button /
+    /// finger) keeps its level across the frame — the browser sends no
+    /// further event for it, so reverting the level (the pre-057
+    /// pre-fold save) turned every held input into a one-frame press
+    /// (the operator's "a keypress event that should have been a
+    /// keydown").
+    #[must_use]
+    pub fn apply_event_batch(&mut self, events: &[Event]) -> Option<InputState> {
+        let presses = BatchPresses::from_events(events);
+        for event in events {
+            Self::apply_event(self, *event);
+        }
+        let post_drain = if presses.is_empty() {
+            None
+        } else {
+            Some(self.input)
+        };
+        if !presses.is_empty() {
+            presses.apply(&mut self.input);
+            self.publish_input_state();
+        }
+        post_drain
+    }
+
+    /// issue 057 (the held-input parity restore) — the web rAF drain's
+    /// input cycle, the POST-FRAME half (the `apply_event_batch`'s
+    /// docs): back to the post-fold state — exactly the OR-in's
+    /// inverse. The fast-press's level goes UP again (no stuck key: the
+    /// `Type::Once` latch's re-arm, the C++'s `refresh`'s `!isDown`);
+    /// the held press's level stays DOWN (the persistent half — the
+    /// C++'s `inputState` map holds it until the release's event); and
+    /// nothing else the fold did this frame is reverted (the mouse's
+    /// position is the `mouse_pixel` field's, not the `InputState`'
+    /// — it was never in the restore's reach).
+    pub fn restore_event_batch(&mut self, post_drain: Option<InputState>) {
+        if let Some(post_drain) = post_drain {
+            self.input = post_drain;
+            self.publish_input_state();
+        }
+    }
 }
 
 /// issue 046 (F32) — a drained event batch's press edges (pure +
@@ -2912,13 +2960,20 @@ impl Window {
 /// post-drain state with the key UP: the `Type::Once`'s
 /// state-snapshot binds (the Enter → `okAction`'s profile creation —
 /// the 046 acceptance's "the profile was created") never see the
-/// press. The drain's caller's fix: this batch's press edges are OR'd
-/// into the window's input state for the frame's update ONLY (the
+/// press. The drain's fix (the `Window::apply_event_batch` /
+/// `Window::restore_event_batch` pair): this batch's press edges are
+/// OR'd into the window's input state for the frame's update ONLY (the
 /// update sees the key down, exactly as a C++ poll inside the press's
 /// window would), then the TRUE post-drain state is restored (no
-/// persistent pollution: the next frame's update sees the key up —
-/// the `Type::Once` latch's re-arm, the C++'s `refresh`'s `!isDown`
-/// re-arm). The winit path needs no twin: its `ControlFlow::Poll`
+/// persistent pollution: the fast press's level goes up again — the
+/// `Type::Once` latch's re-arm, the C++'s `refresh`'s `!isDown` re-arm).
+/// The restore's target is the POST-FOLD state (issue 057 — the pre-057
+/// code captured it BEFORE the fold and reverted every held key /
+/// button to its pre-frame level: a held input became a one-frame
+/// press, the operator's "a keypress event that should have been a
+/// keydown" — the C++'s persistent `inputState` map,
+/// GameWindow.hpp:60-72, is what the fold's result IS). The winit path
+/// needs no twin: its `ControlFlow::Poll`
 /// `about_to_wait` fires per event wakeup (each OS-delivered event
 /// batch gets its own frame) — the desktop's human press durations
 /// (≥ 50ms) span the uncapped spin's polls anyway (the 025g
@@ -4547,12 +4602,14 @@ mod tests {
         assert!(BatchPresses::from_events(&events).is_empty());
     }
 
-    /// issue 046 (F32) — the save / OR-in / restore's full frame cycle
-    /// (the drain's orchestration's semantics, pinned host-side — the
-    /// emscripten `Closure`'s body itself is the target-gated half):
-    /// the batch's [down+up A] + [held B] over the frame — the frame's
-    /// update sees A + B down; the post-frame state is the TRUE
-    /// post-drain state (A up, B down — the latch's re-arm's input).
+    /// issue 046 (F32) + issue 057 (the held-input parity restore) — the
+    /// cycle's full frame over the PRODUCTION methods (the pre-057 test
+    /// modeled the cycle by hand over a bare state — the method IS the
+    /// cycle now, so the pin runs it): the batch's [down+up A] +
+    /// [held B] over the frame — the frame's update sees A + B down;
+    /// the post-frame state is the TRUE post-drain state (A up — the
+    /// fast press's latch re-arm; B down — the held press's level
+    /// survives, the C++'s persistent map).
     #[test]
     fn batch_presses_save_or_restore_frame_cycle() {
         let events = vec![
@@ -4566,31 +4623,144 @@ mod tests {
                 repeated: false,
             },
         ];
-        let presses = BatchPresses::from_events(&events);
-        let mut state = InputState::new();
+        let mut window = Window::headless(800, 600);
         // B held from before the interval (the previous frame's press).
-        state.set_key_pressed(Key::B, true);
-        // The fold (the drain's `apply_event` halves, over a bare state):
-        // A down, A up, B down (B already down).
-        state.set_key_pressed(Key::A, true);
-        state.set_key_pressed(Key::A, false);
-        state.set_key_pressed(Key::B, true);
-        // The save (the drain's `saved_input`) + the OR-in.
-        let saved = state;
-        presses.apply(&mut state);
+        window.get_input_state_mut().set_key_pressed(Key::B, true);
+        // The pre-frame half: the fold + the OR-in.
+        let restore = window.apply_event_batch(&events);
         // The frame's update's view (the `on_frame`'s read):
         assert!(
-            state.is_key_pressed(Key::A),
+            window.get_input_state().is_key_pressed(Key::A),
             "the fast press is visible to the frame's update"
         );
-        assert!(state.is_key_pressed(Key::B));
-        // The restoration (the drain's post-`on_frame` half).
-        state = saved;
         assert!(
-            !state.is_key_pressed(Key::A),
-            "the next frame sees the true (released) state"
+            window.get_input_state().is_key_pressed(Key::B),
+            "the held press is visible"
         );
-        assert!(state.is_key_pressed(Key::B));
+        // The post-frame half: the restoration to the post-fold state.
+        window.restore_event_batch(restore);
+        assert!(
+            !window.get_input_state().is_key_pressed(Key::A),
+            "the next frame sees the fast press's true (released) state"
+        );
+        assert!(
+            window.get_input_state().is_key_pressed(Key::B),
+            "the held press's level survives the frame"
+        );
+    }
+
+    /// issue 057 (the operator's held-input bug) — the GUARD: a held key
+    /// AND a held mouse button AND a held finger survive N frames with
+    /// no release in between — the C++'s persistent `inputState` map
+    /// (GameWindow.hpp:60-72) holds the level until the release's
+    /// event; the browser sends no further event for a held input, so
+    /// the frame's end must NOT revert the level (the pre-057 restore
+    /// did — every held input became a one-frame press, the operator's
+    /// "a keypress event that should have been a keydown").
+    #[test]
+    fn a_held_key_button_and_finger_survive_n_frames_with_no_release() {
+        let position = Vec2::new(1.0, 2.0);
+        let mut window = Window::headless(800, 600);
+        // Frame 1: the three downs (no up anywhere in the batch).
+        let restore = window.apply_event_batch(&[
+            Event::KeyPressed {
+                code: Key::A,
+                repeated: false,
+            },
+            Event::MouseButtonPressed {
+                button: Button::LEFT,
+            },
+            Event::TouchBegan {
+                finger: 0,
+                position,
+            },
+        ]);
+        assert!(window.get_input_state().is_key_pressed(Key::A));
+        assert!(window.get_input_state().is_button_pressed(Button::LEFT));
+        assert!(window.get_input_state().is_finger(0));
+        window.restore_event_batch(restore);
+        assert!(
+            window.get_input_state().is_key_pressed(Key::A),
+            "the held key's level survives the frame (the pre-057 restore reverted it)"
+        );
+        // Frames 2..=8: NO events (a held input sends nothing between
+        // the OS's repeats) — the levels survive every frame.
+        for _ in 0..7 {
+            let restore = window.apply_event_batch(&[]);
+            assert!(window.get_input_state().is_key_pressed(Key::A));
+            assert!(window.get_input_state().is_button_pressed(Button::LEFT));
+            assert!(window.get_input_state().is_finger(0));
+            window.restore_event_batch(restore);
+            assert!(window.get_input_state().is_key_pressed(Key::A));
+            assert!(window.get_input_state().is_button_pressed(Button::LEFT));
+            assert!(window.get_input_state().is_finger(0));
+        }
+        // The releases still release (the map's up half — the levels
+        // drop exactly when the C++'s map drops them).
+        let restore = window.apply_event_batch(&[
+            Event::KeyReleased { code: Key::A },
+            Event::MouseButtonReleased {
+                button: Button::LEFT,
+            },
+            Event::TouchEnded { finger: 0 },
+        ]);
+        assert!(!window.get_input_state().is_key_pressed(Key::A));
+        assert!(!window.get_input_state().is_button_pressed(Button::LEFT));
+        assert!(!window.get_input_state().is_finger(0));
+        window.restore_event_batch(restore);
+        assert!(!window.get_input_state().is_key_pressed(Key::A));
+    }
+
+    /// issue 046's goal (the 057 fix's must-not-regress half) — a press
+    /// AND a release inside one frame are still visible to that frame's
+    /// poll: the frame's update sees the key down (the C++'s
+    /// poll-inside-the-press), and the post-frame state sees it up (no
+    /// stuck key — the `Type::Once` latch's re-arm, the C++'s
+    /// `refresh`'s `!isDown`).
+    #[test]
+    fn a_fast_press_inside_one_batch_is_visible_to_that_frame_only() {
+        let mut window = Window::headless(800, 600);
+        let restore = window.apply_event_batch(&[
+            Event::KeyPressed {
+                code: Key::ENTER,
+                repeated: false,
+            },
+            Event::KeyReleased { code: Key::ENTER },
+        ]);
+        assert!(
+            window.get_input_state().is_key_pressed(Key::ENTER),
+            "visible to the frame's update (046's fast-press visibility)"
+        );
+        window.restore_event_batch(restore);
+        assert!(
+            !window.get_input_state().is_key_pressed(Key::ENTER),
+            "not stuck down (the latch's re-arm)"
+        );
+        // The next frame (no events) confirms the up level holds.
+        let restore = window.apply_event_batch(&[]);
+        assert!(!window.get_input_state().is_key_pressed(Key::ENTER));
+        window.restore_event_batch(restore);
+    }
+
+    /// issue 057 — the cycle's focus-loss half (the fold's `reset()`'
+    /// semantics preserved through the extraction): a batch that ends
+    /// in a `LostFocus` clears the persistent level (the C++'s map's
+    /// focus-loss clear, GameWindow.hpp:56) — and the `from_events`'
+    /// batch half clears the earlier press edges WITH it, so nothing is
+    /// OR'd in and nothing is restored.
+    #[test]
+    fn a_batch_ending_in_lost_focus_clears_the_persistent_level() {
+        let mut window = Window::headless(800, 600);
+        window.get_input_state_mut().set_key_pressed(Key::A, true);
+        let restore =
+            window.apply_event_batch(&[Event::KeyReleased { code: Key::A }, Event::LostFocus]);
+        assert!(
+            restore.is_none(),
+            "no press edges after the blur — nothing to restore"
+        );
+        assert!(!window.get_input_state().is_key_pressed(Key::A));
+        window.restore_event_batch(restore);
+        assert!(!window.get_input_state().is_key_pressed(Key::A));
     }
 
     // ------------------------------------------------------------------

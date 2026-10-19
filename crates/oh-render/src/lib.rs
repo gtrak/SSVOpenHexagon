@@ -97,7 +97,7 @@ pub use text_draw::{
     format_time, get_scaled_character_size, time_format, update_text, update_text_sizes,
     TextUpdateInput,
 };
-pub use texture::{Image, RenderTexture, Sprite, Texture};
+pub use texture::{load_texture_or_null, Image, RenderTexture, Sprite, Texture};
 pub use timer::TimerStatic;
 pub use types::{FloatRect, RectangleShape, VideoMode};
 pub use view::{Camera, View};

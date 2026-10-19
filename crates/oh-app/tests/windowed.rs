@@ -1309,6 +1309,60 @@ fn the_touch_overlay_exit_button_goes_to_the_menu_once_per_press() {
     assert_eq!(client.engine.current(), GameSlot::Menu);
 }
 
+/// issue 057 (the F35 boundary guard — the operator's warning: "i
+/// recall we had repeated events breaking the menu nav, and slowing
+/// those down also broke gameplay") — the menu's touch cadence (F35's
+/// `touch_delay` gate) must never reach a GAMEPLAY path: a finger held
+/// on the screen's left half (the C++'s rotation-only touch controls,
+/// HGUpdate.cpp:589 — the port's `update_input_update_touch_controls`)
+/// keeps driving the game's CCW input on EVERY frame of the hold
+/// (24 ticks = 100 ms of game time = two of the menu's 50 ms cadence
+/// windows — a leaked cadence would show its gaps here), and the
+/// menu's cadence field is provably inert in the game state (its
+/// decay / arming live in the menu's own `update()` — the field holds
+/// its game-entry value across the whole hold; the structural proof
+/// is the register's F35 row: the gate's only control-flow reader is
+/// the 9-zone grid's dispatch, menu-state only).
+#[test]
+fn a_held_touch_in_gameplay_stays_continuous_and_the_menu_cadence_is_inert() {
+    let (mut client, _sandbox) = sandboxed_windowed_client(None);
+    boot_to_level_selection(&mut client);
+    set_key(&mut client, Key::ENTER, true);
+    tick(&mut client);
+    set_key(&mut client, Key::ENTER, false);
+    assert_eq!(client.engine.current(), GameSlot::Game);
+    client.game.set_must_start(true);
+    tick(&mut client);
+    assert!(client.game.get_status().started);
+
+    // The menu's cadence field at game entry (whatever the boot path
+    // left it at — the point is that the game's frames do not move it).
+    let touch_delay_at_game_entry = client.menu.touch_delay();
+
+    // A finger held on the left half (view 1920×1080 — the half-width
+    // is 960): down ONCE, then N frames with no further events (a held
+    // finger sends nothing — the web rAF drain's held-input shape,
+    // issue 057).
+    touch_down(&mut client, 0, 100.0, 500.0);
+    for _ in 0..24 {
+        tick(&mut client);
+        assert!(
+            client.game.get_input_impl_ccw(),
+            "the held touch's rotation input stays set on every frame (the menu's cadence cannot reach a gameplay path)"
+        );
+    }
+    assert_eq!(
+        client.menu.touch_delay(),
+        touch_delay_at_game_entry,
+        "the menu's cadence mechanism is inert in the game state (its decay/arming is the menu's update()'s)"
+    );
+    // The release lifts the input (the fold's up half — the C++'s map
+    // drops the level when the release's event lands).
+    touch_up(&mut client, 0);
+    tick(&mut client);
+    assert!(!client.game.get_input_impl_ccw());
+}
+
 // `u_isKeyPressed` / `u_isMouseButtonPressed` (HGScripting.cpp:89-98 /
 // :135-141) must read the window's LIVE input state through the
 // `Renderer` seam (the C++ `window->getInputState()[...]`). The pre-fix

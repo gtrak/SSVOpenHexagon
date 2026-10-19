@@ -1,0 +1,54 @@
+  … boot settled (booted=true;exit_code=0;ticks=214;state=menu:LoadingScreen)
+  … pressing Enter
+  [step] Enter -> {"state":"menu:EpilepsyWarning","viewport":{"w":1280,"h":577,"dpr":1},"active":"BODY","ime":true,"imeValue":"","canvas":{"backing":1280,"css":1280,"dpr":1,"ok":true},"fs":{"display":"block","opacity":"0.55","rect":{"w":44,"h":44,"right":12,"bottom":445},"selfHit":"fs","rotateCwHit":"c","fullscreen":{"element":false,"enabled":true}},"focus":{"hidden":"visible","fullscreen":false,"blur":0,"focus":0,"vis":0,"fs":0},"dom":["ohstatechange","down:Enter/Enter/comp=false/rep=false/prev=false","up:Enter/Enter","ohstatechange"]}
+  [dom] Enter: ohstatechange | down:Enter/Enter/comp=false/rep=false/prev=false | up:Enter/Enter | ohstatechange
+  … pressing Enter
+  [step] Enter -> {"state":"menu:ETLPNewBoot","viewport":{"w":1280,"h":577,"dpr":1},"active":"INPUT:ime","ime":true,"imeValue":"","canvas":{"backing":1280,"css":1280,"dpr":1,"ok":true},"fs":{"display":"block","opacity":"0.55","rect":{"w":44,"h":44,"right":12,"bottom":445},"selfHit":"fs","rotateCwHit":"c","fullscreen":{"element":false,"enabled":true}},"focus":{"hidden":"visible","fullscreen":false,"blur":0,"focus":1,"vis":0,"fs":0},"dom":["down:Enter/Enter/comp=false/rep=false/prev=false","up:Enter/Enter","focus:ime","ohstatechange"]}
+  [dom] Enter: down:Enter/Enter/comp=false/rep=false/prev=false | up:Enter/Enter | focus:ime | ohstatechange
+  … insertText "vee057"
+  [step] i:vee057 -> {"state":"menu:ETLPNewBoot","viewport":{"w":1280,"h":577,"dpr":1},"active":"INPUT:ime","ime":true,"imeValue":"vee057","canvas":{"backing":1280,"css":1280,"dpr":1,"ok":true},"fs":{"display":"block","opacity":"0.55","rect":{"w":44,"h":44,"right":12,"bottom":445},"selfHit":"fs","rotateCwHit":"c","fullscreen":{"element":false,"enabled":true}},"focus":{"hidden":"visible","fullscreen":false,"blur":0,"focus":1,"vis":0,"fs":0},"dom":["input:ime/insertText/\"vee057\""]}
+  [dom] i:vee057: input:ime/insertText/"vee057"
+  … pressing Enter
+  [step] Enter -> {"state":"menu:SMain","viewport":{"w":1280,"h":577,"dpr":1},"active":"BODY","ime":true,"imeValue":"vee057","canvas":{"backing":1280,"css":1280,"dpr":1,"ok":true},"fs":{"display":"block","opacity":"0.55","rect":{"w":44,"h":44,"right":12,"bottom":445},"selfHit":"fs","rotateCwHit":"c","fullscreen":{"element":false,"enabled":true}},"focus":{"hidden":"visible","fullscreen":false,"blur":1,"focus":1,"vis":0,"fs":0},"dom":["down:Enter/Enter/comp=false/rep=false/prev=false","up:Enter/Enter","ohstatechange","blur:ime"]}
+  [dom] Enter: down:Enter/Enter/comp=false/rep=false/prev=false | up:Enter/Enter | ohstatechange | blur:ime
+  … screenshot -> .agents/evidence/057/01-post-profile.png
+  [step] s:01-post-profile -> {"state":"menu:SMain","viewport":{"w":1280,"h":577,"dpr":1},"active":"BODY","ime":true,"imeValue":"vee057","canvas":{"backing":1280,"css":1280,"dpr":1,"ok":true},"fs":{"display":"block","opacity":"0.55","rect":{"w":44,"h":44,"right":12,"bottom":445},"selfHit":"fs","rotateCwHit":"c","fullscreen":{"element":false,"enabled":true}},"focus":{"hidden":"visible","fullscreen":false,"blur":1,"focus":1,"vis":0,"fs":0},"dom":[]}
+  … pressing Enter
+  [step] Enter -> {"state":"menu:LevelSelection","viewport":{"w":1280,"h":577,"dpr":1},"active":"BODY","ime":true,"imeValue":"vee057","canvas":{"backing":1280,"css":1280,"dpr":1,"ok":true},"fs":{"display":"block","opacity":"0.55","rect":{"w":44,"h":44,"right":12,"bottom":445},"selfHit":"fs","rotateCwHit":"c","fullscreen":{"element":false,"enabled":true}},"focus":{"hidden":"visible","fullscreen":false,"blur":1,"focus":1,"vis":0,"fs":0},"dom":["down:Enter/Enter/comp=false/rep=false/prev=false","up:Enter/Enter","ohstatechange"]}
+  [dom] Enter: down:Enter/Enter/comp=false/rep=false/prev=false | up:Enter/Enter | ohstatechange
+  … screenshot -> .agents/evidence/057/02-pre-game.png
+  [step] s:02-pre-game -> {"state":"menu:LevelSelection","viewport":{"w":1280,"h":577,"dpr":1},"active":"BODY","ime":true,"imeValue":"vee057","canvas":{"backing":1280,"css":1280,"dpr":1,"ok":true},"fs":{"display":"block","opacity":"0.55","rect":{"w":44,"h":44,"right":12,"bottom":445},"selfHit":"fs","rotateCwHit":"c","fullscreen":{"element":false,"enabled":true}},"focus":{"hidden":"visible","fullscreen":false,"blur":1,"focus":1,"vis":0,"fs":0},"dom":[]}
+  … holding Left for 1500 ms
+  [step] h:Left;1500 -> {"state":"menu:LevelSelection","viewport":{"w":1280,"h":577,"dpr":1},"active":"BODY","ime":true,"imeValue":"vee057","canvas":{"backing":1280,"css":1280,"dpr":1,"ok":true},"fs":{"display":"block","opacity":"0.55","rect":{"w":44,"h":44,"right":12,"bottom":445},"selfHit":"fs","rotateCwHit":"c","fullscreen":{"element":false,"enabled":true}},"focus":{"hidden":"visible","fullscreen":false,"blur":1,"focus":1,"vis":0,"fs":0},"dom":["down://comp=false/rep=false/prev=false","up:/"]}
+  [dom] h:Left;1500: down://comp=false/rep=false/prev=false | up:/
+  … screenshot -> .agents/evidence/057/03-held-key.png
+  [step] s:03-held-key -> {"state":"menu:LevelSelection","viewport":{"w":1280,"h":577,"dpr":1},"active":"BODY","ime":true,"imeValue":"vee057","canvas":{"backing":1280,"css":1280,"dpr":1,"ok":true},"fs":{"display":"block","opacity":"0.55","rect":{"w":44,"h":44,"right":12,"bottom":445},"selfHit":"fs","rotateCwHit":"c","fullscreen":{"element":false,"enabled":true}},"focus":{"hidden":"visible","fullscreen":false,"blur":1,"focus":1,"vis":0,"fs":0},"dom":[]}
+  … holding mouse left at 640, 288.5 for 1500 ms
+  [step] m:left;1500 -> {"state":"menu:LevelSelection","viewport":{"w":1280,"h":577,"dpr":1},"active":"BODY","ime":true,"imeValue":"vee057","canvas":{"backing":1280,"css":1280,"dpr":1,"ok":true},"fs":{"display":"block","opacity":"0.55","rect":{"w":44,"h":44,"right":12,"bottom":445},"selfHit":"fs","rotateCwHit":"c","fullscreen":{"element":false,"enabled":true}},"focus":{"hidden":"visible","fullscreen":false,"blur":1,"focus":1,"vis":0,"fs":0},"dom":["pdown:mouse/1/640,289","pup:mouse/1"]}
+  [dom] m:left;1500: pdown:mouse/1/640,289 | pup:mouse/1
+  … screenshot -> .agents/evidence/057/04-held-mouse.png
+  [step] s:04-held-mouse -> {"state":"menu:LevelSelection","viewport":{"w":1280,"h":577,"dpr":1},"active":"BODY","ime":true,"imeValue":"vee057","canvas":{"backing":1280,"css":1280,"dpr":1,"ok":true},"fs":{"display":"block","opacity":"0.55","rect":{"w":44,"h":44,"right":12,"bottom":445},"selfHit":"fs","rotateCwHit":"c","fullscreen":{"element":false,"enabled":true}},"focus":{"hidden":"visible","fullscreen":false,"blur":1,"focus":1,"vis":0,"fs":0},"dom":[]}
+  [step] final -> {"state":"menu:LevelSelection","viewport":{"w":1280,"h":577,"dpr":1},"active":"BODY","ime":true,"imeValue":"vee057","canvas":{"backing":1280,"css":1280,"dpr":1,"ok":true},"fs":{"display":"block","opacity":"0.55","rect":{"w":44,"h":44,"right":12,"bottom":445},"selfHit":"fs","rotateCwHit":"c","fullscreen":{"element":false,"enabled":true}},"focus":{"hidden":"visible","fullscreen":false,"blur":1,"focus":1,"vis":0,"fs":0},"dom":[]}
+
+web-probe: http://127.0.0.1:8097/
+  booted        : yes  (26 status lines)
+  last status   : status booted=true;exit_code=0;ticks=3103;state=menu:LevelSelection
+  state timeline: menu:LoadingScreen -> menu:EpilepsyWarning -> menu:ETLPNewBoot -> menu:SMain -> menu:LevelSelection
+  audio diagnostics:
+    [oh-audio] device present (OpenAL/Web Audio); context suspended (awaits first input)
+    [oh-audio] audio device opened (live playback)
+    [oh-audio] decoded sound 'select.ogg' (84992 samples @ 44100Hz 2ch)
+    [oh-audio] first play: source AL_PLAYING, al error AL_NONE, 84992 samples @ 44100Hz 2ch, gain 1.00
+    [oh-audio] unlocked on first input; context unavailable
+    [oh-audio] decoded sound 'beep.ogg' (15974 samples @ 44100Hz 2ch)
+    [oh-audio] decoded sound 'openHexagon.ogg' (176214 samples @ 44100Hz 2ch)
+    [oh-audio] decoded sound 'difficultyMultDown.ogg' (29156 samples @ 44100Hz 2ch)
+  fullscreen wiring:
+    (no [oh-web-fs] line — the #fs click was not exercised in this run)
+  user activation : no — the headless input did NOT grant user activation (the AudioContext stays suspended; a real user gesture would resume it — headless cannot prove audibility)
+  focus counters: {"hidden":"visible","fullscreen":false,"blur":1,"focus":1,"vis":0,"fs":0}
+  probe         : booted=true;exit_code=0;ticks=3189;state=menu:LevelSelection
+  screenshot    : /tmp/web-probe.png
+  non-200       : 404 http://127.0.0.1:8097/favicon.ico | 404 http://127.0.0.1:8097/favicon.ico
+  failed loads  : net::ERR_ABORTED (Document)
+  console errors: [error] [oh-render] WebGL2 antialias = true (antialiasing_level 4 → boolean; the browser picks the sample count) — GL_SAMPLES = 4 | [error] [oh-audio] set sound volume 100 (0..=100, SFML units) | [error] [oh-audio] set music volume 100 (0..=100, SFML units)

@@ -9,6 +9,11 @@
 #      ONE Lua VM, Luau; the stage compares the shipping column against
 #      the committed C++ vectors, the probe pins, the dialect census and
 #      the prelude tests, over N separate VM processes; ~6-8 min)
+#   6. tools/check-additions-boundary.sh (the oh-additions boundary
+#      ratchet — issue 057 deliverable 3: the OURS-class deviation marker
+#      lines in the ported files must not GROW past the committed
+#      baseline; a grown count fails the gate and points at
+#      crates/oh-additions)
 #
 # Stage output goes to a log under target/ (gitignored); GATE_EXIT=<rc> is
 # printed per stage, and a FAILING stage's tail (last 200 lines) is printed
@@ -53,6 +58,7 @@ run_stage "cargo clippy --workspace --all-targets -- -D warnings" \
     cargo clippy --workspace --all-targets -- -D warnings
 run_stage "cargo test --workspace" cargo test --workspace
 run_stage "tools/lua-parity.sh" tools/lua-parity.sh
+run_stage "tools/check-additions-boundary.sh" tools/check-additions-boundary.sh
 
 printf 'log: %s\n' "$LOG"
 exit "$overall"

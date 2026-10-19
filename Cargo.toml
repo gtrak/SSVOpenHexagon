@@ -13,6 +13,7 @@ members = [
     "crates/oh-render",
     "crates/oh-menu-system",
     "crates/oh-menu",
+    "crates/oh-additions",
     "crates/oh-app",
     "crates/oh-net",
     "crates/oh-server-control",

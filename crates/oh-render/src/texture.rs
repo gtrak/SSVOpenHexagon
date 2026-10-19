@@ -543,6 +543,24 @@ impl RenderTexture {
     }
 }
 
+/// C++ `assets.getTextureOrNullTexture(name)` (Assets.cpp:568-575): the
+/// asset's decoded texture, or the C++'s `static sf::Texture nullTexture`
+/// (a default `sf::Texture` = the 1×1 white pixel) when the file is
+/// missing/unreadable. The C++ logs the failure at asset-load time
+/// (`hg::loadAssetsFromJson`, Assets.cpp:238-244); the port decodes at
+/// the call site and logs the same line there. The `oh-app` composition's
+/// key-icon / particle / credits-bar PNGs and the `oh-additions` touch
+/// overlay's buttons (lane 057) both ride this shared half.
+pub fn load_texture_or_null(assets_dir: &std::path::Path, name: &str) -> Texture {
+    match Image::load_png(&assets_dir.join(name)) {
+        Ok(image) => Texture::from_image(image),
+        Err(_) => {
+            println!("[hg::loadAssetsFromJson] Failed to load texture '{name}'");
+            Texture::new()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

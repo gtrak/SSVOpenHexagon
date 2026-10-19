@@ -36,6 +36,10 @@ oh-data = { path = "../oh-data" }
 oh-lua = { path = "../oh-lua" }
 oh-assets = { path = "../oh-assets" }
 oh-menu = { path = "../oh-menu" }
+# Lane 057: the home for everything the C++ does not have — the gameplay
+# touch overlay (F28) moved here from this crate's `touch_overlay` module
+# (its F31 / F36 wiring follows as the overlay-side input injection).
+oh-additions = { path = "../oh-additions" }
 # 29o1 — the headless / server SIGINT handlers' async-signal-safe stdout
 # write (`libc::write` in the signal context; `std`'s `println!` is NOT
 # async-signal-safe — it takes the stdout lock, the C++'s `TODO (P2): UB`

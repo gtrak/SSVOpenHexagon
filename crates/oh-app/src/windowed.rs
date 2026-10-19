@@ -271,7 +271,7 @@ struct WindowTouchRenderer {
     /// finger; the C++'s rotation path reads ALL of
     /// `getFingerDownPositions`, so the overlay's captured pointers are
     /// filtered out of what this seam reports).
-    overlay: std::sync::Arc<std::sync::RwLock<crate::touch_overlay::TouchOverlay>>,
+    overlay: std::sync::Arc<std::sync::RwLock<oh_additions::touch_overlay::TouchOverlay>>,
     /// issue 31 — the actual-window-size slot (the C++
     /// `window->getRenderWindow().getSize()` the touch controls'
     /// half-split reads, HGUpdate.cpp:598 — the 025g lesson: the
@@ -374,7 +374,7 @@ struct MenuTouchSink {
     /// consumed in the menu state — the F36 shape), so only the `Exit`
     /// capture ever lands in a menu state; the exclusion is uniform over
     /// `captured_ids()` regardless.
-    overlay: std::sync::Arc<std::sync::RwLock<crate::touch_overlay::TouchOverlay>>,
+    overlay: std::sync::Arc<std::sync::RwLock<oh_additions::touch_overlay::TouchOverlay>>,
 }
 
 impl MenuTouch for MenuTouchSink {
@@ -1622,7 +1622,7 @@ struct GameSlotAdapter {
     /// additive set-if-held (the C++'s `setInputImplIfFalse` pattern,
     /// generalized to the focus / swap buttons the C++'s rotation-only
     /// touch controls lack).
-    touch_overlay: std::sync::Arc<std::sync::RwLock<crate::touch_overlay::TouchOverlay>>,
+    touch_overlay: std::sync::Arc<std::sync::RwLock<oh_additions::touch_overlay::TouchOverlay>>,
 }
 
 impl GameState for GameSlotAdapter {
@@ -1702,143 +1702,43 @@ impl GameState for GameSlotAdapter {
         {
             let mut o = self.touch_overlay.write().expect("touch overlay poisoned");
             if o.active() && o.enabled() && !self.game.lua_console_has_input() {
-                if o.held(crate::touch_overlay::Button::RotateCCW) {
+                if o.held(oh_additions::touch_overlay::Button::RotateCCW) {
                     self.game.set_input_impl_ccw(true);
                 }
-                if o.held(crate::touch_overlay::Button::RotateCW) {
+                if o.held(oh_additions::touch_overlay::Button::RotateCW) {
                     self.game.set_input_impl_cw(true);
                 }
-                if o.held(crate::touch_overlay::Button::Focus) {
+                if o.held(oh_additions::touch_overlay::Button::Focus) {
                     self.game.set_input_focused(true);
                 }
-                if o.held(crate::touch_overlay::Button::Swap) {
+                if o.held(oh_additions::touch_overlay::Button::Swap) {
                     self.game.set_input_swap(true);
                 }
             }
-            // The action edges (F31): taken unconditionally (the
-            // pending edges drain every frame — the C++'s `Type::Once`
-            // per-frame poll; an edge whose class gate is off at the
-            // take is dropped, never deferred), applied under the
-            // action gate.
-            let edges = o.take_press_edges();
-            if o.action_active() && o.enabled() {
-                let console = self.game.lua_console_has_input();
-                if edges[crate::touch_overlay::Button::Exit.idx()] && !console {
-                    self.game.trigger_go_to_menu();
-                }
-                if edges[crate::touch_overlay::Button::Replay.idx()] && !console {
-                    self.game.trigger_replay();
-                }
-                if edges[crate::touch_overlay::Button::Restart.idx()] && !console {
-                    self.game.trigger_restart();
-                }
-                if edges[crate::touch_overlay::Button::Pause.idx()] {
-                    self.game.trigger_pause();
-                }
-            }
+            // The F31 action row's press edges (issue 039) — the
+            // overlay-side input injection (oh-additions'
+            // `input_injection`): the every-frame drain (the stale-edge
+            // hazard) + the console-gated apply into the game's `Tid`
+            // bodies under the action gate.
+            oh_additions::input_injection::apply_game_action_edges(&mut o, &self.game);
         }
     }
 }
 
 /// issue 025f / D-031 — the soft-input (the system IME, the on-screen
-/// keyboard) controller: `show` on the menu's ENTER-TEXT entry, `hide`
-/// on its leave (the C++ `isEnteringText` gate's transition — the
-/// `MenuSlotAdapter::refresh_input` docs: the edge is computed there,
-/// once per transition, not per frame).
-///
-/// The C++'s Android text input came from SFML's own Android layer (the
-/// IME wiring lived in SFML, D-031) — the port's deliberate platform
-/// addition is this seam: the Android controller (the android-activity
-/// `show_soft_input(true)` / `hide_soft_input(false)`, the
-/// `oh-app::android` `ImeController`) and the desktop no-op (no IME on
-/// the desktop window — the C++ desktop build never asked for one).
-pub trait SoftInput: Send + Sync {
-    /// Show the system IME (the android-activity `show_soft_input(true)`
-    /// — `InputMethodManager.showSoftInput(decorView, SHOW_IMPLICIT)`).
-    fn show(&self);
-    /// Hide the system IME (the android-activity `hide_soft_input(false)`
-    /// — `hideSoftInputFromWindow(token, 0)`: an unconditional hide, not
-    /// only the implicitly shown IME).
-    fn hide(&self);
-}
-
-/// The desktop / headless `SoftInput` (the trait's docs): the no-op —
-/// no IME on the desktop window.
-pub struct NoOpSoftInput;
-
-impl SoftInput for NoOpSoftInput {
-    fn show(&self) {}
-    fn hide(&self) {}
-}
-
-/// issue 046 (F32) — the web `SoftInput` controller (the 025f
-/// `ImeController`'s web twin — D-031's platform addition's web half):
-/// the page's hidden-but-focusable IME input (the `oh-render` emscripten
-/// `Window`'s `#ime` element — its `web_ime_input` accessor; the
-/// element + its attribute contract live there, the `Window::create`
-/// get-or-create) focused on the menu's ENTER-TEXT entry and blurred on
-/// its leave — the SAME `is_entering_text` transition edge (the
-/// `MenuSlotAdapter::refresh_input` docs — computed ONCE per transition,
-/// never per frame: the per-frame call is the bug class the operator
-/// hit with the Android touch input, 025f) that drives the Android
-/// activity's `show_soft_input` / `hide_soft_input`.
-///
-/// The characters then feed the EXISTING entered-text pipeline — the
-/// element's `input` / `compositionend` listeners (the `oh-render`
-/// `attach_web_ime_listeners`) push the `Event::TextEntered`s into the
-/// window's DOM→SFML event queue (the issue-025d chain: the `TextEntered`
-/// fold → the `entered_text_sink` → the menu's `handle_text_entered`,
-/// gated by the ported `isEnteringText`, MenuGame.cpp:2862-2878) — fed,
-/// NOT a second pipeline built. The C++ has no web text path either (its
-/// input came from SFML — D-031's framing, the F32 register row): this
-/// is the deliberate platform addition, and ALL text-entry states
-/// benefit (the gate is the menu's `is_entering_text()`, not a
-/// name-entry special case — the dialog input box / the Lua console ride
-/// the SAME edge if the state gate ever widens to them, exactly as the
-/// Android arm does).
+/// keyboard) controller: the `SoftInput` seam + the desktop / headless
+/// no-op + the web's `#ime` focus / blur (lane 057 step C: the home is
+/// the `oh-additions` crate's `soft_input` module — the F32 row's Rust
+/// controller half; the Android `ImeController` arm stays in the
+/// android glue, implementing the same trait).
+pub use oh_additions::soft_input::NoOpSoftInput;
+pub use oh_additions::soft_input::SoftInput;
 #[cfg(target_os = "emscripten")]
-pub struct WebIme {
-    /// The `#ime` element (`None` = the headless fallback / no DOM — the
-    /// no-op arms below; the desktop / Android windows never have one —
-    /// their `SoftInput` arms are the no-op / the android-activity).
-    input: Option<web_sys::HtmlInputElement>,
-}
+pub use oh_additions::soft_input::WebIme;
 
-#[cfg(target_os = "emscripten")]
-impl WebIme {
-    #[must_use]
-    pub fn new(input: Option<web_sys::HtmlInputElement>) -> Self {
-        Self { input }
-    }
-}
-
-#[cfg(target_os = "emscripten")]
-impl SoftInput for WebIme {
-    /// Focus the hidden input (the browser's `showSoftInput` twin — a
-    /// mobile browser raises the soft keyboard ONLY for a focused
-    /// editable element: the task's diagnosis). The `prevent_scroll`
-    /// option: the element is off-screen (`left: -10000px` — the
-    /// `web_ime_input_get_or_create` style contract), so a focus-scroll
-    /// would jump the page (the `body`'s `overflow: hidden` makes it a
-    /// non-issue, the option is the belt).
-    fn show(&self) {
-        if let Some(el) = &self.input {
-            let options = web_sys::FocusOptions::new();
-            options.set_prevent_scroll(true);
-            let _ = el.focus_with_options(&options);
-        }
-    }
-    /// Blur it (the "keyboard must NOT appear in non-text states" half of
-    /// the acceptance — a stray focused input would swallow the game's
-    /// keys: the keydown's text gate is keyed on this element's focus,
-    /// and a focused input steals the soft keyboard's target from the
-    /// page while it should not be typing at all).
-    fn hide(&self) {
-        if let Some(el) = &self.input {
-            let _ = el.blur();
-        }
-    }
-}
+// issue 046 (F32) — the web `SoftInput` controller (`WebIme` — the
+// `#ime`'s focus / blur; the docs live with the type in the
+// `oh-additions` `soft_input` module, re-exported above).
 
 /// The C++ `mg->getGame()` `GameState` (main.cpp:461/479/505/532): the
 /// menu's `update(mFT)` (MenuGame.cpp:257) + `draw()` (MenuGame.cpp:259 —
@@ -1900,7 +1800,7 @@ struct MenuSlotAdapter {
     /// have no menu-side body — their edges are drained, not applied
     /// (the game slot's take is the apply's home; a `Down` on them in
     /// the menu is not consumed, so no edge is produced there either).
-    touch_overlay: std::sync::Arc<std::sync::RwLock<crate::touch_overlay::TouchOverlay>>,
+    touch_overlay: std::sync::Arc<std::sync::RwLock<oh_additions::touch_overlay::TouchOverlay>>,
 }
 
 impl GameState for MenuSlotAdapter {
@@ -2078,19 +1978,14 @@ impl GameState for MenuSlotAdapter {
         if let Some(flag) = self.ignore_all_pending.take() {
             self.input_manager.borrow_mut().ignore_all_inputs(flag);
         }
-        // issue 054 (F36) — the menu state's half of the overlay's press
-        // edges (the field's docs: the drain is every frame — the stale-
-        // edge hazard; the apply is the `Tid::Exit` bind's touch
-        // counterpart, the `exit_action` body under the bind's own guard).
+        // issue 054 (F36) — the menu state's half of the overlay's
+        // press edges: the overlay-side input injection (oh-additions'
+        // `input_injection`) — the every-frame drain (the stale-edge
+        // hazard) + the `Tid::Exit` bind's touch counterpart, the
+        // `exit_action` body under the bind's own guard.
         {
             let mut o = self.touch_overlay.write().expect("touch overlay poisoned");
-            let edges = o.take_press_edges();
-            if edges[crate::touch_overlay::Button::Exit.idx()]
-                && o.menu_active()
-                && !self.menu.is_entering_text()
-            {
-                self.menu.exit_action();
-            }
+            oh_additions::input_injection::apply_menu_exit(&mut o, &self.menu);
         }
     }
 
@@ -2748,11 +2643,11 @@ pub struct WindowedClient {
     /// scripted-touch tests set the enable flag + inspect the state
     /// (spec §4.1's in-process verification — the desktop's enable flag
     /// is what the tests flip to exercise the overlay, spec §5).
-    pub touch_overlay: std::sync::Arc<std::sync::RwLock<crate::touch_overlay::TouchOverlay>>,
+    pub touch_overlay: std::sync::Arc<std::sync::RwLock<oh_additions::touch_overlay::TouchOverlay>>,
     /// issue 31 — the overlay's on-screen buttons (the key-icon
     /// textures + the exit label — the `tick_fields`'s draw half).
     touch_overlay_buttons:
-        std::rc::Rc<std::cell::RefCell<crate::touch_overlay::TouchOverlayButtons>>,
+        std::rc::Rc<std::cell::RefCell<oh_additions::touch_overlay::TouchOverlayButtons>>,
     /// issue 31 — the shared touch sink the overlay's pointer feed
     /// diffs frame-to-frame (spec §5's "Android feeds it from the
     /// existing shared touch sink" — the SAME sink the menu's 9-zone
@@ -2890,12 +2785,12 @@ impl WindowedClient {
         let touch_overlay = std::sync::Arc::new(std::sync::RwLock::new({
             #[cfg(any(target_os = "android", target_os = "emscripten"))]
             {
-                let mut overlay = crate::touch_overlay::TouchOverlay::new();
+                let mut overlay = oh_additions::touch_overlay::TouchOverlay::new();
                 overlay.set_enabled(true);
                 overlay
             }
             #[cfg(not(any(target_os = "android", target_os = "emscripten")))]
-            crate::touch_overlay::TouchOverlay::new()
+            oh_additions::touch_overlay::TouchOverlay::new()
         }));
         // issue 025f: the menu's `MenuTouch` seam (the 9-zone touch grid,
         // MenuGame.cpp:2802-2835) — the SAME shared sink the engine's
@@ -3260,134 +3155,17 @@ impl WindowedClient {
             register_menu_binds(&mut menu_manager.borrow_mut(), &menu, &config);
         }
 
-        // issue 046 (F33) — the fullscreen button's (`#fs`) click sink
-        // (the `Window::set_fullscreen_click_sink` docs — the `oh-render`
-        // emscripten half attached the listener; this installs the
-        // callback): the browser Fullscreen API's apply. The `config` here
-        // is the SAME shared `Arc<RwLock<Config>>` the `MenuConfig` seam
-        // wraps (the LAlt+Enter bind's `cfg.set_fullscreen(!cfg
-        // .fullscreen())` — `register_menu_binds`'s) — the button and the
-        // menu's own toggle cannot disagree (the task's "single source of
-        // truth"). The C++ applied this config at the window's creation /
-        // recreation (`Config::setFullscreen`'s `recreateWindow` —
-        // `sf::Style::Fullscreen`, GameWindow.hpp:90; the port's FINDING —
-        // the register row — never applied it anywhere: the winit window
-        // is created windowed and `Window::set_fullscreen` is
-        // bookkeeping-only); this callback is the web's applier (the
-        // browser Fullscreen API — the C++'s `recreateWindow`'s
-        // fullscreen half, with the `documentElement` as the fullscreened
-        // node so the `#fs` stays visible IN the fullscreen).
+        // issue 046 (F33) — the fullscreen button's (`#fs`) click /
+        // change-sink install (lane 057 step C: the callbacks' home is
+        // the `oh-additions` crate's `fullscreen` module — the browser
+        // Fullscreen API's apply + the `fullscreenchange`'s config
+        // re-sync; the config's single-source-of-truth docs + the
+        // issue-055 desync-close's account live there). The `#fs`
+        // element's get-or-create stays in the emscripten window layer
+        // (the `oh-render` emscripten `Window` attached the listeners).
         #[cfg(target_os = "emscripten")]
         {
-            let cfg = config.clone();
-            window.set_fullscreen_click_sink(std::sync::Arc::new(move || {
-                // issue 055 — the direction is the BROWSER's ACTUAL state
-                // (`document.fullscreenElement`), NOT the config's value
-                // (the pre-055's desync — its own comment's record of the
-                // hole): an Esc / the Android back leaves fullscreen
-                // without the game asking, and a config-value toggle then
-                // set the config `false` + called `exitFullscreen()` — a
-                // no-op: the FIRST tap after an external exit did nothing
-                // visible (the operator's "i can no longer reach the
-                // button"). The browser's state makes the tap's direction
-                // correct in EVERY case (a fast double-tap included: the
-                // second tap re-reads the browser, not a half-written
-                // config). The config write happens in the
-                // `fullscreenchange` re-sync (below) — the browser's own
-                // authoritative signal for the transition — so a REJECTED
-                // request (no transient user activation — the headless
-                // CDP's honest limit, the operator's real tap always
-                // grants it) fires no event, writes nothing: the config,
-                // the button's appearance (the `html:fullscreen` CSS flip)
-                // and the browser all stay on the browser's actual state —
-                // they cannot disagree.
-                let in_fullscreen = web_sys::window()
-                    .and_then(|w| w.document())
-                    .is_some_and(|d| d.fullscreen_element().is_some());
-                let next = !in_fullscreen;
-                // The browser Fullscreen API's apply (the FINDING's
-                // applier half — the port never applied the config
-                // anywhere; this is the first path that does, on the
-                // web target). The `request_fullscreen` binding resolves
-                // the call's SYNCHRONOUS result (the `Ok` = the Promise
-                // was created); the browser's ASYNC verdict (the
-                // transient user activation's grant or deny — the
-                // headless CDP's honest limit: a CDP click cannot grant
-                // the activation, the task's "the transition is the
-                // operator's real tap") surfaces as the Promise's
-                // rejection, which the shell's `unhandledrejection`
-                // listener routes to the `[oh-web-fs] promise rejected`
-                // console line (the wiring's async evidence).
-                let browser = web_sys::window()
-                    .and_then(|w| w.document())
-                    .map(|doc| {
-                        if next {
-                            doc
-                                .document_element()
-                                .map(|el| match el.request_fullscreen() {
-                                    Ok(()) => "requestFullscreen() called (the Promise's async verdict: the [oh-web-fs] console line)".to_string(),
-                                    Err(e) => format!("rejected (sync): {e:?}"),
-                                })
-                                .unwrap_or_else(|| "no documentElement".to_string())
-                        } else {
-                            doc.exit_fullscreen();
-                            format!(
-                                "exitFullscreen() called (fullscreen_enabled={})",
-                                doc.fullscreen_enabled()
-                            )
-                        }
-                    })
-                    .unwrap_or_else(|| "no DOM (the headless fallback)".to_string());
-                // The wiring-evidence line (the 041's `[oh-audio]`'s
-                // console-visible diagnostic's pattern — the Rust
-                // stdio's black hole, the `oh-game` log sink's
-                // browser-console route).
-                oh_game::log_sink::emit_log(
-                    "web",
-                    &format!("[oh-web-fs] fullscreen -> {next} (browser: {browser})"),
-                );
-            }));
-            // issue 055 — the `fullscreenchange` re-sync (the
-            // `Window::set_fullscreen_change_sink` docs): the ported
-            // `fullscreen` config's WRITER for the browser's transitions
-            // — ONCE, from the browser's own signal (the task's
-            // "reconcile, do not abandon"): every transition (our API's
-            // grant/exit AND the external exits — Esc / the Android back —
-            // the game did not ask for) fires it, and the config tracks
-            // the browser's ACTUAL state there: the operator's desync (the
-            // external exit's stale `true`) is closed, the config stays
-            // the SETTING's single source of truth (the options menu's +
-            // the LAlt+Enter bind's writes ride the SAME shared
-            // `Arc<RwLock<Config>>` unchanged — F33's rule), and a
-            // rejected request (no state change, no event) writes nothing
-            // — the config, the button's appearance (the `html:fullscreen`
-            // CSS flip) and the browser cannot disagree.
-            window.set_fullscreen_change_sink(std::sync::Arc::new(move || {
-                let in_fullscreen = web_sys::window()
-                    .and_then(|w| w.document())
-                    .is_some_and(|d| d.fullscreen_element().is_some());
-                let prev = { cfg.read().expect("config poisoned").get_fullscreen() };
-                if prev != in_fullscreen {
-                    cfg.write()
-                        .expect("config poisoned")
-                        .set_fullscreen(in_fullscreen);
-                }
-                // The wiring-evidence line (the 041's `[oh-audio]`'s
-                // console-visible diagnostic's pattern — the Rust stdio's
-                // black hole, the `oh-game` log sink's browser-console
-                // route): the transition's own account (the probe's grep
-                // target) — the `no write` half marks the event that
-                // found the config already in sync (an LAlt+Enter /
-                // options-menu write ahead of the transition).
-                oh_game::log_sink::emit_log(
-                    "web",
-                    &format!(
-                        "[oh-web-fs] fullscreenchange -> {in_fullscreen} (config {prev} -> {in_fullsync}{no_write})",
-                        in_fullsync = in_fullscreen,
-                        no_write = if prev == in_fullscreen { " (no write — already in sync)" } else { "" },
-                    ),
-                );
-            }));
+            oh_additions::fullscreen::install_sinks(&mut window, &config);
         }
 
         // Fill the `refreshBinds` slot (both managers, every trigger —
@@ -3512,7 +3290,7 @@ impl WindowedClient {
             fps_bits,
             touch_overlay,
             touch_overlay_buttons: Rc::new(RefCell::new(
-                crate::touch_overlay::TouchOverlayButtons::new(&assets_dir, font.clone()),
+                oh_additions::touch_overlay::TouchOverlayButtons::new(&assets_dir, font.clone()),
             )),
             touch_positions: touch_sink.clone(),
             last_touch_positions: std::cell::Cell::new([None; oh_render::input::FINGER_COUNT]),
@@ -4054,9 +3832,11 @@ impl WindowedClient {
         // into the pointer feed before the update burst; the draw half
         // paints the active buttons (the §2.5 layout) after the game's
         // draw.
-        touch_overlay: &std::sync::Arc<std::sync::RwLock<crate::touch_overlay::TouchOverlay>>,
+        touch_overlay: &std::sync::Arc<
+            std::sync::RwLock<oh_additions::touch_overlay::TouchOverlay>,
+        >,
         touch_overlay_buttons: &std::rc::Rc<
-            std::cell::RefCell<crate::touch_overlay::TouchOverlayButtons>,
+            std::cell::RefCell<oh_additions::touch_overlay::TouchOverlayButtons>,
         >,
         touch_positions: &std::sync::Arc<
             std::sync::RwLock<[Option<oh_math::ssvs::Vec2>; oh_render::input::FINGER_COUNT]>,
@@ -4357,16 +4137,20 @@ impl WindowedClient {
             for (i, (prev, cur)) in last.iter().zip(positions.iter()).enumerate() {
                 let id = i as u32;
                 match (prev, cur) {
-                    (None, Some(p)) => o.pointer_event(&crate::touch_overlay::PointerEvent {
-                        id,
-                        position: *p,
-                        phase: crate::touch_overlay::Phase::Down,
-                    }),
-                    (Some(_), None) => o.pointer_event(&crate::touch_overlay::PointerEvent {
-                        id,
-                        position: oh_math::ssvs::Vec2::new(0.0, 0.0),
-                        phase: crate::touch_overlay::Phase::Up,
-                    }),
+                    (None, Some(p)) => {
+                        o.pointer_event(&oh_additions::touch_overlay::PointerEvent {
+                            id,
+                            position: *p,
+                            phase: oh_additions::touch_overlay::Phase::Down,
+                        })
+                    }
+                    (Some(_), None) => {
+                        o.pointer_event(&oh_additions::touch_overlay::PointerEvent {
+                            id,
+                            position: oh_math::ssvs::Vec2::new(0.0, 0.0),
+                            phase: oh_additions::touch_overlay::Phase::Up,
+                        })
+                    }
                     _ => {}
                 }
             }
@@ -4744,7 +4528,7 @@ mod tests {
             // F36 — the shared overlay (disabled in the tests — the
             // boot-screen tests' keyboard / release-edge paths).
             touch_overlay: std::sync::Arc::new(std::sync::RwLock::new(
-                crate::touch_overlay::TouchOverlay::new(),
+                oh_additions::touch_overlay::TouchOverlay::new(),
             )),
         };
 
@@ -4845,7 +4629,7 @@ mod tests {
             // F36 — the shared overlay (disabled in the tests — the
             // boot-screen tests' keyboard / release-edge paths).
             touch_overlay: std::sync::Arc::new(std::sync::RwLock::new(
-                crate::touch_overlay::TouchOverlay::new(),
+                oh_additions::touch_overlay::TouchOverlay::new(),
             )),
         };
         let mut window = Window::headless(800, 480);
@@ -4945,7 +4729,7 @@ mod tests {
             // F36 — the shared overlay (disabled in the tests — the
             // boot-screen tests' keyboard / release-edge paths).
             touch_overlay: std::sync::Arc::new(std::sync::RwLock::new(
-                crate::touch_overlay::TouchOverlay::new(),
+                oh_additions::touch_overlay::TouchOverlay::new(),
             )),
         };
         let mut window = Window::headless(800, 480);
@@ -5049,7 +4833,7 @@ mod tests {
             // F36 — the shared overlay (disabled in the tests — the
             // boot-screen tests' keyboard / release-edge paths).
             touch_overlay: std::sync::Arc::new(std::sync::RwLock::new(
-                crate::touch_overlay::TouchOverlay::new(),
+                oh_additions::touch_overlay::TouchOverlay::new(),
             )),
         };
         let mut window = Window::headless(800, 480);
@@ -5171,7 +4955,7 @@ mod tests {
             // F36 — the shared overlay (disabled in the tests — the
             // boot-screen tests' keyboard / release-edge paths).
             touch_overlay: std::sync::Arc::new(std::sync::RwLock::new(
-                crate::touch_overlay::TouchOverlay::new(),
+                oh_additions::touch_overlay::TouchOverlay::new(),
             )),
         };
 
@@ -5287,16 +5071,16 @@ mod tests {
         // (MENU) button — the top-left, the `button_centers`'s layout.
         let (w, h) = (800.0, 480.0);
         let overlay = std::sync::Arc::new(std::sync::RwLock::new({
-            let mut o = crate::touch_overlay::TouchOverlay::new();
+            let mut o = oh_additions::touch_overlay::TouchOverlay::new();
             o.set_enabled(true);
             o.set_menu_active(true);
             o.set_view(w, h);
-            let c = crate::touch_overlay::button_centers(w, h)
-                [crate::touch_overlay::Button::Exit.idx()];
-            o.pointer_event(&crate::touch_overlay::PointerEvent {
+            let c = oh_additions::touch_overlay::button_centers(w, h)
+                [oh_additions::touch_overlay::Button::Exit.idx()];
+            o.pointer_event(&oh_additions::touch_overlay::PointerEvent {
                 id: 0,
                 position: oh_math::ssvs::Vec2::new(c.x, c.y),
-                phase: crate::touch_overlay::Phase::Down,
+                phase: oh_additions::touch_overlay::Phase::Down,
             });
             o
         }));

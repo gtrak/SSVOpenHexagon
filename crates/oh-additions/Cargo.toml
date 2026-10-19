@@ -1,0 +1,42 @@
+[package]
+name = "oh-additions"
+description = "The home for everything the C++ does not have (lane 057): the port's additions — UI is the first family — under the boundary contract (inject inputs through the existing seams, draw through the draw target, own platform affordances; never modify ported simulation or menu logic)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# The touch overlay's surface: `Vec2` (the button geometry) + the render
+# types (the `Text` / `Sprite` labels + key icons, `Color`, `Font`, and
+# `load_texture_or_null` — the C++ `getTextureOrNullTexture`'s shared
+# half, Assets.cpp:568-575 — moved here from `oh-app` with the overlay).
+oh-math = { path = "../oh-math" }
+oh-render = { path = "../oh-render" }
+# The overlay-side input injection's targets (lane 057, step B — the
+# F31 action-row edges' apply into the game's `Tid` bodies, the F36
+# menu-side `Exit` edge's apply into the menu's `exit_action`): the
+# injection CALLS the ported code's own action bodies (the contract's
+# item 1 — injection, not a logic fork), so it needs the two ported
+# crates' types. Neither depends on oh-additions (acyclic): oh-game on
+# oh-math/oh-rng/oh-data/oh-config/oh-replay/oh-assets/oh-discord, oh-menu
+# on oh-math/oh-data/oh-config/oh-menu-system/oh-assets/oh-rng.
+oh-game = { path = "../oh-game" }
+oh-menu = { path = "../oh-menu" }
+# The F33 fullscreen sink install's config (the SAME shared
+# `Arc<RwLock<Config>>` the `MenuConfig` seam wraps — the `#fs` and the
+# menu's own toggle cannot disagree).
+oh-config = { path = "../oh-config" }
+
+# The emscripten-only halves (the `soft_input`'s `WebIme` `#ime`
+# focus / blur — the `HtmlInputElement` + `FocusOptions`; the
+# `fullscreen`'s sinks' browser Fullscreen API — the `Window` /
+# `Document` / `Element`'s `fullscreenElement` / `requestFullscreen`
+# / `exitFullscreen` / `fullscreenEnabled`): target-scoped — the host
+# builds never compile web-sys here.
+[target.'cfg(target_os = "emscripten")'.dependencies]
+web-sys = { version = "0.3.106", features = [
+  "Window",
+  "Document",
+  "Element",
+  "HtmlInputElement",
+  "FocusOptions",
+] }

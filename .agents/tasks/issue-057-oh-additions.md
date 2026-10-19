@@ -121,3 +121,194 @@ rather than from any particular feature: a toggle nobody records would diverge a
 determinism tests would catch it. Hand the constraint forward instead of leaving it to be rediscovered.
 
 The classification table's "OURS" category therefore means "additions", not "UI".
+
+## Report
+
+Lane 057, branch `lane/057` (local-only). Commits, in order: `1c565181`
+(deliverable 1 — the classification), `3d395ce5` (step A), `1226843b`
+(the mid-run steer: the held keyboard / mouse input regression fix, its
+own commit — see below), `c047a510` (the web repro tooling), `e1155def`
+(the web repro evidence), `62ff07d6` (step B), `60212708` (step C),
+`89cde68a` (deliverable 3 — the ratchet), this report. Every code step
+landed with the full acceptance green AND UNCHANGED (the host gate's
+1,045 passed / 0 failed / 1 ignored at each step; the C++ fingerprint
+oracle + corpus `PARITY_OK` at each code step; `tools/lua-parity.sh`
+green; the touch / menu behavioural guards pass unchanged;
+`tools/check-android.sh` + the wasm release build where a platform
+path was touched). All commands bounded with `timeout`; commits with
+explicit paths.
+
+### Deliverable 1 — the classification (in the register)
+
+The canonical table is the register's section "057 — classification of
+the F-rows (OURS / INTEROP / FIX)" (`.agents/plans/001-rust-port/
+deviations.md`). The compact version:
+
+| F-row | class | reason (one line) | home |
+|---|---|---|---|
+| F1 | FIX | the C++'s own layout space (actual render-target size) | stays |
+| F2 | FIX | the C++'s own `--ignoreInputs` release-handler tail | stays |
+| F3 | FIX | the C++'s ink-metric font-height probe | stays |
+| F4 | FIX | the C++'s own swap-interval application | stays |
+| F5 | INTEROP | the `ReplayStore` seam's real impl — already a separate file at the seam (the audio / Steam backend shape) | stays |
+| F6 | FIX | the C++'s own `goToMenu()` default-argument port | stays |
+| F7 | FIX | the C++'s own single-stream draw order | stays |
+| F8 | FIX | a correct port of `resetConfigToDefaults` | stays |
+| F9 | **FIX (diverges from the spec's INTEROP guess — flagged)** | the `as_*` coercions are a correct port of the vendored jsoncpp fork the C++ links: the json layer is the ported data layer (the C++'s own `ssvuj` value-access), not platform plumbing at a seam | stays (oh-data) |
+| F10 | FIX | a correct port of the desktop-mode probe + console logging | stays |
+| F11 | FIX | a correct port of the asset texture assignments | stays |
+| F12 | FIX | a correct port of the per-frame `updateText` halves | stays |
+| F13 | FIX | a correct port of the live FPS | stays |
+| F14 | FIX | a correct port of the hook's frametime | stays |
+| F15 | INTEROP (the poller half; the handler half is a FIX — noted) | the `RealJoystick` poller is our code in a separate file at the `Joystick` / `MenuJoystick` seams (moving it would drag `gilrs` in); the menu / engine handler blocks are a correct port of the C++'s own joystick controls | stays (both halves) |
+| F16 | FIX | a correct port of the C++'s hint block | stays |
+| F17 | FIX | a correct port of the mouse-wheel handler | stays |
+| F18 | FIX | a correct port of the scroll machinery | stays |
+| F19 | FIX | a correct port of the `exitTimer > 20` termination | stays |
+| F20 | FIX | a correct port of the C++'s cosmetics | stays |
+| F21 | FIX | a correct port of the favorites state machine | stays |
+| F22 | FIX | a correct port of the profile item + `okAction` tail | stays |
+| F23 | FIX | a correct port of the dialog input state machine | stays |
+| F24 | FIX | a correct port of the dialog geometry (D1) | stays |
+| F25 | FIX | the C++'s embedded Lua strings, byte-exact | stays |
+| F26 | FIX | a correct port of the C++'s Lua error surface | stays |
+| F27 | FIX | a correct port of the credit-bar textures | stays |
+| F28 | OURS | the D-034-class sanctioned touch overlay (the C++'s touch controls are rotation-only; focus / swap have no C++ behaviour to match) | **oh-additions** (step A: the state machine + buttons; the per-frame feed / gate wiring stays in the composition — not named in the steps) |
+| F29 | — | retired (deleted with the LuaJIT decision, D-037 — the number has no row) | — |
+| F30 | FIX | parity RESTORATION (the port was the odd one out — the C++'s own compatibility profile) | stays |
+| F31 | OURS | the D-034-class sanctioned action row (the C++'s end-of-level is unreachable on a touch-only device) | **oh-additions** (step A: the buttons; step B: the action-edge wiring as the overlay-side input injection; the `cfg(android)` hint override in hexagon_game.rs stays — a status-text half, not named in the steps) |
+| F32 | OURS | the web-only IME text path (the C++ has no web text path) | **oh-additions** (step C: the `SoftInput` / `NoOpSoftInput` / `WebIme` controller half; the `#ime` get-or-create + feed listeners + keydown text gate stay in the emscripten window layer; the shell's `#ime` = named shell) |
+| F33 | OURS | the web-only fullscreen button (the C++ had no such control) | **oh-additions** (step C: the click / change-sink install; the `#fs` get-or-create + listeners stay in the emscripten window layer; the per-frame `ohstatechange` signal stays in the rAF loop body; the shell's `#fs` = named shell) |
+| F34 | OURS | the web's IndexedDB persistence (the C++'s emscripten build had none) | the named shells (the page glue + `index.html`'s IDBFS mount) + the emscripten-only exit-save re-fire at the platform boundary — NOT moved in 057 (step C names only the fs-sink + the IME Rust half) |
+| F35 | OURS | the sanctioned menu-cadence DEVIATION (the operator ruled the C++'s per-frame grid "a non starter") | **stays in oh-menu** — the gate sits on the ported menu state (moving it would make the overlay drive the menu's grid: a logic fork, not an injection); not named in the steps; counted by the ratchet |
+| F36 | OURS | the menu-side `Exit` arm (the C++'s menu "back" has no touch path) | **oh-additions** (step A: the `menu_active` gate + `gate_on`; step B: the menu-side arm as the overlay-side input injection — the C++'s own `exit_action` stays the thing invoked; the `menu_exit_relevant` accessor stays in oh-menu — C++ state, not an addition) |
+
+The audio / Steam backends have no F-row: they are INTEROP-class by the
+same seam pattern (our code, separate crates at the `Audio` /
+`SteamSink` seams) and stay where they are.
+
+### Deliverable 2 — what moved
+
+* **Step A** (`3d395ce5`): `touch_overlay.rs` (1,242 lines) lifted from
+  `oh-app` into `crates/oh-additions`; `load_texture_or_null` (the
+  shared texture-null half) moved to `oh-render` (pub) to break the
+  would-be cycle; the public surface preserved (`oh-app` re-exports
+  `oh_additions::touch_overlay`).
+* **The held-input regression fix** (`1226843b` — the mid-run steer,
+  its own commit, EXEMPT from the no-behaviour-change rule as an
+  authorised parity bug): the emscripten rAF drain's 046 fast-press
+  cycle had saved the input state BEFORE folding the event batch and
+  restored it after the frame — a HELD key / button / finger (down-only
+  in a batch) got its folded level reverted every frame: one-frame
+  press, then up, and the browser sends no further keydown. The fix
+  moves the restore TARGET to the POST-FOLD state (the C++'s
+  persistent `inputState` map, SSVStart `GameWindow.hpp:60-72`) — the
+  046 fast-press OR-in is preserved, the restore is NOT deleted.
+  Reproduced in a real browser over the wasm build (the probe's held
+  items + focus counters; the game's own tutorial verdict flips
+  NOPE → YES!; evidence in `.agents/evidence/057/`).
+* **Step B** (`62ff07d6`): the F31 action row's edge apply + the F36
+  menu-side arm move out of the slot adapters into `oh-additions`'
+  `input_injection` (`apply_game_action_edges` / `apply_menu_exit`) —
+  verbatim semantics (the unconditional every-frame take, the gated
+  apply, the once-consulted console, the same `Tid` bodies /
+  `exit_action` invoked — injection, not a logic fork).
+* **Step C** (`60212708`): the `SoftInput` / `NoOpSoftInput` /
+  `WebIme` controller half → `oh-additions/soft_input.rs` (re-exported
+  by `oh-app::windowed` — the public surface unchanged, so the
+  composition's construction + the android glue's `ImeController`
+  impl are untouched); the `#fs` click / change-sink install →
+  `oh-additions/fullscreen.rs` (`install_sinks` — the composition's
+  `build` makes the one-line call).
+
+### What was deliberately NOT moved (and why)
+
+* **The INTEROP class** — the `RealJoystick` poller (F15), the
+  `ReplayStore` impl (F5), the json layer (F9), the audio / Steam
+  backends: already separate files / crates at a seam; moving them
+  would drag platform dependencies into a UI crate for no benefit.
+* **The shells stay shells** — the web `index.html` (the `#ime` /
+  `#fs` elements + the IDBFS / gate glue) and the Android glue
+  (`android.rs`'s `ImeController` + activity wiring) are separate
+  artifacts, named not moved.
+* **The emscripten window layer's DOM halves** — the `#ime`'s
+  get-or-create + feed listeners + keydown text gate (the pure
+  `WebImeFeed` / `web_keydown_ime_policy` / `WebKeydownState`) and the
+  `#fs`'s get-or-create + click / `fullscreenchange` listeners stay in
+  `oh-render`'s emscripten `Window`: the platform path, not a patch of
+  ported logic, AND they are driven from the `Window`'s own listener
+  attach — an oh-additions move would cycle (oh-additions already
+  depends on oh-render).
+* **The gate FEEDS** (`set_action_active` — `GameSlot::Game &&
+  started`; `set_menu_active` — `GameSlot::Menu &&
+  menu.menu_exit_relevant()`) stay in the composition's
+  `tick_fields`: they read the app's slot state + the C++'s menu
+  state — neither is oh-additions' to own.
+* **The F28 held-inputs feed** (the `o.held` → `set_input_impl_*`
+  block in `GameSlotAdapter::update_input`) stays in the composition:
+  step B names the F31 / F36 wiring only; the F28 feed is the
+  per-frame input injection of the C++-bound two-state inputs (the
+  issue-31 §2b wiring) — the recorded-inputs rule's standing seam.
+* **The `cfg(android)` F31 hint override** (hexagon_game.rs) stays: a
+  status-text half of the addition, not named in the steps.
+* **F34's persistence** stays at the platform boundary (the named
+  shells + the emscripten-only exit-save re-fire): step C names only
+  the fs-sink + the IME Rust half.
+* **F35's cadence** stays in oh-menu (above — a logic-fork hazard).
+
+### Deliverable 3 — the ratchet baseline
+
+`tools/check-additions-boundary.sh` (gate stage 6) +
+`tools/additions-boundary-baseline.txt`. The pattern: comment lines in
+the ported files referencing the seven OURS rows' IDs (F28 / F31 /
+F32 / F33 / F34 / F35 / F36), their lanes' issue references (031 /
+039 / 046 / 048 / 054), or this lane's step notes. The baseline
+(post-restructure): `window.rs` 44, `windowed.rs` 38,
+`menu_game.rs` 9, `web.rs` 5, `hexagon_game.rs` 4, `oh-audio/lib.rs`
+6. A grown count fails the gate (pointing at `oh-additions`); a
+correct port (a FIX / INTEROP row's markers — their own lane / row
+references) does not match the pattern; the header states what the
+ratchet does and does not mean (marker LINES not code; it guards the
+rows it names — a future lane classifying a new OURS row adds that
+row's ID + lane to the pattern in the classifying commit). Verified
+both directions (a planted `issue 039 (F31)` line fails; a
+high-baseline shrink notes and passes; both temp changes reverted
+clean).
+
+### The four guard properties (the acceptance's guard list)
+
+1. **The held key / mouse that started this** —
+   `a_held_key_button_and_finger_survive_n_frames_with_no_release`
+   (oh-render window tests): a held key AND a held mouse button AND a
+   held finger survive 8 frames with no release; the releases drop the
+   levels (the C++'s persistent `inputState`, `GameWindow.hpp:60-72`).
+   Negative check: with the pre-fold capture restored, this guard
+   fails exactly as the operator's build did.
+2. **The press-and-release-in-one-frame case that must not regress** —
+   `a_fast_press_inside_one_batch_is_visible_to_that_frame_only`
+   (oh-render window tests): the 046 goal — a same-frame press+release
+   is visible to that frame's poll and NOT stuck down afterwards
+   (the restore to the post-fold state + the `Type::Once` latch's
+   re-arm). `a_batch_ending_in_lost_focus_clears_the_persistent_level`
+   keeps the `LostFocus` reset semantics.
+3. **A held touch control in gameplay staying continuous** —
+   `a_held_touch_in_gameplay_stays_continuous_and_the_menu_cadence_is_inert`
+   (oh-app windowed test, the F35 boundary): a touch held on the
+   gameplay's left half keeps driving the game's rotation input every
+   frame (24 ticks), and the menu's `touch_delay` cadence field is
+   provably inert in the game state (no gameplay reader exists).
+4. **The menu's taps still acting once** — the existing 054 guard
+   (oh-menu `touch_grid.rs`'s EDGE test: a press fires exactly once;
+   the release fires nothing; a fresh press after the decay is a fresh
+   dispatch) — pass unchanged through steps B / C.
+
+### Where the operator's improvements will go
+
+New additions land in `crates/oh-additions` under the boundary
+contract (inject inputs through the existing per-`Tid` / input-state
+seams, draw through the draw target, own platform affordances — never
+modify ported simulation or menu logic; an addition that changes a
+run is driven through recorded inputs or config, never silent
+state). The ratchet (`tools/check-additions-boundary.sh`) is the
+standing guard: a new OURS row gets its ID added to the pattern in
+the same commit that classifies it.

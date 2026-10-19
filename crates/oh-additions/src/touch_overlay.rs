@@ -55,7 +55,7 @@ use std::collections::HashMap;
 use oh_math::ssvs::Vec2;
 use oh_render::font::Text;
 use oh_render::texture::Sprite;
-use oh_render::{Color, Font};
+use oh_render::{load_texture_or_null, Color, Font};
 
 // ---------------------------------------------------------------------
 // The pointer feed (spec §5: `(id, x, y, phase)` + a view size).
@@ -571,9 +571,9 @@ impl TouchOverlayButtons {
     /// font (the `exit` label).
     #[must_use]
     pub fn new(assets_dir: &std::path::Path, font: Font) -> Self {
-        let rotate = crate::bridge::load_texture_or_null(assets_dir, "keyArrow.png");
-        let focus_tex = crate::bridge::load_texture_or_null(assets_dir, "keyFocus.png");
-        let swap_tex = crate::bridge::load_texture_or_null(assets_dir, "keySwap.png");
+        let rotate = load_texture_or_null(assets_dir, "keyArrow.png");
+        let focus_tex = load_texture_or_null(assets_dir, "keyFocus.png");
+        let swap_tex = load_texture_or_null(assets_dir, "keySwap.png");
         Self {
             // The C++'s `keyIconLeft.setRotation(sf::degrees(180))`
             // (HexagonGame.cpp:120): the `keyArrow` texture is the RIGHT

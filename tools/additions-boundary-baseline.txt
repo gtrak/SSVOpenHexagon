@@ -1,0 +1,18 @@
+# The oh-additions boundary ratchet's baseline (lane 057, deliverable 3).
+#
+# <count> <path> — the OURS-class deviation marker line count in the
+# named PORTED file (the pattern in tools/check-additions-boundary.sh)
+# at the commit that last moved / reworded them. tools/gate.sh runs
+# tools/check-additions-boundary.sh against this file: a GROWN count
+# fails the gate (the marker's code belongs in crates/oh-additions).
+#
+# Tightened by lane 057's steps A / B / C (2026-10-18): the touch
+# overlay's 1,242 lines (step A), the F31 / F36 wiring (step B) and the
+# F32 / F33 Rust halves (step C) left these files.
+
+44 crates/oh-render/src/window.rs
+38 crates/oh-app/src/windowed.rs
+9 crates/oh-menu/src/menu_game.rs
+5 crates/oh-web/src/web.rs
+4 crates/oh-game/src/hexagon_game.rs
+6 crates/oh-audio/src/lib.rs

@@ -200,6 +200,21 @@ await send('Page.navigate', { url });
     // poll): the #fs visibility gate's signal (its display flipping
     // between steps is the gate's observable proof).
     document.addEventListener('ohstatechange', () => { rec('ohstatechange', ''); });
+    // issue 057 — the focus / blur / visibility / fullscreen COUNTERS
+    // (the held-input reproduction's instrumentation: a spurious
+    // window blur or visibilitychange mid-hold would clear the
+    // port's LostFocus fold — the counters say whether the DOM ever
+    // went there; the port's LostFocus fold is 1:1 with the window
+    // blur + the visibilitychange→hidden, so these ARE the fold's
+    // input counts). NO capture phase: a capture listener would also
+    // count every ELEMENT blur (e.g. the #ime input blurring when the
+    // menu advances), which is not a window focus-loss — the bubble-
+    // phase window blur/focus are the window's OWN focus change only.
+    window.__fc = { blur: 0, focus: 0, vis: 0, fs: 0 };
+    window.addEventListener('blur', () => { window.__fc.blur++; });
+    window.addEventListener('focus', () => { window.__fc.focus++; });
+    document.addEventListener('visibilitychange', () => { window.__fc.vis++; }, true);
+    document.addEventListener('fullscreenchange', () => { window.__fc.fs++; }, true);
     return 'installed';
   })()` });
 }
@@ -217,6 +232,16 @@ const stateOf = async () => {
 // The named-key virtual-key codes (the CDP `windowsVirtualKeyCode` —
 // `charCodeAt` covers the single letters, the named keys need the map).
 const VK = { Enter: 13, Backspace: 8, Escape: 27, ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39 };
+// issue 057 — the shared screenshot helper (the `s:`'s body, extracted so
+// the `h:` / `m:`'s MID-HOLD screenshots can reuse it — the change-detection
+// observable's mid-hold stills).
+const snap = async (name) => {
+  mkdirSync(shotsDir, { recursive: true });
+  const p = `${shotsDir}/${name}.png`;
+  const r = await send('Page.captureScreenshot', { format: 'png' });
+  if (r.result?.data) writeFileSync(p, Buffer.from(r.result.data, 'base64'));
+  console.log(`  … screenshot -> ${p}`);
+};
 const press = async (key) => {
   const vk = VK[key] ?? (key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0);
   const code = key.length === 1 ? `Key${key.toUpperCase()}` : key;
@@ -287,6 +312,14 @@ const stepCheck = async (label) => {
       imeValue: ime ? ime.value : null,
       canvas: c && cr ? { backing: c.width, css: Math.round(cr.width), dpr: window.devicePixelRatio, ok: Math.abs(c.width - cr.width * window.devicePixelRatio) <= 2 } : null,
       fs: fsInfo,
+      // issue 057 — the focus counters (the reproduction's
+      // instrumentation, the installer block above) + the live
+      // visibility / fullscreen flags (a held input must see neither
+      // flip while it is held).
+      focus: Object.assign({
+        hidden: document.visibilityState,
+        fullscreen: !!document.fullscreenElement,
+      }, window.__fc || {}),
       dom: keylog,
     });
   })()`, returnByValue: true });
@@ -405,16 +438,80 @@ if (seq.length > 0) {
       await sleep(dur);
       await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
       await checkActivation();
+    } else if (item.startsWith('h:')) {
+      // issue 057 — the HELD key (the held-input reproduction): a CDP
+      // `Input.dispatchKeyEvent` keyDown, held for MS ms, then the
+      // keyUp — the browser sends NO further keydown for a held key
+      // (no OS repeats on a synthetic key, and a real held key's OS
+      // repeats are the same test: the port must hold the level
+      // between them). The observable is the game's own: the
+      // tutorial level's tracked "rotated counter-clockwise" verdict
+      // (the pre-fix port's held level was reverted to its pre-frame
+      // value every frame — the pre-fold restore — so the game saw
+      // the press for the fold's frame only; the fixed port holds the
+      // level until the release's event, the C++'s persistent
+      // inputState). An optional third field (`h:KEY;MS;MIDNAME`) captures a
+      // screenshot MID-HOLD (at 40% of MS) so the ship's silhouette
+      // change DURING the hold is measurable (the change-detection
+      // observable — robust where the absolute angle is noisy).
+      const hparts = item.slice(2).split(';');
+      const hkey = hparts[0];
+      const hdur = Number(hparts[1] || 500);
+      const hmid = hparts[2] || null;
+      // The DOM's `KeyboardEvent.code` for the arrow keys is the
+      // `Arrow*` word (the port's `web_key_to_sfml` maps on `code`:
+      // "ArrowLeft" → Key::LEFT — a bare "Left" code maps to nothing),
+      // and the `key` is the same `Arrow*` word (a bare "Left"
+      // key+code arrives with BOTH empty — the first pre-fix run's
+      // `down://`; only a letter's `key` is the bare char).
+      const ARROW_CODE = { Left: 'ArrowLeft', Right: 'ArrowRight', Up: 'ArrowUp', Down: 'ArrowDown' };
+      const hcode = hkey.length === 1 ? `Key${hkey.toUpperCase()}` : (ARROW_CODE[hkey] ?? hkey);
+      const hdomKey = hkey.length === 1 ? hkey : (ARROW_CODE[hkey] ?? hkey);
+      const hvk = VK[hdomKey] ?? (hkey.length === 1 ? hkey.toUpperCase().charCodeAt(0) : 0);
+      console.log(`  … holding ${hkey} for ${hdur} ms`);
+      await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: hdomKey, code: hcode, windowsVirtualKeyCode: hvk, nativeVirtualKeyCode: hvk, text: hkey.length === 1 ? hkey : undefined });
+      if (hmid) {
+        await sleep(Math.round(hdur * 0.4));
+        await snap(hmid);
+        await sleep(hdur - Math.round(hdur * 0.4));
+      } else {
+        await sleep(hdur);
+      }
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: hdomKey, code: hcode, windowsVirtualKeyCode: hvk, nativeVirtualKeyCode: hvk });
+      await checkActivation();
+    } else if (item.startsWith('m:')) {
+      // issue 057 — the HELD mouse button (the held-input
+      // reproduction's mouse half): a CDP `Input.dispatchMouseEvent`
+      // mousePressed at the canvas's center (the browser synthesizes
+      // the canvas `pointerdown` the port's pointer feed rides on),
+      // held for MS ms, then the mouseReleased. Same observable as
+      // the held key (the game's tracked rotation verdict — the
+      // `h:`'s note); LButton is the rotate-CCW default bind (the
+      // config's `t_rotate_ccw`). An optional third field
+      // (`m:BTN;MS;MIDNAME`) captures a screenshot MID-HOLD (at 40%
+      // of MS).
+      const mparts = item.slice(2).split(';');
+      const mbtn = mparts[0] === 'right' ? 'right' : 'left';
+      const mdur = Number(mparts[1] || 500);
+      const mmid = mparts[2] || null;
+      const mp = await send('Runtime.evaluate', { expression: 'JSON.stringify({ x: window.innerWidth / 2, y: window.innerHeight / 2 })', returnByValue: true });
+      const g = JSON.parse(mp.result?.result?.value ?? '{}');
+      console.log(`  … holding mouse ${mbtn} at ${g.x}, ${g.y} for ${mdur} ms`);
+      await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: g.x, y: g.y, button: mbtn, buttons: mbtn === 'left' ? 1 : 2, clickCount: 1 });
+      if (mmid) {
+        await sleep(Math.round(mdur * 0.4));
+        await snap(mmid);
+        await sleep(mdur - Math.round(mdur * 0.4));
+      } else {
+        await sleep(mdur);
+      }
+      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: g.x, y: g.y, button: mbtn, buttons: 0, clickCount: 1 });
+      await checkActivation();
     } else if (item.startsWith('s:')) {
       // issue 054 — the per-step screenshot (the docs above): the
       // evidence's stills (the operator-visible halves of the items),
       // `--shots/NAME.png`.
-      const name = item.slice(2);
-      mkdirSync(shotsDir, { recursive: true });
-      const p = `${shotsDir}/${name}.png`;
-      const r = await send('Page.captureScreenshot', { format: 'png' });
-      if (r.result?.data) writeFileSync(p, Buffer.from(r.result.data, 'base64'));
-      console.log(`  … screenshot -> ${p}`);
+      await snap(item.slice(2));
     } else if (item.startsWith('e64:')) {
       // A base64-encoded `Runtime.evaluate` expression (the comma-safe
       // form — a JS body with commas would otherwise split on the
@@ -474,6 +571,18 @@ else { console.log(`    (no [oh-web-fs] line — the #fs click was not exercised
 console.log(`  user activation : ${userActivation
     ? 'yes — the headless input granted user activation (the AudioContext can run; audibility is real, not just scheduled)'
     : 'no — the headless input did NOT grant user activation (the AudioContext stays suspended; a real user gesture would resume it — headless cannot prove audibility)'}`);
+// issue 057 — the focus / blur / visibility / fullscreen counters
+// (the held-input reproduction's instrumentation — a spurious blur or
+// a hidden-tab flip mid-hold would have driven the port's `LostFocus`
+// fold and cleared the held levels; the counts say whether that
+// happened).
+{
+  const r = await send('Runtime.evaluate', {
+    expression: 'JSON.stringify(Object.assign({ hidden: document.visibilityState, fullscreen: !!document.fullscreenElement }, window.__fc || {}))',
+    returnByValue: true,
+  });
+  console.log(`  focus counters: ${r.result?.result?.value ?? '(unreadable)'}`);
+}
 console.log(`  probe         : ${await stateOf() ?? '(Module.status not reachable via evaluate)'}`);
 console.log(`  screenshot    : ${shotPath}`);
 console.log(`  non-200       : ${bad.length ? bad.join(' | ') : 'none'}`);

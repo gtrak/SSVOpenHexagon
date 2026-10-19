@@ -41,12 +41,17 @@
 //! read) shared between the engine's `Joystick` seam and the menu's
 //! `MenuJoystick` seam; Android/wasm keep the no-op seams.
 //!
-//! Issue 31: [`touch_overlay`] — the gameplay touch overlay (the
-//! operator's blocker: the tutorial's step-2 focus gate is unpassable
-//! on a touch-only device) — the platform-neutral pointer-feed state
-//! machine + the key-icon buttons, the D-034-class sanctioned
-//! deviation (the C++'s touch controls are rotation-only, HGUpdate.
-//! cpp:589).
+//! Issue 31: the gameplay touch overlay (the operator's blocker: the
+//! tutorial's step-2 focus gate is unpassable on a touch-only device) —
+//! the platform-neutral pointer-feed state machine + the key-icon
+//! buttons, the D-034-class sanctioned deviation (the C++'s touch
+//! controls are rotation-only, HGUpdate.cpp:589). Lane 057: the state
+//! machine's HOME is the `oh-additions` crate (the home for everything
+//! the C++ does not have) — this module re-exports it (the public
+//! surface is unchanged) and still owns the wiring: the per-frame feed
+//! and gate (`windowed`'s `tick_fields`), the consumed-pointer
+//! exclusion, and the held-inputs apply
+//! (`GameSlotAdapter::update_input`).
 
 #[cfg(target_os = "android")]
 pub mod android;
@@ -84,7 +89,10 @@ pub mod sigint;
 // path uses `NoneSteamSink` directly (see `client.rs`).
 #[cfg(not(target_os = "emscripten"))]
 pub mod steam;
-pub mod touch_overlay;
+// Lane 057: the touch overlay's home is the `oh-additions` crate (the
+// home for everything the C++ does not have); this re-export keeps the
+// `oh_app::touch_overlay` path (the public surface unchanged).
+pub use oh_additions::touch_overlay;
 // The windowed loop (issue 15 step (c)) drives `oh_render::window::Window`
 // (which has an emscripten backend — W1), so it COMPILES for emscripten
 // (W2). Only the egui console overlay (the `lua_console_ui` hook) and the

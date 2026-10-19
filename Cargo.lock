@@ -1949,6 +1949,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "oh-additions"
+version = "0.1.0"
+dependencies = [
+ "oh-config",
+ "oh-game",
+ "oh-math",
+ "oh-menu",
+ "oh-render",
+ "web-sys",
+]
+
+[[package]]
 name = "oh-android"
 version = "0.1.0"
 dependencies = [
@@ -1967,6 +1979,7 @@ dependencies = [
  "glow 0.17.0",
  "libc",
  "ndk",
+ "oh-additions",
  "oh-assets",
  "oh-audio",
  "oh-config",
