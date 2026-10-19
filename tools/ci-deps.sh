@@ -47,6 +47,18 @@
 #                      GlBackend::try_create returns None, and the windowed
 #                      smoke's `[oh-render] context GL_SAMPLES` assertion
 #                      can't be reached. NOT on the ubuntu-latest image.
+#   * libxkbcommon-dev, libxkbcommon-x11-dev, libx11-dev, libxcursor-dev,
+#     libxrandr-dev, libxi-dev — winit's X11 backend loads these via
+#     dlopen using UNVERSIONED `.so` names (xkbcommon-dl in particular
+#     dlopens `libxkbcommon-x11.so`), which only the `-dev` packages
+#     provide — the runtime `-0` packages ship the versioned sonames and
+#     the unversioned symlink comes from the dev package. The windowed
+#     smoke under Xvfb needs them: run 39283564865 (gate job
+#     118163145033) died with the probe child panicking in
+#     xkbcommon-dl `Library libxkbcommon-x11.so could not be loaded.`
+#     A controlled ubuntu:24.04 + xvfb container run with exactly these
+#     packages got the binary past X11 init. NOT on the ubuntu-latest
+#     image.
 #
 # Non-Linux runner: no-op (exit 0), so the script is safe to call from a
 # matrix job unconditionally.
@@ -68,9 +80,17 @@ command -v xvfb-run >/dev/null || MISSING+=("xvfb")
 dpkg -s libgl1-mesa-dri >/dev/null 2>&1 || MISSING+=("libgl1-mesa-dri")
 dpkg -s libegl1 >/dev/null 2>&1 || MISSING+=("libegl1")
 dpkg -s libegl-mesa0 >/dev/null 2>&1 || MISSING+=("libegl-mesa0")
+# winit's X11 backend dlopens the unversioned .so names (xkbcommon-dl:
+# libxkbcommon-x11.so) — only the -dev packages provide them.
+dpkg -s libxkbcommon-dev >/dev/null 2>&1 || MISSING+=("libxkbcommon-dev")
+dpkg -s libxkbcommon-x11-dev >/dev/null 2>&1 || MISSING+=("libxkbcommon-x11-dev")
+dpkg -s libx11-dev >/dev/null 2>&1 || MISSING+=("libx11-dev")
+dpkg -s libxcursor-dev >/dev/null 2>&1 || MISSING+=("libxcursor-dev")
+dpkg -s libxrandr-dev >/dev/null 2>&1 || MISSING+=("libxrandr-dev")
+dpkg -s libxi-dev >/dev/null 2>&1 || MISSING+=("libxi-dev")
 
 if [ "${#MISSING[@]}" -eq 0 ]; then
-    echo "ci-deps: all prerequisites present (libudev, alsa, mingw-w64, xvfb, mesa-dri, libegl1, libegl-mesa0)"
+    echo "ci-deps: all prerequisites present (libudev, alsa, mingw-w64, xvfb, mesa-dri, libegl1, libegl-mesa0, libxkbcommon-dev, libxkbcommon-x11-dev, libx11-dev, libxcursor-dev, libxrandr-dev, libxi-dev)"
     exit 0
 fi
 
