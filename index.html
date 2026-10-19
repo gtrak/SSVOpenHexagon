@@ -335,6 +335,32 @@
           ev.preventDefault();
         }
       });
+      // issue 058 (F37) - the browser's built-in context menu on
+      // right-click / long-press: suppressed on the game page (the
+      // canvas + the document's listener scope). The C++ has no
+      // emscripten build (verified: no emscripten target in
+      // cpp-original) - there is no C++ behaviour to match, so this is
+      // the D-034-class web-only platform affordance (the operator's
+      // ruling: "the right-click web browser built-in menu should be
+      // disabled on wasm"), and its home is this shell's listener
+      // block (the visibilitychange / pagehide / resize / #fs home) -
+      // NOT the ported window.rs (the ported code may READ the shell's
+      // DOM where a ported behaviour needs geometry - the #fs
+      // hit-test band, INTEROP - but must not ADD platform behaviour
+      // the original lacks; this listener touches no Rust state, so it
+      // needs no oh-additions half either). The EXCLUSION: #ime (the
+      // soft-keyboard text field) - its context menu is the desktop
+      // paste / copy affordance, a legitimate input path for the name
+      // entry. The suppression also matters for INPUT FIDELITY: the
+      // menu's appearance takes the page's focus - the 032
+      // release-on-blur fold then fires LostFocus and releases every
+      // held input (the release on a REAL focus loss is the C++'s own
+      // behaviour - faithful; the menu appearing is the trigger this
+      // removes, the faithful release stays).
+      document.addEventListener('contextmenu', (ev) => {
+        if (ev.target instanceof Element && ev.target.closest('#ime')) return;
+        ev.preventDefault();
+      });
       // Poll the #[wasm_bindgen] status() probe into the page + console.
       setInterval(() => {
         const s = mod.status();
