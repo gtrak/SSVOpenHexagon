@@ -31,6 +31,22 @@
 #                      x86_64-w64-mingw32-gcc tools/build-windows.sh needs
 #                      for the Windows release build + the cross-check).
 #                      Preinstalled on the ubuntu-latest image (defensive).
+#   * xvfb           — `xvfb-run`, the headless X server the gate's
+#                      windowed smoke (tools/smoke-windowed.sh) runs the
+#                      desktop build under when no DISPLAY is present.
+#                      NOT on the ubuntu-latest image.
+#   * libgl1-mesa-dri — the Mesa software GL driver (llvmpipe) Xvfb needs
+#                      to actually create a GL context for the windowed
+#                      smoke's `[oh-render] context GL_SAMPLES`
+#                      assertion. NOT on the ubuntu-latest image.
+#   * libegl1 + libegl-mesa0 — the EGL loader + vendor library. The
+#                      desktop GL path is EGL (glutin's
+#                      DisplayApiPreference::Egl, crates/oh-render/src/gl.rs),
+#                      and libgl1-mesa-dri alone provides no libEGL at all:
+#                      without it, window creation fails,
+#                      GlBackend::try_create returns None, and the windowed
+#                      smoke's `[oh-render] context GL_SAMPLES` assertion
+#                      can't be reached. NOT on the ubuntu-latest image.
 #
 # Non-Linux runner: no-op (exit 0), so the script is safe to call from a
 # matrix job unconditionally.
@@ -48,9 +64,13 @@ MISSING=()
 pkg-config --exists libudev || MISSING+=("libudev-dev")
 pkg-config --exists alsa || MISSING+=("libasound2-dev")
 command -v x86_64-w64-mingw32-gcc >/dev/null || MISSING+=("mingw-w64")
+command -v xvfb-run >/dev/null || MISSING+=("xvfb")
+dpkg -s libgl1-mesa-dri >/dev/null 2>&1 || MISSING+=("libgl1-mesa-dri")
+dpkg -s libegl1 >/dev/null 2>&1 || MISSING+=("libegl1")
+dpkg -s libegl-mesa0 >/dev/null 2>&1 || MISSING+=("libegl-mesa0")
 
 if [ "${#MISSING[@]}" -eq 0 ]; then
-    echo "ci-deps: all prerequisites present (libudev, alsa, mingw-w64)"
+    echo "ci-deps: all prerequisites present (libudev, alsa, mingw-w64, xvfb, mesa-dri, libegl1, libegl-mesa0)"
     exit 0
 fi
 

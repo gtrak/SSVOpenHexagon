@@ -332,6 +332,18 @@ pub fn run(argv: &[String]) -> i32 {
         return -1;
     }
 
+    // The desktop-mode probe child (the winit single-`EventLoop` fix —
+    // `crate::desktop_mode`'s module docs): the parent's
+    // `DesktopModeSource::Lazy` spawns THIS binary with `PROBE_ARG` to run
+    // the throwaway winit probe loop in a fresh process (winit 0.30
+    // allows one `EventLoop` per process — a probe loop in the game
+    // process would poison the window's own `EventLoop::new()`). When the
+    // arg is present, run the probe and exit HERE — before the chdir /
+    // config / window work (the probe must do none of it).
+    if let Some(code) = crate::desktop_mode::run_probe_child_if_requested(argv) {
+        return code;
+    }
+
     // C++ main.cpp:653 — "Set working directory to current executable
     // location" (BEFORE `parseArgs`, the C++'s chdir position). Branch 1
     // of `resolve_game_root` is the C++ behavior; branches 2-5 are its

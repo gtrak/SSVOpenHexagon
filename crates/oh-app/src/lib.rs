@@ -60,6 +60,13 @@ pub mod bridge;
 pub mod camera;
 pub mod client;
 pub mod compose;
+// The desktop-mode probe child (the winit single-EventLoop fix — the
+// module docs): the `get_desktop_mode` display query runs in a spawned
+// child process (the `--oh-desktop-mode-probe` arg) so the game process's
+// single winit `EventLoop` stays free for the window. Compiles on every
+// target (the android/emscripten arms return the zero mode / no-op — the
+// platform bodies are cfg'd inside the module).
+pub mod desktop_mode;
 // The `-server` / `-printLuaDocs` entries (the `oh-net` / `std::net` path)
 // are desktop-only (W2: the web vertical slice has no online client).
 #[cfg(not(target_os = "emscripten"))]

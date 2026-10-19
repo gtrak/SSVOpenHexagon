@@ -284,6 +284,22 @@ if [ "$SKIP_SMOKE" -eq 0 ]; then
         echo "error: the config-save guard did not save config.json into the sandbox" >&2; exit 1
     }
     echo "== smoke: PASS (exit 0, 'Final time: ${PINNED_FINAL_TIME}', Finished + config-save guard verified)"
+
+    # The WINDOWED smoke (the headless smoke above never catches the
+    # one-frame headless fallback): boot the staged binary WINDOWED and
+    # prove a real GL context comes up + the client stays in its frame
+    # loop. Linux path only — a PE binary cannot run on the Linux
+    # packager (the --windows path set SKIP_SMOKE=1 above, so we are
+    # never here for it). Skips with reason on its own when no
+    # display/xvfb (tools/smoke-windowed.sh's D-011-style skip).
+    if [ "$PLATFORM" = "linux" ]; then
+        if [ "$WITH_STEAM" -eq 0 ]; then
+            echo "== smoke (windowed): tools/smoke-windowed.sh ${STAGE}/open-hexagon"
+            bash tools/smoke-windowed.sh "$STAGE/open-hexagon"
+        else
+            echo "== smoke (windowed): SKIPPED (--with-steam stages the bundled Steam loader stub into the package; the windowed smoke's pristine-_RELEASE sandbox would pick the older tracked stub instead — the headless packaged smoke above is the --with-steam check)"
+        fi
+    fi
 fi
 
 # ---------------------------------------------------------------------

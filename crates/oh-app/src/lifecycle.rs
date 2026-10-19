@@ -34,6 +34,38 @@ pub fn create_folder_if_non_existant(base_dir: &Path, folder_name: &str) {
     }
 }
 
+/// Where `load_and_reapply`'s `reapply_resolution` desktop-mode value
+/// (the C++ `sf::VideoMode::getDesktopMode()` read — Config.cpp:480,
+/// :487 — the `applyAuto*Resolution` inputs) comes from.
+///
+/// The C++ bootstrap performs the display query BEFORE the window exists
+/// (a display query, not a window query — `loadConfig` +
+/// `reapplyResolution` precede `window.emplace()`, main.cpp:279-303),
+/// but the C++ only CONSUMES the read inside
+/// `applyAutoWindowedResolution` / `applyAutoFullscreenResolution`
+/// (Config.cpp:478-490), which `reapplyResolution` (Config.cpp:521-536)
+/// runs only when the corresponding auto flag is on — both default false
+/// in the shipped `_RELEASE/config.json`.
+///
+/// The port's `get_desktop_mode` is a winit primary-monitor query, and
+/// winit 0.30 allows ONE `EventLoop` per process (a probe loop built in
+/// the game process would make the window's own `EventLoop::new()`
+/// return `Err(RecreationAttempt)` — `crate::desktop_mode`'s module
+/// docs), so the read runs in a probe CHILD process and only when an
+/// auto flag is on.
+#[derive(Clone, Copy, Debug)]
+pub enum DesktopModeSource {
+    /// A fixed mode (the caller's own read — the Android bootstrap's zero
+    /// mode: winit's monitor API exists only inside a RUNNING event loop
+    /// and the activity's loop is consumed by the game's own `run` —
+    /// inert: both auto-resolution flags default false and the platform
+    /// window is screen-sized independently of the config values).
+    Fixed(VideoMode),
+    /// Probe the desktop mode only when an auto-resolution flag is on (the
+    /// winit single-EventLoop fix — see the module docs).
+    Lazy,
+}
+
 /// C++ `main.cpp:279-283`:
 ///
 /// ```cpp
@@ -54,31 +86,46 @@ pub fn create_folder_if_non_existant(base_dir: &Path, folder_name: &str) {
 /// `load_config` / `reapply_resolution` — `oh-config` carries the ported
 /// console output, so `load_and_reapply` must not re-print them.)
 ///
-/// `desktop_mode` is the C++ `sf::VideoMode::getDesktopMode()` read the
-/// `applyAuto*Resolution` branches use (Config.cpp:480, :487). The C++
-/// bootstrap performs this display query BEFORE the window exists (it is
-/// a display query, not a window query — `loadConfig` +
-/// `reapplyResolution` precede `window.emplace()`, main.cpp:279-303), so
-/// the ported `main_client` passes `oh_render::VideoMode::get_desktop_mode()`
-/// (the winit primary-monitor query over a throwaway event loop; the zero
-/// mode on a headless host — the C++'s no-monitor `VideoMode{0, 0}`
-/// fallback) for BOTH the windowed and the headless branch (the C++
-/// `mainClient` does the load + reapply once, before the
-/// `if(!headless)` window branch). The Android bootstrap passes the zero
-/// mode (winit's monitor API exists only inside a RUNNING event loop and
-/// the activity's loop is consumed by the game's own `run` — inert in
-/// practice: both auto-resolution flags default false and the platform
-/// window is screen-sized independently of the config values; `oh-app`
-/// `android::run`'s load-call comment) and the C++ `mainServer` path
-/// doesn't reapply at all (main.cpp:199-203 has no `reapplyResolution` —
-/// main.cpp:283 is the C++'s only call site).
+/// `source` is where the `reapply_resolution` desktop-mode value (the C++
+/// `sf::VideoMode::getDesktopMode()` read — Config.cpp:480, :487) comes
+/// from ([`DesktopModeSource`] — the winit single-`EventLoop` fix: the
+/// `Lazy` probe runs in a child process, and only when an auto flag is
+/// on; the C++'s no-monitor `VideoMode{0, 0}` fallback is the zero mode
+/// the `Lazy` arm uses when both flags are off — the value is unused
+/// then, only `recalculate_sizes()` runs). The windowed `main_client`
+/// passes `Lazy` for BOTH the windowed and the headless branch (the C++
+/// `mainClient` does the load + reapply once, before the `if(!headless)`
+/// window branch); the Android bootstrap passes `Fixed(zero)` (the
+/// `oh-app` `android::run` load-call comment) and the C++ `mainServer`
+/// path doesn't reapply at all (main.cpp:199-203 has no
+/// `reapplyResolution` — main.cpp:283 is the C++'s only call site).
 pub fn load_and_reapply(
     config: &mut Config,
     base_dir: &Path,
     override_ids: &[String],
-    desktop_mode: VideoMode,
+    source: DesktopModeSource,
 ) -> Result<(), oh_data::json::JsonError> {
     config.load_config(base_dir, override_ids)?;
+    let desktop_mode = match source {
+        DesktopModeSource::Fixed(mode) => mode,
+        DesktopModeSource::Lazy => {
+            // The C++ consumes the desktop mode ONLY inside
+            // `applyAutoWindowedResolution` / `applyAutoFullscreenResolution`
+            // (Config.cpp:478-490), which `reapplyResolution`
+            // (Config.cpp:521-536) runs only when the corresponding auto
+            // flag is on — so the winit probe (the
+            // `crate::desktop_mode` child process — winit 0.30 allows one
+            // `EventLoop` per process, the module docs) runs only then.
+            // Both flags off: the zero mode (the C++'s no-monitor
+            // `VideoMode{0, 0}` fallback — unused, only
+            // `recalculate_sizes()` runs).
+            if crate::desktop_mode::wants_desktop_mode(config) {
+                crate::desktop_mode::probe_desktop_mode()
+            } else {
+                VideoMode::new(0, 0)
+            }
+        }
+    };
     config.reapply_resolution(desktop_mode.width, desktop_mode.height);
     Ok(())
 }
@@ -215,7 +262,13 @@ mod tests {
     fn load_and_reapply_missing_config_keeps_defaults() {
         let dir = temp_dir("defaults");
         let mut config = Config::default();
-        load_and_reapply(&mut config, &dir, &[], oh_render::VideoMode::new(0, 0)).expect("load");
+        load_and_reapply(
+            &mut config,
+            &dir,
+            &[],
+            DesktopModeSource::Fixed(oh_render::VideoMode::new(0, 0)),
+        )
+        .expect("load");
         assert_eq!(config.get_windowed_width(), 800, "NSDMI default");
         assert!(config.get_official(), "NSDMI default");
         // recalculateSizes: max(800, 600) * 1.3.
@@ -242,13 +295,37 @@ mod tests {
             &mut config,
             &dir,
             &[],
-            oh_render::VideoMode::new(2560, 1440),
+            DesktopModeSource::Fixed(oh_render::VideoMode::new(2560, 1440)),
         )
         .expect("load");
         assert_eq!(config.get_windowed_width(), 2560, "windowed auto");
         assert_eq!(config.get_windowed_height(), 1440, "windowed auto");
         assert_eq!(config.get_fullscreen_width(), 2560, "fullscreen auto");
         assert_eq!(config.get_fullscreen_height(), 1440, "fullscreen auto");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `DesktopModeSource::Lazy` with BOTH auto flags off (the shipped
+    /// `_RELEASE/config.json` state — Config.cpp:478-490: the C++'s
+    /// `applyAuto*Resolution` branches never run) feeds the zero mode to
+    /// `reapply_resolution`, whose only effect then is
+    /// `recalculate_sizes()` — the windowed / fullscreen sizes stay at
+    /// their NSDMI defaults (800x600 / 1920x1080). The gate decision
+    /// itself (probe vs zero mode — the "must NOT probe" half) is
+    /// unit-tested on [`crate::desktop_mode::wants_desktop_mode`]: the
+    /// sizes asserted here are identical whether or not a probe ran, so
+    /// they pin only the defaults-preserving outcome.
+    #[test]
+    fn load_and_reapply_lazy_with_both_auto_flags_off_keeps_defaults() {
+        let dir = temp_dir("lazy_off");
+        // No `config.json` at all: every value is its NSDMI default,
+        // both auto flags false.
+        let mut config = Config::default();
+        load_and_reapply(&mut config, &dir, &[], DesktopModeSource::Lazy).expect("load");
+        assert_eq!(config.get_windowed_width(), 800, "windowed default");
+        assert_eq!(config.get_windowed_height(), 600, "windowed default");
+        assert_eq!(config.get_fullscreen_width(), 1920, "fullscreen default");
+        assert_eq!(config.get_fullscreen_height(), 1080, "fullscreen default");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -271,7 +348,7 @@ mod tests {
             &mut config,
             &dir,
             &["open-hexagon".to_string(), "foo".to_string()],
-            oh_render::VideoMode::new(0, 0),
+            DesktopModeSource::Fixed(oh_render::VideoMode::new(0, 0)),
         )
         .expect("load");
         assert_eq!(config.get_windowed_width(), 640, "named override applied");
@@ -281,7 +358,7 @@ mod tests {
             &mut config,
             &dir,
             &["open-hexagon".to_string()],
-            oh_render::VideoMode::new(0, 0),
+            DesktopModeSource::Fixed(oh_render::VideoMode::new(0, 0)),
         )
         .expect("load");
         assert_eq!(

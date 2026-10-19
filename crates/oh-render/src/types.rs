@@ -352,6 +352,16 @@ impl VideoMode {
     /// and the game window's own loop is created later, sized from the
     /// config.)
     ///
+    /// winit 0.30 allows ONE `EventLoop` per process (`EventLoopBuilder::
+    /// build` sets a process-global `EVENT_LOOP_CREATED` that only the web
+    /// backend clears), so this call CONSUMES the process's single loop:
+    /// it must only be called in a process that does NOT also create the
+    /// game window — i.e. the `oh-app::desktop_mode` probe child (the
+    /// `--oh-desktop-mode-probe` arg; the `GlBackend::create`'s later
+    /// `EventLoop::new()` would otherwise get `Err(RecreationAttempt)`
+    /// and the window would degrade headless — the `oh-app`
+    /// `desktop_mode` module docs).
+    ///
     /// The C++'s no-monitor fallback is a zero `VideoMode` (SFML's
     /// `getDesktopMode` failure mode) → `Self::new(0, 0)`. A headless host
     /// (no display server) gets the same zero fallback from

@@ -84,7 +84,8 @@ use winit::platform::android::activity::AndroidApp;
 use winit::platform::android::EventLoopBuilderExtAndroid;
 
 use crate::lifecycle::{
-    create_folder_if_non_existant, load_and_reapply, ConfigSaveGuard, ProfileSaveGuard,
+    create_folder_if_non_existant, load_and_reapply, ConfigSaveGuard, DesktopModeSource,
+    ProfileSaveGuard,
 };
 use crate::windowed::{SoftInput, WindowedClient};
 
@@ -423,7 +424,12 @@ pub fn run(app: AndroidApp) {
     // model) — so the C++'s android `getDesktopMode` read (the screen
     // size) has no port-side effect on the window.
     let mut config = Config::default();
-    if let Err(e) = load_and_reapply(&mut config, &base_dir, &[], oh_render::VideoMode::new(0, 0)) {
+    if let Err(e) = load_and_reapply(
+        &mut config,
+        &base_dir,
+        &[],
+        DesktopModeSource::Fixed(oh_render::VideoMode::new(0, 0)),
+    ) {
         eprintln!("[::mainClient] config load failed: {e}");
         return;
     }

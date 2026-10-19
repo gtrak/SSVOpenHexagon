@@ -8,12 +8,12 @@ use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 use oh_config::Config;
-use oh_render::VideoMode;
 
 use crate::args::get_first_compressed_replay_filename_from_args;
 use crate::compose::{compose_with, RealProfiles};
 use crate::lifecycle::{
-    create_folder_if_non_existant, load_and_reapply, ConfigSaveGuard, ProfileSaveGuard,
+    create_folder_if_non_existant, load_and_reapply, ConfigSaveGuard, DesktopModeSource,
+    ProfileSaveGuard,
 };
 
 /// C++ `mainClient(headless, args, cliLevelName, cliLevelPack)`
@@ -95,12 +95,21 @@ pub fn main_client(
     // desktop-mode read (`sf::VideoMode::getDesktopMode()`, the
     // `applyAuto*Resolution` inputs — Config.cpp:480, :487) happens BEFORE
     // the window exists in the C++ (the display query, not a window
-    // query): `VideoMode::get_desktop_mode()` (the winit
-    // primary-monitor query; the zero mode on a headless host — the C++
-    // no-monitor `VideoMode{0, 0}` fallback). The headless branch shares
-    // the same read: the C++ `mainClient` calls `loadConfig` +
+    // query), but the C++ only CONSUMES it inside
+    // `applyAutoWindowedResolution` / `applyAutoFullscreenResolution`
+    // (Config.cpp:478-490), which `reapplyResolution` (Config.cpp:521-536)
+    // runs only when the corresponding auto flag is on — both default
+    // false in the shipped `_RELEASE/config.json`. The port's probe is a
+    // winit primary-monitor query and winit 0.30 allows ONE `EventLoop`
+    // per process (a probe loop in THIS process would make the window's
+    // own `EventLoop::new()` return `Err(RecreationAttempt)` — the
+    // `crate::desktop_mode` module docs), so the read is LAZY
+    // (`DesktopModeSource::Lazy`): it runs in a probe CHILD process only
+    // when an auto flag is on, else the zero mode (the C++ no-monitor
+    // `VideoMode{0, 0}` fallback — unused then, only
+    // `recalculate_sizes()` runs). The headless branch shares the same
+    // lazy read: the C++ `mainClient` calls `loadConfig` +
     // `reapplyResolution` ONCE, before the `if(!headless)` window branch.
-    let desktop_mode = VideoMode::get_desktop_mode();
     // Web boot trace (lane 026 W5): the composition's own `[channel]`
     // lines in the browser console (the C++ terminal's boot trace —
     // routed through `oh_game::log_sink` because Rust stdio is a black
@@ -109,7 +118,7 @@ pub fn main_client(
     #[cfg(target_os = "emscripten")]
     oh_game::log_sink::emit_log("web", "main_client entry (t=0)");
     let mut config = Config::default();
-    if let Err(e) = load_and_reapply(&mut config, base_dir, args, desktop_mode) {
+    if let Err(e) = load_and_reapply(&mut config, base_dir, args, DesktopModeSource::Lazy) {
         // C++ would throw out of `syncAllFromObj` (uncaught in mainClient);
         // the port exits non-zero (documented deviation).
         eprintln!("[::mainClient] config load failed: {e}");

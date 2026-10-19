@@ -5,11 +5,16 @@
 #   2. cargo build --workspace
 #   3. cargo clippy --workspace --all-targets -- -D warnings
 #   4. cargo test --workspace
-#   5. tools/lua-parity.sh (the Lua parity stage — D-037: the port ships
+#   5. tools/smoke-windowed.sh (the WINDOWED desktop smoke — a real GL
+#      context must come up and the client must stay in its frame loop;
+#      the headless-only packaging smoke never caught the one-frame
+#      headless fallback. Skips with reason when no display/xvfb; CI
+#      installs xvfb via tools/ci-deps.sh)
+#   6. tools/lua-parity.sh (the Lua parity stage — D-037: the port ships
 #      ONE Lua VM, Luau; the stage compares the shipping column against
 #      the committed C++ vectors, the probe pins, the dialect census and
 #      the prelude tests, over N separate VM processes; ~6-8 min)
-#   6. tools/check-additions-boundary.sh (the oh-additions boundary
+#   7. tools/check-additions-boundary.sh (the oh-additions boundary
 #      ratchet — issue 057 deliverable 3: the OURS-class deviation marker
 #      lines in the ported files must not GROW past the committed
 #      baseline; a grown count fails the gate and points at
@@ -57,6 +62,7 @@ run_stage "cargo build --workspace" cargo build --workspace
 run_stage "cargo clippy --workspace --all-targets -- -D warnings" \
     cargo clippy --workspace --all-targets -- -D warnings
 run_stage "cargo test --workspace" cargo test --workspace
+run_stage "tools/smoke-windowed.sh" bash tools/smoke-windowed.sh
 run_stage "tools/lua-parity.sh" tools/lua-parity.sh
 run_stage "tools/check-additions-boundary.sh" tools/check-additions-boundary.sh
 
