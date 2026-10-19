@@ -18,6 +18,25 @@ the root symlinks `src/` and `include/` (→ `cpp-original/src`,
 shared by both implementations (assets, packs, configs, the Steam/Discord
 native stubs) lives in `_RELEASE/` at the root.
 
+## Play it
+
+**In a browser: <https://gtrak.github.io/SSVOpenHexagon/>** — the emscripten build of the whole
+app. The page is deployed from the `gh-pages` branch on every push to `master` (issue 040), so it
+always tracks the current source rather than a frozen snapshot; a tagged release deploys the same
+page and additionally captures its bytes as the `-web.zip` artifact below.
+
+**Downloads.** Every tagged release carries prebuilt artifacts. The names are stable, with the tag
+interpolated:
+
+| Artifact | What it is |
+|---|---|
+| `open-hexagon-<tag>-linux-x86_64.tar.gz` | Linux x86-64 |
+| `open-hexagon-<tag>-windows-x86_64.zip` | Windows x86-64 (cross-built from Linux) |
+| `open-hexagon-<tag>-android-arm64-v8a.apk` | Android, arm64-v8a |
+| `open-hexagon-<tag>-web.zip` | The wasm build plus its game data, for self-hosting |
+
+They are attached to the [releases page](https://github.com/gtrak/SSVOpenHexagon/releases).
+
 ## How it was built (the method)
 
 This is not a rewrite; it is a port with evidence. The pieces that make "1:1"
@@ -89,7 +108,7 @@ VM internals).
 | Linux | Primary target. Full gate green; packaged by `tools/package.sh` (smoke-tested headless replay included). |
 | Windows | Cross-built from Linux (GNU triplet, `tools/build-windows.sh` / `tools/package.sh --windows`). |
 | Android | **Real-device verified** (issues 31/34: touch overlay, boot-to-playback); packaged by `tools/package-android.sh`. |
-| wasm / web | Builds (emscripten, whole app) and runs in a browser — boot, engine loop and input verified via the emsdk container; the hosted page (GitHub Pages) is in-flight release work (issue 37), so treat it as "working build", not a shipped product. |
+| wasm / web | Builds (emscripten, whole app) and runs in a browser — boot, engine loop and input verified via the emsdk container. **Playable at <https://gtrak.github.io/SSVOpenHexagon/>**, deployed from `gh-pages` on every `master` push (issue 040) and by tagged releases (issue 045). |
 
 ## Building and testing
 
