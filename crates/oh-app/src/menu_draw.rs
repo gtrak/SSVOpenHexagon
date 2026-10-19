@@ -20,17 +20,26 @@
 //!
 //! ## C++-fidelity notes (read before diffing against the C++)
 //!
-//! **Mouse state is always the no-hover C++ path.** The C++ `draw`
-//! recomputes `mousePressed` / `mouseHovering` from
-//! `sf::Mouse::isButtonPressed` and runs `overlayMouseOverlap*` against
-//! the overlay camera (MenuGame.cpp:5753-5756). The port has no mouse
-//! input state yet (the SSVStart input manager is the documented 15c gap;
-//! `oh_render::input::InputState` exists but is not wired to the menu), so
-//! every `mouseOverlap*` is `false`, `mouseOverlapColor(false, c)` is the
-//! identity, and the click-edge actions (`mustUseMenuItem` /
-//! `mustChangeIndexTo` / `mustChangePackIndexTo` / `mustFavorite` /
-//! `mustPlay`) never fire. The rendered quads/positions are the exact C++
-//! no-hover layout.
+//! **The mouse state is the C++'s, drawn-side (issue 058).** The C++ `draw`
+//! recomputes `mousePressed` / `mouseWasPressed` / `mouseHovering` from
+//! `sf::Mouse::isButtonPressed` + the `overlayMouseOverlap*` pass against
+//! the overlay camera (MenuGame.cpp:5753-5756, :3652-3677). The port does
+//! the same in `draw` (the frame's input snapshot is the port's
+//! `sf::Mouse` state; the pointer's window pixel + the window's focus +
+//! the menu's cursor-visibility flag ride the `MenuWindow` seam — the
+//! C++'s `window.getMousePosition()` / `window.hasFocus()` /
+//! `isMouseCursorVisible()` reads). The item-draw sites run the C++'s
+//! `overlayMouseOverlapAndUpdateHover` (the `mouseHovering` set) + the
+//! click-edge arms (`mustUseMenuItem` / `mustChangeIndexTo` / `mustPlay`
+//! / `mustChangePackIndexTo` / `mustFavorite` — the C++'s
+//! `mouseLeftRisingEdge()` gates) + the `mouseOverlapColor` hover
+//! inversion. The consumption is the C++'s `update` block (MenuGame.cpp:
+//! 2681-2733, the port's `MenuGame::update`) — NEXT frame: the C++'s
+//! loop order (events → update → draw) is the port's (refresh →
+//! update_input → update → draw), so the click on frame N executes on
+//! frame N+1, exactly as the C++'s. The draw tail stamps
+//! `lastMouseClick` (the C++'s :5974-5977 — the `LoadingScreen` /
+//! `EpilepsyWarning` arms `return` before it, as the C++'s).
 //!
 //! **`mustRefresh` is size-driven, not event-driven.** The C++ sets
 //! `mustRefresh` on window-resize events; the port detects the same
@@ -123,8 +132,10 @@
 
 use std::path::Path;
 use std::rc::Rc;
+use std::time::Instant;
 
 use crate::bridge::load_texture_or_null;
+use oh_config::Button;
 use oh_math::hg::color::Color;
 use oh_math::hg::concat::format_ostream_f64;
 use oh_math::hg::string::uppercasify;
@@ -141,6 +152,7 @@ use oh_menu::{Category, Menu, Shared};
 use oh_render::draw::RenderStates;
 use oh_render::font::{Font, Text};
 use oh_render::graphics::{draw_background_menu, DrawTarget};
+use oh_render::input::InputState;
 use oh_render::texture::{Sprite, Texture};
 use oh_render::types::RectangleShape;
 use oh_render::view::{Camera, View};
@@ -913,9 +925,21 @@ fn create_quad_trapezoid(
 /// profile / load states; (d) the `windowed.rs` wiring; last, the
 /// 13b-deferred `MOpts` / `MOnline` options/online submenu draws
 /// (`drawSubmenusSmall` :3606, `drawOptionsSubmenus` :3784).
-pub fn draw(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn DrawTarget) {
-    // C++ :5753-5756 — the mouse state (module docs: always the no-hover
-    // path in the port).
+pub fn draw(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn DrawTarget, input: &InputState) {
+    // C++ :5753-5756 — the mouse state (issue 058): the draw-head sample
+    // — `mouseWasPressed = mousePressed;` (the previous frame's sample),
+    // `mousePressed = (ignoreInputs == 0) &&
+    // sf::Mouse::isButtonPressed(Left)` (the port's frame input
+    // snapshot's left-button bit — the C++'s live SFML read at the same
+    // loop position: after the frame's events, before the frame's
+    // update / draw), `mouseHovering = false` (the frame's item-draw
+    // sites re-set it — the C++'s `overlayMouseOverlapAndUpdateHover`).
+    {
+        let mut s = menu.shared().borrow_mut();
+        s.mouse_was_pressed = s.mouse_pressed;
+        s.mouse_pressed = s.ignore_inputs == 0 && input.is_button_pressed(Button::LEFT);
+        s.mouse_hovering = false;
+    }
 
     // C++ `update()` :2848-2850 — `creditsBar2.setTexture(assets
     // .getTexture(ssvu::getByModIdx(creditsIds, toInt(currentCreditsId /
@@ -936,6 +960,35 @@ pub fn draw(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn DrawTarget) {
 
     // C++ :5758-5765 — the `mustRefresh` block (size-driven in the port).
     app.refresh_if_stale(menu);
+
+    // issue 058 — the C++ `overlayMouseOverlap`'s frame inputs (the
+    // gate's two terms + the `overlayCamera.getMousePosition(window)`
+    // map, MenuGame.cpp:3657-3662 + `mouseLeftRisingEdge()`, :3695-3697)
+    // — computed ONCE here: every item-draw site's C++
+    // `overlayCamera.getMousePosition(window)` reads the same unchanged
+    // view within the frame (the refresh above just settled it), so the
+    // one map IS the C++'s per-site reads. The map's target is the
+    // ACTUAL window size (the C++'s `View::getMousePosition(window)`
+    // target — `getWindowWidth/Height` space; the overlay view's own
+    // size is the layout space, so the map is the layout-space pointer).
+    let mouse = {
+        let (win_w, win_h) = menu.window_size();
+        // One short borrow: the window handle (the C++ ctor's `window`
+        // reference — `Shared`'s field; `MenuGame` exposes no direct
+        // accessor) + the rising edge's two samples.
+        let s = menu.shared().borrow();
+        let window = s.window();
+        let gate = window.is_mouse_cursor_visible() && window.has_focus();
+        let position = app
+            .overlay_view()
+            .map_pixel_to_coords(window.mouse_pixel(), Vec2::new(win_w, win_h));
+        let rising_edge = !s.mouse_was_pressed && s.mouse_pressed;
+        MenuMouse {
+            gate,
+            position,
+            rising_edge,
+        }
+    };
 
     // C++ :5767 `styleData.computeColors()` — the current level's style
     // (the C++ `styleData` member is set by `setIndex`; the seam runs
@@ -1092,6 +1145,7 @@ pub fn draw(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn DrawTarget) {
                     menu_quad_color,
                     menu_text_color,
                     fps_mult,
+                    &mouse,
                     target,
                 );
             }
@@ -1122,21 +1176,25 @@ pub fn draw(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn DrawTarget) {
                     if favorites_active {
                         draw_level_selection_right_side(
                             app,
-                            &mut shared.fav_slct,
+                            &mut shared,
+                            true,
                             &reads,
                             &assets,
                             &network,
                             true,
+                            &mouse,
                             target,
                         );
                     } else {
                         draw_level_selection_right_side(
                             app,
-                            &mut shared.lvl_slct,
+                            &mut shared,
+                            false,
                             &reads,
                             &assets,
                             &network,
                             true,
+                            &mouse,
                             target,
                         );
                     }
@@ -1150,6 +1208,7 @@ pub fn draw(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn DrawTarget) {
                         &assets,
                         &network,
                         true,
+                        &mouse,
                         target,
                     );
                 }
@@ -1166,6 +1225,7 @@ pub fn draw(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn DrawTarget) {
                 menu_quad_color,
                 menu_text_color,
                 fps_mult,
+                &mouse,
                 target,
             );
             draw_graphics(app, target);
@@ -1183,6 +1243,7 @@ pub fn draw(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn DrawTarget) {
                     menu_quad_color,
                     menu_text_color,
                     fps_mult,
+                    &mouse,
                     target,
                 );
             }
@@ -1196,6 +1257,7 @@ pub fn draw(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn DrawTarget) {
                 menu_quad_color,
                 menu_text_color,
                 fps_mult,
+                &mouse,
                 target,
             );
             // C++ :5892-5893 — the options submenus (left).
@@ -1225,6 +1287,7 @@ pub fn draw(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn DrawTarget) {
                     menu_quad_color,
                     menu_text_color,
                     fps_mult,
+                    &mouse,
                     target,
                 );
             }
@@ -1239,6 +1302,7 @@ pub fn draw(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn DrawTarget) {
                 menu_quad_color,
                 menu_text_color,
                 fps_mult,
+                &mouse,
                 target,
             );
             // C++ :5910-5911 — the online submenus (left; the `"options"`
@@ -1273,6 +1337,7 @@ pub fn draw(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn DrawTarget) {
                 menu_quad_color,
                 menu_text_color,
                 fps_mult,
+                &mouse,
                 target,
             );
             {
@@ -1294,6 +1359,7 @@ pub fn draw(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn DrawTarget) {
                 menu_quad_color,
                 menu_text_color,
                 fps_mult,
+                &mouse,
                 target,
             );
             {
@@ -1317,6 +1383,7 @@ pub fn draw(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn DrawTarget) {
                     menu_quad_color,
                     menu_text_color,
                     fps_mult,
+                    &mouse,
                     target,
                 );
             }
@@ -1331,42 +1398,50 @@ pub fn draw(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn DrawTarget) {
                 if shared.favorites_active {
                     draw_level_selection_right_side(
                         app,
-                        &mut shared.fav_slct,
+                        &mut shared,
+                        true,
                         &reads,
                         &assets,
                         &network,
                         false,
+                        &mouse,
                         target,
                     );
                     if shared.lvl_slct.x_offset != 0.0 {
                         draw_level_selection_right_side(
                             app,
-                            &mut shared.lvl_slct,
+                            &mut shared,
+                            false,
                             &reads,
                             &assets,
                             &network,
                             true,
+                            &mouse,
                             target,
                         );
                     }
                 } else {
                     draw_level_selection_right_side(
                         app,
-                        &mut shared.lvl_slct,
+                        &mut shared,
+                        false,
                         &reads,
                         &assets,
                         &network,
                         false,
+                        &mouse,
                         target,
                     );
                     if shared.fav_slct.x_offset != 0.0 {
                         draw_level_selection_right_side(
                             app,
-                            &mut shared.fav_slct,
+                            &mut shared,
+                            true,
                             &reads,
                             &assets,
                             &network,
                             true,
+                            &mouse,
                             target,
                         );
                     }
@@ -1382,6 +1457,7 @@ pub fn draw(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn DrawTarget) {
                     &assets,
                     &network,
                     false,
+                    &mouse,
                     target,
                 );
             }
@@ -1393,7 +1469,6 @@ pub fn draw(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn DrawTarget) {
 
     // C++ :5962-5966 — `mustTakeScreenshot` (module docs: always false in
     // the port).
-
     // C++ :5968-5972 — the dialog box pass. The C++ `return`s out of the
     // `LoadingScreen` / `EpilepsyWarning` arms (:5832, :5838) — the
     // screenshot / dialog passes are skipped for those states.
@@ -1428,7 +1503,70 @@ pub fn draw(menu: &MenuGame, app: &mut MenuDraw, target: &mut dyn DrawTarget) {
         );
     }
 
-    // C++ :5986-5988 — the `lastMouseClick` edge (module docs: no mouse).
+    // C++ :5974-5977 — the `lastMouseClick` stamp (issue 058): the
+    // left-button rising edge's time, the level-body double-click-to-
+    // play's 160 ms window (the C++'s `HRClock::now()` — the port's
+    // steady `Instant`; the C++'s default-constructed time-point is the
+    // port's `None`). The C++'s `LoadingScreen` / `EpilepsyWarning` arms
+    // `return` before this (the port's dialog pass' same gate — those
+    // states' draws skip the tail).
+    if !matches!(state, States::LoadingScreen | States::EpilepsyWarning) {
+        let mut s = menu.shared().borrow_mut();
+        if !s.mouse_was_pressed && s.mouse_pressed {
+            s.last_mouse_click = Some(Instant::now());
+        }
+    }
+}
+
+/// issue 058 — the C++ `MenuGame`'s mouse inputs at the current draw:
+/// the `overlayMouseOverlap`'s gate + position (MenuGame.cpp:3652-3666)
+/// + the `mouseLeftRisingEdge()` (:3695-3697).
+///
+/// Computed once in `draw`: the C++'s per-site
+/// `overlayCamera.getMousePosition(window)` reads are the same unchanged
+/// view within the frame (the `draw`'s `mouse` binding's docs), so the
+/// one sample threads to the item-draw sites.
+struct MenuMouse {
+    /// C++ `isMouseCursorVisible() && window.hasFocus()` (MenuGame.cpp:
+    /// 3657-3661) — false, every overlap is false (the C++'s gate).
+    gate: bool,
+    /// C++ `overlayCamera.getMousePosition(window)` (MenuGame.cpp:3662)
+    /// — the pointer in the overlay camera's layout space.
+    position: Vec2,
+    /// C++ `mouseLeftRisingEdge()` (MenuGame.cpp:3695-3697) — the
+    /// left-button press edge (the draw head's two samples' diff).
+    rising_edge: bool,
+}
+
+impl MenuMouse {
+    /// C++ `MenuGame::overlayMouseOverlap(mins, maxs)` (MenuGame.cpp:
+    /// 3652-3666) — the gate + the 1px-tolerance rect test in the
+    /// overlay camera's space (the C++'s strict inequalities).
+    #[must_use]
+    fn overlaps(&self, mins: Vec2, maxs: Vec2) -> bool {
+        const TOLERANCE: f32 = 1.0; // C++ `constexpr float tolerance = 1.f`
+        if !self.gate {
+            return false;
+        }
+        self.position.x > mins.x - TOLERANCE
+            && self.position.x < maxs.x + TOLERANCE
+            && self.position.y > mins.y - TOLERANCE
+            && self.position.y < maxs.y + TOLERANCE
+    }
+}
+
+/// C++ `MenuGame::mouseOverlapColor(mouseOverlap, c)` (MenuGame.cpp:
+/// 3680-3693) — the hover's colour inversion (`255 - c.r` et al.); the
+/// C++'s `sf::Color{r, g, b}` ctor's alpha-255 default is the port's
+/// explicit `255` (NOT `c.a` — the C++'s `alphaTextColor` body's hover
+/// colour is full-alpha, the C++'s byte).
+#[must_use]
+fn mouse_overlap_color(overlap: bool, c: Color) -> Color {
+    if overlap {
+        Color::new(255 - c.r, 255 - c.g, 255 - c.b, 255)
+    } else {
+        c
+    }
 }
 
 /// The one-shot shared-state snapshot `draw` reads before the state
@@ -1615,6 +1753,7 @@ fn draw_main_submenus(
     menu_quad_color: Color,
     menu_text_color: Color,
     fps_mult: f32,
+    mouse: &MenuMouse,
     target: &mut dyn DrawTarget,
 ) {
     let categories = main_menu.get_categories();
@@ -1636,6 +1775,7 @@ fn draw_main_submenus(
             menu_quad_color,
             menu_text_color,
             fps_mult,
+            mouse,
             target,
         );
     }
@@ -1659,6 +1799,7 @@ fn draw_main_menu(
     menu_quad_color: Color,
     menu_text_color: Color,
     fps_mult: f32,
+    mouse: &MenuMouse,
     target: &mut dyn DrawTarget,
 ) {
     let items = m_sub_menu.get_items();
@@ -1699,11 +1840,13 @@ fn draw_main_menu(
         s.menu_half_height = quad_height + total_height / 2.0;
     }
 
-    // C++ "Draw the quads that surround the text" (module docs: the
-    // `mouseOverlaps` vector + the `mustUseMenuItem` edge are the no-hover
-    // no-click C++ paths in the port).
+    // C++ "Draw the quads that surround the text" (issue 058: the
+    // `mouseOverlaps` vector — the C++'s `static std::vector<bool>` the
+    // text loop reads back — + the `mustUseMenuItem` click edge are the
+    // C++'s, now live).
     app.menu_quads.clear();
     app.menu_quads.reserve_quad(size);
+    let mut mouse_overlaps = vec![false; size];
     for (i, item) in items.iter().enumerate() {
         // C++ `calcMenuItemOffset(items[i]->getOffset(),
         // i == mSubMenu.getIdx())`.
@@ -1718,11 +1861,21 @@ fn draw_main_menu(
         let off = item.borrow().offset();
         let indent = base_indent - off;
 
-        // C++ `bodyMins` / `bodyMaxs` (the hover region — unused in the
-        // no-mouse port, kept here so the C++ layout is traceable):
-        // `{indent - h * 2.5, quadHeight}` .. `{w, quadHeight +
-        // doubleBorder + h}`.
-        let _ = indent;
+        // C++ `bodyMins` / `bodyMaxs` (the hover / click region — issue
+        // 058: the `overlayMouseOverlapAndUpdateHover`'s rect, the C++'
+        // layout space): `{indent - h * 2.5, quadHeight}` .. `{w,
+        // quadHeight + doubleBorder + h}`.
+        let body_mins = Vec2::new(indent - h_menu_big * 2.5, quad_height);
+        let body_maxs = Vec2::new(w, quad_height + double_border + h_menu_big);
+        let mouse_overlap = mouse.overlaps(body_mins, body_maxs);
+        // C++ `overlayMouseOverlapAndUpdateHover` (MenuGame.cpp:3668-
+        // 3677) — the overlap's `mouseHovering = true` half (the
+        // draw head's false's re-set; the left / right input actions'
+        // gate reads it next frame, MenuGame.cpp:925 / :934).
+        if mouse_overlap {
+            menu.shared().borrow_mut().mouse_hovering = true;
+        }
+        mouse_overlaps[i] = mouse_overlap;
 
         // C++ `c = !items[i]->isEnabled() ? {110, 110, 110} : menuQuadColor;`
         let enabled = item.borrow().is_enabled();
@@ -1732,12 +1885,12 @@ fn draw_main_menu(
             Color::new(110, 110, 110, 255)
         };
 
-        // C++ `createQuadTrapezoid(mouseOverlapColor(false, c),
+        // C++ `createQuadTrapezoid(mouseOverlapColor(mouseOverlap, c),
         // indent - h * 2.5, w, indent - h / 2, quadHeight, quadHeight +
         // doubleBorder + h, false)`.
         create_quad_trapezoid(
             &mut app.menu_quads,
-            c,
+            mouse_overlap_color(mouse_overlap, c),
             indent - h_menu_big * 2.5,
             w,
             indent - h_menu_big / 2.0,
@@ -1746,16 +1899,31 @@ fn draw_main_menu(
             false,
         );
 
+        // C++ :3757-3761 — the item click edge (issue 058): the
+        // `mouseLeftRisingEdge()` over an overlapped, enabled item arms
+        // `mustUseMenuItem` (the C++'s `!mustUseMenuItem.has_value()`
+        // first-click-wins guard); the `update`'s exec (MenuGame.cpp:
+        // 2681-2698) consumes it next frame.
+        if mouse_overlap
+            && mouse.rising_edge
+            && enabled
+            && menu.shared().borrow().must_use_menu_item.is_none()
+        {
+            menu.shared().borrow_mut().must_use_menu_item = Some(i as i32);
+        }
+
         quad_height += interline;
     }
     target.draw_vertices(app.menu_quads.as_slice(), RenderStates::default());
 
     // C++ "Draw the text on top of the quads".
-    for item in &items {
+    for (i, item) in items.iter().enumerate() {
         let off = item.borrow().offset();
         let indent = base_indent - off;
         let name = item.borrow().get_name();
         let enabled = item.borrow().is_enabled();
+        // C++ `mouseOverlapColor(mouseOverlaps.at(i), ...)` — the
+        // quad loop's per-item record.
         let c = if enabled {
             menu_text_color
         } else {
@@ -1766,7 +1934,7 @@ fn draw_main_menu(
             &mut app.txt_menu_big,
             &name,
             Vec2::new(indent, txt_height),
-            c,
+            mouse_overlap_color(mouse_overlaps[i], c),
         );
         txt_height += interline;
     }
@@ -2164,14 +2332,26 @@ fn draw_load_results(app: &mut MenuDraw, s: &SharedSnapshot, target: &mut dyn Dr
 #[allow(clippy::too_many_arguments)] // the C++ members threaded through the bridge
 fn draw_level_selection_right_side(
     app: &mut MenuDraw,
-    drawer: &mut LevelDrawer,
+    // issue 058 — the whole `Shared` (the mouse-state writes — the
+    // `mustPlay` / `mustChangeIndexTo` / `mustChangePackIndexTo` arms +
+    // the `mouseHovering` set — need it); the C++ helper's `drawer`
+    // parameter is the selected drawer field.
+    shared: &mut Shared,
+    favorites: bool,
     reads: &LevelSelReads,
     assets: &Rc<dyn MenuAssets>,
     network: &Rc<dyn NetworkClient>,
     revert_offset: bool,
+    mouse: &MenuMouse,
     target: &mut dyn DrawTarget,
 ) {
     let w = reads.w;
+    // C++ `drawer` — the caller-selected drawer.
+    let drawer = if favorites {
+        &mut shared.fav_slct
+    } else {
+        &mut shared.lvl_slct
+    };
 
     // C++ :4960-4965 — the indent constants + the drawer X-offset easing.
     let outer_frame = app.text_to_quad_border + app.slct_frame_size;
@@ -2312,8 +2492,18 @@ fn draw_level_selection_right_side(
             height + app.level_label_height,
         );
 
-        // Body (module docs: the no-hover C++ path — `mouseOverlap`
-        // false, `mouseOverlapColor(false, c)` the identity).
+        // Body (issue 058: the C++'s `bodyMins` / `bodyMaxs` hover / click
+        // region — `{indent + slctFrameSize, height + slctFrameSize}` ..
+        // `{w, height + levelLabelHeight}`, MenuGame.cpp:5049-5052).
+        let body_mins = Vec2::new(indent + app.slct_frame_size, height + app.slct_frame_size);
+        let body_maxs = Vec2::new(w, height + app.level_label_height);
+        let mouse_overlap = mouse.overlaps(body_mins, body_maxs);
+        // C++ `overlayMouseOverlapAndUpdateHover` (MenuGame.cpp:3668-
+        // 3677) — the overlap's `mouseHovering = true` half (the left /
+        // right input actions' gate reads it next frame).
+        if mouse_overlap {
+            shared.mouse_hovering = true;
+        }
         let c = if i == drawer.current_index {
             reads.menu_selection_color
         } else {
@@ -2321,15 +2511,31 @@ fn draw_level_selection_right_side(
         };
         create_quad(
             &mut app.menu_quads,
-            c,
+            mouse_overlap_color(mouse_overlap, c),
             indent + app.slct_frame_size,
             w,
             height + app.slct_frame_size,
             height + app.level_label_height,
         );
 
-        // C++ :5040-5050 — the click edge (module docs: no mouse in the
-        // port; `mustPlay` / `mustChangeIndexTo` never fire).
+        // C++ :5064-5075 — the click edge (issue 058): the
+        // `mouseLeftRisingEdge()` over the body — the double-click (the
+        // 160 ms `lastMouseClick` window, the C++'s `!mustPlay`
+        // first-arm guard) arms `mustPlay`; a single click arms
+        // `mustChangeIndexTo` (the C++'s
+        // `!mustChangeIndexTo.has_value()` first-click-wins); the
+        // `update`'s exec (MenuGame.cpp:2702-2733) consumes next frame.
+        if mouse_overlap && mouse.rising_edge {
+            let double_click = !shared.must_play
+                && shared
+                    .last_mouse_click
+                    .is_some_and(|t| Instant::now() - t < std::time::Duration::from_millis(160));
+            if double_click {
+                shared.must_play = true;
+            } else if shared.must_change_index_to.is_none() {
+                shared.must_change_index_to = Some(i);
+            }
+        }
         target.draw_vertices(app.menu_quads.as_slice(), RenderStates::default());
         prev_level_indent = indent;
 
@@ -2355,8 +2561,8 @@ fn draw_level_selection_right_side(
         };
         uppercasify(&mut temp_string);
 
-        // C++ `mouseOverlapColor(mouseOverlap, menuQuadColor)` = identity
-        // on the no-mouse path.
+        // C++ `c0 = mouseOverlapColor(mouseOverlap, menuQuadColor)` — the
+        // level name's hover inversion (MenuGame.cpp:5102, issue 058).
         let current_diff_mult = level.get_nth_diff_mult(reads.diff_mult_idx);
         let level_validator = level.get_validator(current_diff_mult);
 
@@ -2368,7 +2574,7 @@ fn draw_level_selection_right_side(
                 indent,
                 height - app.h_selection_big * layout::FONT_HEIGHT_OFFSET,
             ),
-            reads.menu_quad_color,
+            mouse_overlap_color(mouse_overlap, reads.menu_quad_color),
         );
 
         // The RANKED badge (online-supported, scored levels only).
@@ -2396,7 +2602,9 @@ fn draw_level_selection_right_side(
                     w - width,
                     height - app.h_selection_ranked * layout::FONT_HEIGHT_OFFSET - 3.0,
                 ),
-                c,
+                // C++ :5131 — `mouseOverlapColor(mouseOverlap, c)` (the
+                // body colour's inversion, issue 058).
+                mouse_overlap_color(mouse_overlap, c),
             );
         }
 
@@ -2409,6 +2617,8 @@ fn draw_level_selection_right_side(
             level.author.clone()
         };
         uppercasify(&mut temp_string);
+        // C++ `c1 = mouseOverlapColor(mouseOverlap, menuQuadColor)` — the
+        // author line's hover inversion (MenuGame.cpp:5141, issue 058).
         render_text_color(
             target,
             &mut app.txt_selection_small,
@@ -2417,7 +2627,7 @@ fn draw_level_selection_right_side(
                 indent,
                 height - app.h_selection_small * layout::FONT_HEIGHT_OFFSET,
             ),
-            reads.menu_quad_color,
+            mouse_overlap_color(mouse_overlap, reads.menu_quad_color),
         );
 
         height += app.h_selection_small + app.text_to_quad_border - app.slct_frame_size;
@@ -2462,18 +2672,35 @@ fn draw_level_selection_right_side(
             height + app.pack_label_height + app.slct_frame_size,
         );
 
-        // Body (module docs: no hover).
+        // Body (issue 058: the C++'s `bodyMins` / `bodyMaxs` hover / click
+        // region — `{temp, height + slctFrameSize}` .. `{w, height +
+        // packLabelHeight}`, MenuGame.cpp:5179-5181).
+        let body_mins = Vec2::new(temp_x, height + app.slct_frame_size);
+        let body_maxs = Vec2::new(w, height + app.pack_label_height);
+        let mouse_overlap = mouse.overlaps(body_mins, body_maxs);
+        // C++ `overlayMouseOverlapAndUpdateHover` — the overlap's
+        // `mouseHovering = true` half.
+        if mouse_overlap {
+            shared.mouse_hovering = true;
+        }
         create_quad(
             &mut app.menu_quads,
-            reads.menu_quad_color,
+            mouse_overlap_color(mouse_overlap, reads.menu_quad_color),
             temp_x,
             w,
             height + app.slct_frame_size,
             height + app.pack_label_height,
         );
 
-        // C++ :5131-5145 — the label-row quads render (the click edge is
-        // the no-mouse path; `mustChangePackIndexTo` never fires).
+        // C++ :5189-5193 — the pack-label click edge (issue 058): the
+        // `mouseLeftRisingEdge()` over the label arms
+        // `mustChangePackIndexTo` (the C++'s
+        // `!mustChangePackIndexTo.has_value()` first-click-wins); the
+        // `update`'s `changePackTo` (MenuGame.cpp:2725-2733) consumes
+        // next frame.
+        if mouse_overlap && mouse.rising_edge && shared.must_change_pack_index_to.is_none() {
+            shared.must_change_pack_index_to = Some(i as i32);
+        }
         target.draw_vertices(app.menu_quads.as_slice(), RenderStates::default());
 
         // Name & >.
@@ -2496,11 +2723,12 @@ fn draw_level_selection_right_side(
             height + outer_frame - app.h_selection_medium * layout::FONT_HEIGHT_OFFSET,
         ));
         // C++ :5157-5162 — save / set / render / restore the fill
-        // (`mouseOverlapColor(false, menuTextColor)` = `menuTextColor`).
+        // (`mouseOverlapColor(mouseOverlap, menuTextColor)` — the label's
+        // hover inversion, issue 058).
         {
             let old = app.txt_selection_medium.get_fill_color();
             app.txt_selection_medium
-                .set_fill_color(reads.menu_text_color);
+                .set_fill_color(mouse_overlap_color(mouse_overlap, reads.menu_text_color));
             target.draw_text(&app.txt_selection_medium, RenderStates::default());
             app.txt_selection_medium.set_fill_color(old);
         }
@@ -2614,6 +2842,7 @@ fn draw_level_selection_left_side(
     assets: &Rc<dyn MenuAssets>,
     network: &Rc<dyn NetworkClient>,
     revert_offset: bool,
+    mouse: &MenuMouse,
     target: &mut dyn DrawTarget,
 ) {
     let w = reads.w;
@@ -2960,10 +3189,21 @@ fn draw_level_selection_left_side(
     height += app.h_selection_small + app.text_to_quad_border;
 
     // C++ :5488-5517 — the favorite "button" (the frame quads + the body +
-    // the centred label; the click edge is the no-mouse path, so
-    // `mustFavorite` never fires).
+    // the centred label; issue 058: the C++'s backdrop `bodyMins` /
+    // `bodyMaxs` hover / click region — `{lineThickness -
+    // panelOffset, height + lineThickness}` .. `{width,
+    // favoriteButtonBottom - lineThickness}` — is now live).
     app.menu_quads.reserve_more_quad(10);
     let favorite_button_bottom = height + 3.0 * app.h_selection_medium;
+
+    let body_mins = Vec2::new(line_thickness - panel_offset, height + line_thickness);
+    let body_maxs = Vec2::new(width, favorite_button_bottom - line_thickness);
+    let mouse_overlap = mouse.overlaps(body_mins, body_maxs);
+    // C++ `overlayMouseOverlapAndUpdateHover` (MenuGame.cpp:3668-3677) —
+    // the overlap's `mouseHovering = true` half.
+    if mouse_overlap {
+        shared.mouse_hovering = true;
+    }
 
     create_quad(
         &mut app.menu_quads,
@@ -2999,7 +3239,9 @@ fn draw_level_selection_left_side(
     );
     create_quad(
         &mut app.menu_quads,
-        reads.menu_selection_color,
+        // C++ `createQuad(mouseOverlapColor(mouseOverlap,
+        // menuSelectionColor), bodyMins, bodyMaxs)` (MenuGame.cpp:5523).
+        mouse_overlap_color(mouse_overlap, reads.menu_selection_color),
         line_thickness - panel_offset,
         width,
         height + line_thickness,
@@ -3007,6 +3249,15 @@ fn draw_level_selection_left_side(
     );
     target.draw_vertices(app.menu_quads.as_slice(), RenderStates::default());
     app.menu_quads.clear();
+
+    // C++ :5526-5529 — the click edge (issue 058): the
+    // `mouseLeftRisingEdge()` over the backdrop arms `mustFavorite`
+    // (the C++'s `!mustFavorite` first-arm guard); the `update`'s
+    // `addRemoveFavoriteLevel` (MenuGame.cpp:2702-2707) consumes next
+    // frame.
+    if mouse_overlap && !shared.must_favorite && mouse.rising_edge {
+        shared.must_favorite = true;
+    }
 
     render_text_centered_offset_color(
         target,
@@ -3021,7 +3272,9 @@ fn draw_level_selection_left_side(
             height + app.h_selection_medium * (1.0 - layout::FONT_HEIGHT_OFFSET),
         ),
         -panel_offset,
-        reads.menu_quad_color,
+        // C++ :5541 — `mouseOverlapColor(mouseOverlap, menuQuadColor)`
+        // (the label's hover inversion, issue 058).
+        mouse_overlap_color(mouse_overlap, reads.menu_quad_color),
     );
 
     height = favorite_button_bottom + app.text_to_quad_border;
@@ -4166,9 +4419,15 @@ fn pack_signature(d: &LevelDrawer) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oh_menu::seams::{FakeAssets, FakeConfig, LoadResults, MenuConfig, NoopNetwork};
+    use oh_menu::seams::{
+        FakeAssets, FakeConfig, LoadResults, MenuConfig, MenuWindow, NoopNetwork,
+    };
     use oh_render::draw::{RenderStates, Vertex};
     use std::rc::Rc;
+
+    // issue 058 — the no-mouse input (the pre-port state — the existing
+    // tests' no-hover assertions run on this).
+    const NO_INPUT: oh_render::input::InputState = oh_render::input::InputState::new();
 
     /// A `DrawTarget` that records the call stream (type + a short
     /// fingerprint per call) so the tests assert the C++ draw-call ORDER.
@@ -4457,7 +4716,7 @@ mod tests {
             s.state = States::SMain;
         }
         let mut rec = Recording::default();
-        draw(&menu, &mut app, &mut rec);
+        draw(&menu, &mut app, &mut rec, &NO_INPUT);
         assert!(!app.s_online_is_good);
         assert_eq!(
             app.s_online.get_texture().pixels().get_pixels(),
@@ -4480,7 +4739,7 @@ mod tests {
             s.state = States::SMain;
         }
         let mut rec = Recording::default();
-        draw(&menu, &mut app, &mut rec);
+        draw(&menu, &mut app, &mut rec, &NO_INPUT);
         assert!(app.s_online_is_good, "Connected + rt keys → stateGood");
         assert_eq!(
             app.s_online.get_texture().pixels().get_pixels(),
@@ -4488,7 +4747,7 @@ mod tests {
             "stateGood picks onlineIcon.png"
         );
         let mut rec2 = Recording::default();
-        draw(&menu, &mut app, &mut rec2);
+        draw(&menu, &mut app, &mut rec2, &NO_INPUT);
         assert!(
             app.s_online_is_good,
             "no flip on the second draw (issue 36)"
@@ -4522,7 +4781,7 @@ mod tests {
             s.state = States::SMain;
             s.current_credits_id = credits_id;
             drop(s);
-            draw(&menu, &mut app, &mut rec);
+            draw(&menu, &mut app, &mut rec, &NO_INPUT);
             assert_eq!(
                 app.credits_bar2.get_texture().pixels().get_pixels(),
                 app.credits_bar2_frames[expected_frame]
@@ -4541,7 +4800,7 @@ mod tests {
             s.state = States::SMain;
         }
         let mut rec = Recording::default();
-        draw(&menu, &mut app, &mut rec);
+        draw(&menu, &mut app, &mut rec, &NO_INPUT);
 
         let calls = &rec.calls;
         // C++ order: clear → background view → background verts → overlay
@@ -4600,7 +4859,7 @@ mod tests {
         }
         let item_count = menu.main_menu.get_category().get_items().len();
         let mut rec = Recording::default();
-        draw(&menu, &mut app, &mut rec);
+        draw(&menu, &mut app, &mut rec, &NO_INPUT);
 
         let main_menu_verts = rec
             .calls
@@ -4664,7 +4923,7 @@ mod tests {
             s.state = States::LoadingScreen;
         }
         let mut rec = Recording::default();
-        draw(&menu, &mut app, &mut rec);
+        draw(&menu, &mut app, &mut rec, &NO_INPUT);
         let calls = &rec.calls;
         // C++ order: clear → background view (the `mainOrAbove` gate keeps
         // the hexagon background off) → overlay view → `drawLoadResults`
@@ -4700,7 +4959,7 @@ mod tests {
             s.state = States::LoadingScreen;
         }
         let mut rec = Recording::default();
-        draw(&menu, &mut app, &mut rec);
+        draw(&menu, &mut app, &mut rec, &NO_INPUT);
         let calls = &rec.calls;
         // C++ :4255-4296 — nine errors > `maxErrorsOnScreen` (7): the
         // scrollbar draws (1 quad = 6 verts) and exactly 7 error lines
@@ -4729,7 +4988,7 @@ mod tests {
             s.current_level = Some(assets.level("pack1_A").unwrap());
         }
         let mut rec = Recording::default();
-        draw(&menu, &mut app, &mut rec);
+        draw(&menu, &mut app, &mut rec, &NO_INPUT);
         let calls: Vec<String> = rec.calls.clone();
         // C++ :5926-5949 order (the fake has one pack, three levels, no
         // favorites, an offline `NoopNetwork` → no RANKED badges, the
@@ -4819,13 +5078,13 @@ mod tests {
             s.lvl_slct.level_data_ids = vec!["pack1_A".into()];
             s.current_level = Some(assets.level("pack1_A").unwrap());
         }
-        draw(&menu, &mut app, &mut Recording::default());
+        draw(&menu, &mut app, &mut Recording::default(), &NO_INPUT);
         {
             menu.shared().borrow_mut().level_details_offset = 300.0;
         }
         let item_count = menu.main_menu.get_category().get_items().len();
         let mut rec = Recording::default();
-        draw(&menu, &mut app, &mut rec);
+        draw(&menu, &mut app, &mut rec, &NO_INPUT);
         let calls: Vec<String> = rec.calls.clone();
 
         // The fold: one 18-vert level row + its name/author, the 6-vert
@@ -4895,12 +5154,12 @@ mod tests {
         // the C++ `refreshCamera` → `updateLevelSelectionDrawingParameters`);
         // the regular drawer's X-offset is set afterwards, as the C++'s
         // `switchToFromFavoriteLevels` leaves it non-zero while folding.
-        draw(&menu, &mut app, &mut Recording::default());
+        draw(&menu, &mut app, &mut Recording::default(), &NO_INPUT);
         {
             menu.shared().borrow_mut().lvl_slct.x_offset = 100.0;
         }
         let mut rec = Recording::default();
-        draw(&menu, &mut app, &mut rec);
+        draw(&menu, &mut app, &mut rec, &NO_INPUT);
         let calls: Vec<String> = rec.calls.clone();
         // The active (favorites) drawer: one level row + the 6-vert bottom
         // frame + ONE pack label (the "FAVORITES" one — `packsSize == 1`)
@@ -4935,7 +5194,7 @@ mod tests {
             s.entered_str = "Gary".into();
         }
         let mut rec = Recording::default();
-        draw(&menu, &mut app, &mut rec);
+        draw(&menu, &mut app, &mut rec, &NO_INPUT);
         let calls: Vec<String> = rec.calls.clone();
         // C++ :5842-5845 — `drawEnteringTextBoot()` (2 instructions + the
         // entered name) + `drawGraphics()` (3 bars + version); no
@@ -4969,7 +5228,7 @@ mod tests {
             menu.shared().borrow_mut().state = States::SLPSelectBoot;
         }
         let mut rec = Recording::default();
-        draw(&menu, &mut app, &mut rec);
+        draw(&menu, &mut app, &mut rec, &NO_INPUT);
         let calls: Vec<String> = rec.calls.clone();
         // C++ :5847-5850 — `drawProfileSelectionBoot()`: the 2
         // instructions, then per profile the name + the survival line
@@ -5005,7 +5264,7 @@ mod tests {
             s.entered_str = "G".into();
         }
         let mut rec = Recording::default();
-        draw(&menu, &mut app, &mut rec);
+        draw(&menu, &mut app, &mut rec, &NO_INPUT);
         let calls: Vec<String> = rec.calls.clone();
         let item_count = menu
             .main_menu
@@ -5055,7 +5314,7 @@ mod tests {
             menu.shared().borrow_mut().state = States::SLPSelect;
         }
         let mut rec = Recording::default();
-        draw(&menu, &mut app, &mut rec);
+        draw(&menu, &mut app, &mut rec, &NO_INPUT);
         let calls: Vec<String> = rec.calls.clone();
         let item_count = menu
             .main_menu
@@ -5111,7 +5370,7 @@ mod tests {
         // The first draw runs the C++ `mustRefresh` block (the port's
         // `refresh_if_stale`), which zeroes the category offsets — as the
         // C++'s navigation does, set them afterwards.
-        draw(&menu, &mut app, &mut Recording::default());
+        draw(&menu, &mut app, &mut Recording::default(), &NO_INPUT);
         *menu.main_menu.get_category().get_offset_mut() = 400.0; // folding
         let gameplay = menu.options_menu.get_category_by_name("gameplay");
         menu.options_menu.set_category(&gameplay); // navigate into the submenu
@@ -5119,7 +5378,7 @@ mod tests {
         *gameplay.get_offset_mut() = 540.0; // fully open (`indentSmall`)
 
         let mut rec = Recording::default();
-        draw(&menu, &mut app, &mut rec);
+        draw(&menu, &mut app, &mut rec, &NO_INPUT);
         let calls: Vec<String> = rec.calls.clone();
         assert_eq!(calls[0], "clear");
         assert!(calls[1].starts_with("view("));
@@ -5159,12 +5418,12 @@ mod tests {
             let mut s = menu.shared().borrow_mut();
             s.state = States::MOnline;
         }
-        draw(&menu, &mut app, &mut Recording::default());
+        draw(&menu, &mut app, &mut Recording::default(), &NO_INPUT);
         *menu.main_menu.get_category().get_offset_mut() = 400.0; // folding
         menu.update(0.0); // the `when` predicates (offline: CONNECT only)
 
         let mut rec = Recording::default();
-        draw(&menu, &mut app, &mut rec);
+        draw(&menu, &mut app, &mut rec, &NO_INPUT);
         let calls: Vec<String> = rec.calls.clone();
         assert_eq!(calls[0], "clear");
         assert!(calls[1].starts_with("view("));
@@ -5196,14 +5455,14 @@ mod tests {
             let mut s = menu.shared().borrow_mut();
             s.state = States::MOpts;
         }
-        draw(&menu, &mut app, &mut Recording::default());
+        draw(&menu, &mut app, &mut Recording::default(), &NO_INPUT);
         *menu.main_menu.get_category().get_offset_mut() = 400.0;
         menu.update(0.0);
 
         let mut a = Recording::default();
-        draw(&menu, &mut app, &mut a);
+        draw(&menu, &mut app, &mut a, &NO_INPUT);
         let mut b = Recording::default();
-        draw(&menu, &mut app, &mut b);
+        draw(&menu, &mut app, &mut b, &NO_INPUT);
         assert_eq!(a.calls, b.calls, "two draws of the same state match");
     }
 
@@ -5215,7 +5474,7 @@ mod tests {
             menu.shared().borrow_mut().state = States::EpilepsyWarning;
         }
         let mut rec = Recording::default();
-        draw(&menu, &mut app, &mut rec);
+        draw(&menu, &mut app, &mut rec, &NO_INPUT);
         let calls: Vec<String> = rec.calls.clone();
         // C++ :5836-5840 — the sprite + the line, then the C++ `return`
         // (no dialog / graphics / online status).
@@ -5245,9 +5504,9 @@ mod tests {
             s.state = States::SMain;
         }
         let mut a = Recording::default();
-        draw(&menu, &mut app, &mut a);
+        draw(&menu, &mut app, &mut a, &NO_INPUT);
         let mut b = Recording::default();
-        draw(&menu, &mut app, &mut b);
+        draw(&menu, &mut app, &mut b, &NO_INPUT);
         assert_eq!(a.calls, b.calls, "two draws of the same state match");
     }
 
@@ -5295,7 +5554,7 @@ mod tests {
             }
             let mut app = MenuDraw::new(&credits_assets_dir(), &f, &f);
             let mut rec = Recording::default();
-            draw(&menu, &mut app, &mut rec);
+            draw(&menu, &mut app, &mut rec, &NO_INPUT);
 
             // The C++ formula (MenuGame.cpp:4207-4242), on the
             // `refresh_view` space + the ink probe heights (`font_height`
@@ -5408,7 +5667,7 @@ mod tests {
             s.show_dialog_box("A LINE\n");
         }
         let mut rec = Recording::default();
-        draw(&menu, &mut app, &mut rec);
+        draw(&menu, &mut app, &mut rec, &NO_INPUT);
 
         // Center y (C++ `:231-232`): `h − halfHeight − lineHeight·0.9 +
         // doubleFrameSize`, then the first line's `+ 5.0`. The FakeConfig
@@ -5454,7 +5713,7 @@ mod tests {
             );
         }
         let mut rec = Recording::default();
-        draw(&menu, &mut app, &mut rec);
+        draw(&menu, &mut app, &mut rec, &NO_INPUT);
         let expected_x: f32 = 10.0 + 24.0 + 100.0 / 2.0 - width_of("A", 22) / 2.0;
         let expected_y: f32 = 20.0 - line_h * 0.9 + 24.0 + 5.0;
         let (_, pos) = rec
@@ -5503,7 +5762,7 @@ mod tests {
             s.show_dialog_box("A LINE\n");
         }
         let mut rec = Recording::default();
-        draw(&menu, &mut app, &mut rec);
+        draw(&menu, &mut app, &mut rec, &NO_INPUT);
         // Center x (C++ `drawCenter`): `w'/2` with `w' = configW·fmax`,
         // `fmax = max(1024/1024, 768/768) = 1.0` → `w' = 1024` → center
         // `512.0`. The line is drawn at `center − width/2`.
@@ -5521,5 +5780,339 @@ mod tests {
             expected_center,
             1365.33 / 2.0
         );
+    }
+    // -----------------------------------------------------------------
+    // issue 058 (row 29m) — the C++'s menu mouse surface: the
+    // `mouseHovering` gate (the left / right input actions' gate,
+    // MenuGame.cpp:925 / :934), the click edges (`mustUseMenuItem` /
+    // `mustChangeIndexTo` / `mustChangePackIndexTo` / `mustFavorite` /
+    // `mustPlay`, the `mouseLeftRisingEdge`'s, MenuGame.cpp:3757-3761 /
+    // :5064-5075 / :5189-5193 / :5526-5529), the `mouseOverlapColor`
+    // hover inversion (:3680-3693), the `overlayMouseOverlap` gate +
+    // 1px tolerance (:3652-3666), and the draw head / tail's
+    // `mousePressed` / `mouseWasPressed` / `lastMouseClick` samples
+    // (:5753-5756 / :5974-5977).
+    // -----------------------------------------------------------------
+
+    /// A `MenuGame` + `FakeWindow` (the held mouse handle) + `MenuDraw`
+    /// in a given state (the `mouse_pixel`'s test handle).
+    fn menu_with_window(state: States) -> (Rc<MenuGame>, Rc<oh_menu::FakeWindow>, MenuDraw) {
+        let assets = FakeAssets::new();
+        assets.add_pack("pack1", &["A", "B", "C"]);
+        let window = oh_menu::FakeWindow::new();
+        let menu = Rc::new(MenuGame::new(
+            assets,
+            FakeConfig::new(),
+            Rc::new(NoopNetwork),
+            oh_menu::RecordingAudio::new(),
+            Rc::new(oh_menu::NoopTouch),
+            Rc::new(oh_menu::NoMenuJoystick),
+            window.clone(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Rc::new(oh_menu::layout::LinearFontHeight),
+        ));
+        menu.shared().borrow_mut().change_state_to(state);
+        // The boot flow's `ignore_inputs` clear (the C++'s boot-screen
+        // close's `setIgnoreAllInputs(0)`, the port's
+        // `advance_boot_screen`'s :973): the direct state set bypasses
+        // it, and the draw head's `mousePressed`'s `ignoreInputs == 0`
+        // term (MenuGame.cpp:5755-5756) needs it.
+        menu.shared().borrow_mut().set_ignore_all_inputs(0);
+        let f = font();
+        let app = MenuDraw::new(&credits_assets_dir(), &f, &f);
+        (menu, window, app)
+    }
+
+    /// Sweeps the window's right band (the main-menu column's x) over
+    /// the full height; returns the FIRST (smallest-y) pointer position
+    /// (window pixels) whose `draw`'s `mouseHovering` set (the
+    /// topmost hovered item's region) + the top-left "no item"
+    /// control. The sweep is the test's oracle: the exact item rects
+    /// ride on the eased offsets (the C++'s `calcMenuOffset`'s), so
+    /// the test probes instead of re-deriving them.
+    fn first_hitting_pixel(
+        menu: &MenuGame,
+        window: &oh_menu::FakeWindow,
+        app: &mut MenuDraw,
+        x_window: f32,
+    ) -> Option<Vec2> {
+        let no_input = NO_INPUT;
+        let (_, win_h) = window.size();
+        let mut rec = Recording::default();
+        for y in (0..=win_h as i32).step_by(2) {
+            window.set_mouse_pixel(Vec2::new(x_window, y as f32));
+            draw(menu, app, &mut rec, &no_input);
+            if menu.shared().borrow().mouse_hovering {
+                return Some(Vec2::new(x_window, y as f32));
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn overlay_mouse_overlap_gate_and_1px_tolerance() {
+        // The C++'s gate (MenuGame.cpp:3657-3661): hidden cursor or no
+        // focus — every overlap false, whatever the pointer's place.
+        let m = MenuMouse {
+            gate: false,
+            position: Vec2::new(5.0, 5.0),
+            rising_edge: false,
+        };
+        assert!(!m.overlaps(Vec2::new(0.0, 0.0), Vec2::new(10.0, 10.0)));
+        // The C++'s 1px-tolerance strict inequalities (:3663-3665).
+        let m = MenuMouse {
+            gate: true,
+            position: Vec2::new(5.0, 5.0),
+            rising_edge: false,
+        };
+        assert!(m.overlaps(Vec2::new(0.0, 0.0), Vec2::new(10.0, 10.0)));
+        assert!(!m.overlaps(Vec2::new(20.0, 0.0), Vec2::new(10.0, 10.0)));
+        // 1px outside the max edge: still in (the tolerance); AT
+        // max + 1: out (the strict `<`).
+        let m = MenuMouse {
+            gate: true,
+            position: Vec2::new(10.5, 5.0),
+            rising_edge: false,
+        };
+        assert!(m.overlaps(Vec2::new(0.0, 0.0), Vec2::new(10.0, 10.0)));
+        let m = MenuMouse {
+            gate: true,
+            position: Vec2::new(11.0, 5.0),
+            rising_edge: false,
+        };
+        assert!(!m.overlaps(Vec2::new(0.0, 0.0), Vec2::new(10.0, 10.0)));
+        // The min edge's side (the strict `>`): 1px inside in, AT
+        // min - 1 out.
+        let m = MenuMouse {
+            gate: true,
+            position: Vec2::new(5.0, -0.5),
+            rising_edge: false,
+        };
+        assert!(m.overlaps(Vec2::new(0.0, 0.0), Vec2::new(10.0, 10.0)));
+        let m = MenuMouse {
+            gate: true,
+            position: Vec2::new(5.0, -1.0),
+            rising_edge: false,
+        };
+        assert!(!m.overlaps(Vec2::new(0.0, 0.0), Vec2::new(10.0, 10.0)));
+    }
+
+    #[test]
+    fn mouse_overlap_color_inverts_the_rgb_and_keeps_alpha_255() {
+        // C++ :3680-3693 — the `sf::Color{r, g, b}` ctor's alpha-255
+        // default (NOT the input's alpha).
+        let c = Color::new(10, 20, 30, 40);
+        assert_eq!(mouse_overlap_color(false, c), c);
+        assert_eq!(mouse_overlap_color(true, c), Color::new(245, 235, 225, 255));
+    }
+
+    #[test]
+    fn the_draw_head_samples_mouse_pressed_and_the_tail_stamps_last_mouse_click() {
+        let (menu, window, mut app) = menu_with_window(States::SMain);
+        // Frame 1 — no button: `mousePressed` false (the C++'s
+        // draw-head sample, :5753-5756).
+        window.set_mouse_pixel(Vec2::new(10.0, 10.0));
+        draw(&menu, &mut app, &mut Recording::default(), &NO_INPUT);
+        {
+            let s = menu.shared().borrow();
+            assert!(!s.mouse_pressed);
+            assert!(!s.mouse_was_pressed);
+            assert!(s.last_mouse_click.is_none());
+        }
+        // Frame 2 — LMB down: the rising edge (the C++'s
+        // `mouseLeftRisingEdge()`, :3695-3697) + the tail's
+        // `lastMouseClick` stamp (:5974-5977).
+        let mut pressed = InputState::new();
+        pressed.set_button_pressed(Button::LEFT, true);
+        draw(&menu, &mut app, &mut Recording::default(), &pressed);
+        {
+            let s = menu.shared().borrow();
+            assert!(s.mouse_pressed);
+            assert!(!s.mouse_was_pressed);
+            assert!(s.last_mouse_click.is_some());
+        }
+        // Frame 3 — LMB still down: `mousePressed` is a LEVEL sample
+        // (the C++'s `sf::Mouse::isButtonPressed` read — held stays
+        // true); the edge readers see `mouseWasPressed ==
+        // mousePressed` → no rising edge.
+        draw(&menu, &mut app, &mut Recording::default(), &pressed);
+        {
+            let s = menu.shared().borrow();
+            assert!(s.mouse_pressed, "the held button's level sample");
+            assert!(s.mouse_was_pressed);
+        }
+        // Frame 4 — released: the level sample clears; the previous
+        // frame's level still sits in `mouseWasPressed` (the C++'s
+        // `mouseWasPressed = mousePressed` head order, :5754).
+        draw(&menu, &mut app, &mut Recording::default(), &NO_INPUT);
+        {
+            let s = menu.shared().borrow();
+            assert!(!s.mouse_pressed);
+            assert!(s.mouse_was_pressed);
+        }
+        // Frame 5 — the clear settles.
+        draw(&menu, &mut app, &mut Recording::default(), &NO_INPUT);
+        {
+            let s = menu.shared().borrow();
+            assert!(!s.mouse_pressed);
+            assert!(!s.mouse_was_pressed);
+        }
+    }
+
+    #[test]
+    fn a_hover_over_a_main_menu_item_sets_mouse_hovering_and_arms_the_click() {
+        let (menu, window, mut app) = menu_with_window(States::SMain);
+        // The window's right band (the main-menu column's x; the
+        // fixture's window == config == layout space, the 025g
+        // "window == config" case — the `map_pixel_to_coords`'s
+        // ~identity).
+        let (win_w, _) = window.size();
+        let hit = first_hitting_pixel(&menu, &window, &mut app, win_w - 10.0)
+            .expect("the main-menu column's items hover");
+        // The control: the window's left edge never hovers (the items'
+        // regions are the right column).
+        let no_input = NO_INPUT;
+        let mut rec = Recording::default();
+        for i in 0..45 {
+            let y = i as f32 * 10.0;
+            window.set_mouse_pixel(Vec2::new(5.0, y));
+            draw(&menu, &mut app, &mut rec, &no_input);
+            assert!(
+                !menu.shared().borrow().mouse_hovering,
+                "no main-menu item at the window's left edge (y={y})"
+            );
+        }
+        // The hovered item: the gate the left / right input actions'
+        // callbacks read (the `windowed`'s bind's `mouse_hovering`
+        // probe, MenuGame.cpp:925 / :934).
+        window.set_mouse_pixel(hit);
+        draw(&menu, &mut app, &mut rec, &no_input);
+        assert!(
+            menu.shared().borrow().mouse_hovering,
+            "the C++'s `mouseHovering`'s `overlayMouseOverlapAndUpdateHover` set"
+        );
+        // The click: the LMB's rising edge over the overlapped,
+        // enabled item arms `mustUseMenuItem` (:3757-3761) — the
+        // topmost hit is item 0 ("LEVEL SELECT").
+        let mut pressed = InputState::new();
+        pressed.set_button_pressed(Button::LEFT, true);
+        draw(&menu, &mut app, &mut rec, &pressed);
+        assert_eq!(
+            menu.shared().borrow().must_use_menu_item,
+            Some(0),
+            "the topmost hovered item is the `main` category's item 0"
+        );
+        // The `update`'s exec (MenuGame.cpp:2681-2698) consumes it:
+        // item 0's action moves to the level selection.
+        menu.update(1.0);
+        assert_eq!(menu.state(), States::LevelSelection);
+        assert_eq!(menu.shared().borrow().must_use_menu_item, None);
+    }
+
+    #[test]
+    fn a_held_then_released_left_button_does_not_re_arm_the_click() {
+        let (menu, window, mut app) = menu_with_window(States::SMain);
+        let (win_w, _) = window.size();
+        let hit = first_hitting_pixel(&menu, &window, &mut app, win_w - 10.0)
+            .expect("the main-menu column's items hover");
+        window.set_mouse_pixel(hit);
+        let mut rec = Recording::default();
+        let mut pressed = InputState::new();
+        pressed.set_button_pressed(Button::LEFT, true);
+        // Frame 1 — the press: the arm.
+        draw(&menu, &mut app, &mut rec, &pressed);
+        assert_eq!(menu.shared().borrow().must_use_menu_item, Some(0));
+        // Frame 2 — held: the head's level sample keeps `mousePressed`
+        // true, but `mouseWasPressed` is equally true → no NEW rising
+        // edge (the C++'s edge, not a level).
+        draw(&menu, &mut app, &mut rec, &pressed);
+        assert_eq!(
+            menu.shared().borrow().must_use_menu_item,
+            Some(0),
+            "the pending arm persists (no NEW arm, no clear — the C++'s             flag lives to the `update`'s consume)"
+        );
+        // Frame 3 — released: still no edge.
+        draw(&menu, &mut app, &mut rec, &NO_INPUT);
+        assert_eq!(menu.shared().borrow().must_use_menu_item, Some(0));
+    }
+
+    #[test]
+    fn the_hidden_cursor_gates_every_hover_and_click() {
+        let (menu, window, mut app) = menu_with_window(States::SMain);
+        let (win_w, _) = window.size();
+        let hit = first_hitting_pixel(&menu, &window, &mut app, win_w - 10.0)
+            .expect("the main-menu column's items hover (cursor visible)");
+        // The C++ ctor's `setMouseCursorVisible(true)` (:245) is the
+        // fake's default; the C++'s `KeyPressed` hide (:278-280) is the
+        // `set_mouse_cursor_visible(false)` here (the `MenuWindow`
+        // seam's method, the `use` above).
+        window.set_mouse_cursor_visible(false);
+        window.set_mouse_pixel(hit);
+        let mut rec = Recording::default();
+        let mut pressed = InputState::new();
+        pressed.set_button_pressed(Button::LEFT, true);
+        draw(&menu, &mut app, &mut rec, &pressed);
+        {
+            let s = menu.shared().borrow();
+            assert!(
+                !s.mouse_hovering,
+                "the C++'s `overlayMouseOverlap`'s cursor gate"
+            );
+            assert_eq!(
+                s.must_use_menu_item, None,
+                "the click edge's overlap term is false"
+            );
+        }
+    }
+
+    #[test]
+    fn a_level_selection_click_arms_and_consumes_the_level_click_flags() {
+        // The C++'s level-body / pack-label / favorite-button click
+        // edges (:5064-5075 / :5189-5193 / :5526-5529) — the
+        // topmost-hit's flag arms on the LMB's rising edge and the
+        // `update`'s consume block (:2702-2733) clears it (the one-arm
+        // per frame's `else if` chain — the other arms stay pending).
+        let (menu, window, mut app) = menu_with_window(States::LevelSelection);
+        // Probe the level-selection's right region (the pack labels'
+        // row + the level bodies' column + the favorite button).
+        let (win_w, win_h) = window.size();
+        let hit = first_hitting_pixel(&menu, &window, &mut app, win_w * 0.8)
+            .or_else(|| first_hitting_pixel(&menu, &window, &mut app, win_w * 0.9))
+            .or_else(|| {
+                // the sweep's x's can miss the regions' y bands' gaps;
+                // the full-height sweep at the far right (every region
+                // reaches `w`).
+                first_hitting_pixel(&menu, &window, &mut app, win_w - 10.0)
+            })
+            .expect("a level-selection region hovers");
+        let _ = win_h;
+        window.set_mouse_pixel(hit);
+        let mut rec = Recording::default();
+        draw(&menu, &mut app, &mut rec, &NO_INPUT);
+        assert!(menu.shared().borrow().mouse_hovering);
+        let mut pressed = InputState::new();
+        pressed.set_button_pressed(Button::LEFT, true);
+        draw(&menu, &mut app, &mut rec, &pressed);
+        {
+            let s = menu.shared().borrow();
+            let armed = s.must_favorite
+                || s.must_play
+                || s.must_change_index_to.is_some()
+                || s.must_change_pack_index_to.is_some();
+            assert!(armed, "the clicked region's flag armed");
+        }
+        // The `update`'s consume (the one-arm chain): at least the
+        // first arm fires + clears (the pending rest stay — the
+        // chain's structure, not a clear-all).
+        menu.update(1.0);
+        {
+            let s = menu.shared().borrow();
+            assert!(!s.must_favorite);
+            assert!(!s.must_play);
+        }
     }
 }

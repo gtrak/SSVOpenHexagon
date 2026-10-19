@@ -30,6 +30,27 @@
 //     `down` are the 054 evidence's vocabulary) and `s:NAME` captures a
 //     screenshot to `--shots/NAME.png` (the per-step evidence — the
 //     final screenshot's `--shot` sibling).
+//   node tools/web-probe.mjs http://127.0.0.1:8080/ 60 --phone \
+//     --expect-cm \
+//     --seq=Enter,Enter,cm,t:menu;900,cm:ime,hc:Enter;2000 \
+//     # issue 058 (F37): the browser context-menu's suppression — the
+//     two boot Enters reach the name entry (the `#ime`'s focus), `cm`
+//     is the CDP RIGHT-CLICK at the canvas's center (the page's
+//     `contextmenu` event — the shell's F37 `preventDefault`'s
+//     `defaultPrevented` is the step check's dom log's `cm:<target>/
+//     prev:<bool>` entry), `t:menu;900` is the LONG-PRESS (the mobile
+//     context menu's trigger — the 900 ms hold's browser synthesis —
+//     the `menu` corner: the name entry's up zone, a no-state-change
+//     hold, unlike the `ok` center's profile-create),
+//     `cm:ime` right-clicks the #ime input (the EXCLUSION: its `prev`
+//     must be false — the desktop's paste / copy affordance stays),
+//     and `hc:KEY;MS` HOLDS the key with a right-click at the 50% mark
+//     (the held-input focus-loss probe: the focus counters' blur half
+//     say whether the context menu ever took the window's focus — a
+//     headless context menu that does NOT take focus is the honest
+//     negative; the suppression's defaultPrevented half is the
+//     measurement either way). `--expect-cm` gates the exit code on the
+//     verdict (a canvas contextmenu prevented + no #ime one).
 //
 // The port logs `status booted=…;exit_code=…;ticks=…;state=menu:<States|game>` through its
 // log_sink (oh-web installs a console.log sink), so the state timeline below is the port's own
@@ -72,7 +93,18 @@ const keys = keysArg ? keysArg.split(',') : [];
 //   the canvas + DPR at run time; the named presets `t:menu;DUR` /
 //   `t:ok;DUR` / `t:left;DUR` / `t:right;DUR` / `t:up;DUR` /
 //   `t:down;DUR` are the grid's zone centers + the MENU corner — the
-//   `;` keeps the triple off the seq's `,` delimiter); `s:NAME`
+//   `;` keeps the triple off the seq's `,` delimiter); `m:BTN;MS`
+//   holds the mouse button (CDP `Input.dispatchMouseEvent` press at the
+//   canvas center for MS ms, then release — the issue 057 held-input
+//   reproduction's mouse half; optional third field = a mid-hold
+//   screenshot name); `mv:X;Y` moves the mouse to X;Y (the CSS viewport's
+//   coords — the menu's hover hit-test's positioning, the port's
+//   `MouseMoved` fold's + the 29u1 cursor re-show's source); `mc:X;Y[;MS]`
+//   clicks (presses + holds + releases) at X;Y — the issue 058 click
+//   acceptance's driver (the menu item's click-to-activate: NO implicit
+//   move — the port's `pointerdown` fold moves the mouse to the press's
+//   position itself, so the move-first case is the `mv:` + `mc:` pair);
+//   `s:NAME`
 //   captures a screenshot to `--shots/NAME.png` (the per-step
 //   evidence; `--shots` absent → the `--shot` path's directory).
 // * `--phone` — the emulated phone viewport (the
@@ -96,12 +128,36 @@ const CHROME = process.env.OH_CHROME
   || ['/home/gary/.agent-browser/browsers/chrome-148.0.7778.97/chrome',
       '/usr/bin/google-chrome', '/usr/bin/chromium'].find((p) => existsSync(p));
 if (!CHROME) { console.error('web-probe: no chrome found; set OH_CHROME=/path/to/chrome'); process.exit(1); }
-const PORT = Number(process.env.OH_CDP_PORT || 9335);
+// The CDP port is PER-PID (the lane-058 follow-up's finding: the fixed
+// 9335 let a probe run silently drive a STALE Chrome left behind by an
+// earlier run (its `timeout`-killed node never ran the kill) — the
+// stale Chrome's own user-data-dir / IDBFS then answered the run, and
+// its page state (an old profile, an old SMain) was measured as if it
+// were fresh. A per-PID port makes the health-check's owner the
+// probe's own Chrome: a stale instance holds its own, different port.)
+const PORT = Number(process.env.OH_CDP_PORT || (10000 + (process.pid % 20000)));
 
+// OH_CHROME_EXTRA: extra Chrome args, `;`-separated (the lane-058
+// follow-up's headless artifact: without `--ozone-override-screen-size`
+// the SwiftShader compositor drops the mid-screen menu quads out of the
+// screenshot (they render black); the flag forces the large emulated
+// viewport's GL surface to composite. It is a MEASUREMENT-harness knob,
+// NOT a page or port setting — a real browser / Android never needs it).
 const chrome = spawn(CHROME, ['--headless=new', `--remote-debugging-port=${PORT}`, '--no-sandbox',
   '--disable-dev-shm-usage', '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
-  '--window-size=1280,720', '--no-first-run', `--user-data-dir=/tmp/oh-web-probe-profile-${process.pid}`, 'about:blank'],
+  `--window-size=${process.env.OH_WINDOW_SIZE || '1280,720'}`, '--no-first-run', `--user-data-dir=/tmp/oh-web-probe-profile-${process.pid}`, 'about:blank',
+  ...(process.env.OH_CHROME_EXTRA ? process.env.OH_CHROME_EXTRA.split(';').map((a) => a.trim()).filter(Boolean) : [])],
   { stdio: ['ignore', 'ignore', 'ignore'] });
+// The Chrome's death on ANY probe exit (the lane-058 follow-up's
+// companion to the per-PID port): a `timeout`'d run's SIGTERM used to
+// kill the node and orphan the Chrome (which then owned the CDP port
+// for the next run). The 'exit'/'SIGTERM'/'SIGINT' handlers cover the
+// node-side deaths; the SIGKILL (timeout -k) orphans no handler can
+// catch — the per-PID port bounds that case's damage to the dead
+// port, not to the next run's measurement.
+process.on('SIGTERM', () => { try { chrome.kill('SIGKILL'); } catch { /* already dead */ } process.exit(143); });
+process.on('SIGINT', () => { try { chrome.kill('SIGKILL'); } catch { /* already dead */ } process.exit(130); });
+process.on('exit', () => { try { chrome.kill('SIGKILL'); } catch { /* already dead */ } });
 
 const http = async (p, i) => (await fetch(`http://127.0.0.1:${PORT}${p}`, i)).json();
 let up = false;
@@ -215,6 +271,17 @@ await send('Page.navigate', { url });
     window.addEventListener('focus', () => { window.__fc.focus++; });
     document.addEventListener('visibilitychange', () => { window.__fc.vis++; }, true);
     document.addEventListener('fullscreenchange', () => { window.__fc.fs++; }, true);
+    // issue 058 (F37) — the contextmenu log: the listener installs
+    // LAZILY (the ensureCmListener below, on the first cm / hc: / t:
+    // step — AFTER the wasm boot): the page's own listener is
+    // registered by the module scope at boot (the await Module(cfg)'s
+    // resume), which is AFTER this installer's parse-time run — an
+    // installer-time listener would precede the page's and read
+    // defaultPrevented before the page's preventDefault ran (the
+    // first run's cm:c/prev:false — the probe's error, not the
+    // page's). The __cmlog (the final verdict's source) is seeded
+    // here so the verdict's read is a no-op-safe shape.
+    window.__cmlog = [];
     return 'installed';
   })()` });
 }
@@ -241,6 +308,26 @@ const snap = async (name) => {
   const r = await send('Page.captureScreenshot', { format: 'png' });
   if (r.result?.data) writeFileSync(p, Buffer.from(r.result.data, 'base64'));
   console.log(`  … screenshot -> ${p}`);
+};
+// issue 058 (F37) — the contextmenu listener's lazy install (the
+// installer block's note above: after the wasm boot's module-scope
+// listener, so the page's preventDefault runs first). Pushes to both
+// the per-step __keylog (the step check's dom dump) and the __cmlog
+// (the final verdict's source — NOT drained by the step checks).
+let cmListenerInstalled = false;
+const ensureCmListener = async () => {
+  if (cmListenerInstalled) return;
+  cmListenerInstalled = true;
+  await send('Runtime.evaluate', { expression: `(() => {
+    if (window.__cmInstalled) return 'already';
+    window.__cmInstalled = true;
+    document.addEventListener('contextmenu', (e) => {
+      const entry = 'cm:' + ((e.target && (e.target.id || e.target.tagName)) || '?') + '/prev:' + e.defaultPrevented;
+      if (window.__cmlog) window.__cmlog.push(entry);
+      if (window.__keylog && window.__keylog.length < 200) window.__keylog.push(entry);
+    });
+    return 'installed';
+  })()` });
 };
 const press = async (key) => {
   const vk = VK[key] ?? (key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0);
@@ -406,6 +493,7 @@ if (seq.length > 0) {
       // `ok` ((w/2, h/2) — the middle band's middle), `left`
       // ((w/6, h/2)), `right` ((5w/6, h/2)), `up` ((w/2, h/6)),
       // `down` ((w/2, 5h/6)).
+      await ensureCmListener();
       const tparts = item.slice(2).split(';');
       const tname = tparts[0];
       const tnums = tparts.map(Number);
@@ -507,6 +595,120 @@ if (seq.length > 0) {
       }
       await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: g.x, y: g.y, button: mbtn, buttons: 0, clickCount: 1 });
       await checkActivation();
+    } else if (item.startsWith('mv:')) {
+      // issue 058 (29m) — the COORDINATE mouse MOVE (the click
+      // acceptance's positioning half): a CDP
+      // `Input.dispatchMouseEvent` mouseMoved at X;Y (the CSS viewport's
+      // coords — the `m:`'s canvas-center's coordinate space; the
+      // browser delivers the canvas `pointermove` the port's feed rides
+      // on). The port folds it into the `MouseMoved` event (the
+      // `mouse_pixel`'s update — the menu's hover hit-test's source, the
+      // C++'s `getMousePosition`'s equivalent) + the 29u1 cursor
+      // re-show (a REAL move — the `actuallyMoved`'s delta). No button
+      // is pressed (the `m:`'s press's complement: position without
+      // edge).
+      const mparts = item.slice(3).split(';');
+      const mx = Number(mparts[0]);
+      const my = Number(mparts[1]);
+      console.log(`  … mouse move to ${mx}, ${my}`);
+      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: mx, y: my });
+      await checkActivation();
+    } else if (item.startsWith('mc:')) {
+      // issue 058 (29m) — the COORDINATE mouse CLICK (the menu item's
+      // click-to-activate's measurement — the plan's item 8, "menu
+      // click -> item exec"): a CDP mousePressed at X;Y held for MS ms
+      // (default 300 — the orchestrator's `m:left;60`'s no-op is the
+      // 60 ms' headless-frame artifact: at the SwiftShader pace (~20
+      // fps) a 60 ms hold spans < 2 frames, and the port's DRAW-TIME
+      // level sample (the C++'s `isButtonPressed`'s equivalent — the
+      // C++ would miss a sub-frame press the same way) needs the
+      // press visible for >= 1 full frame after a NOT-pressed draw),
+      // then the mouseReleased. NO implicit move: the port's
+      // `pointerdown` fold emits the `MouseMoved` (the press's
+      // position) BEFORE the `MouseButtonPressed` (window.rs's
+      // `pointer_down`'s mouse arm) — a click whose position arrives
+      // with the press is well-defined (the C++'s SFML live-position
+      // read's equivalent), so the no-prior-move case is this step's
+      // own territory (the (a)-vs-(b)'s distinguisher's half); the
+      // move-first case is the `mv:` + `mc:` pair.
+      const mparts = item.slice(3).split(';');
+      const mx = Number(mparts[0]);
+      const my = Number(mparts[1]);
+      const mdur = Number(mparts[2] || 300);
+      console.log(`  … clicking mouse at ${mx}, ${my} (held ${mdur} ms, no prior move)`);
+      await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: mx, y: my, button: 'left', buttons: 1, clickCount: 1 });
+      await sleep(mdur);
+      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: mx, y: my, button: 'left', buttons: 0, clickCount: 1 });
+      await checkActivation();
+    } else if (item === 'cm' || item.startsWith('cm:')) {
+      // issue 058 (F37) — the RIGHT-CLICK (the context menu's trigger):
+      // a CDP `Input.dispatchMouseEvent` right press + release — the
+      // browser dispatches the page's `contextmenu` event (the shell's
+      // F37 listener's `defaultPrevented` is the step check's dom log's
+      // `cm:<target>/prev:<bool>` entry; the native menu itself does
+      // not render headlessly — the default-action suppression is the
+      // measurement). `cm` = the canvas's center (the game page),
+      // `cm:ime` = the #ime input's center (the exclusion's proof: its
+      // contextmenu must NOT be prevented).
+      await ensureCmListener();
+      if (item === 'cm:ime') {
+        // The #ime's exclusion, measured on the element ITSELF: the
+        // input sits off-viewport (the soft-keyboard field's CSS — a
+        // CDP click at its center would land on the <html>), so the
+        // synthetic dispatch (the browser's own event constructor,
+        // through the page's own listener chain) is the honest
+        // measurement of the exclusion's logic (its prev must be
+        // false — the desktop's paste / copy affordance stays).
+        const r = await send('Runtime.evaluate', { expression: `(() => {
+          const ime = document.getElementById('ime');
+          if (!ime) return 'no #ime on the page';
+          const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 });
+          ime.dispatchEvent(ev);
+          return 'synthetic #ime contextmenu: prevented=' + ev.defaultPrevented + ' target=' + ev.target.id;
+        })()`, returnByValue: true });
+        console.log(`  … ${r.result?.result?.value ?? '(evaluate failed)'}`);
+      } else {
+        const pr = await send('Runtime.evaluate', { expression: `(() => {
+          const c = document.getElementById('c');
+          if (!c) return null;
+          const r = c.getBoundingClientRect();
+          return JSON.stringify({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
+        })()`, returnByValue: true });
+        const p = JSON.parse(pr.result?.result?.value ?? 'null');
+        if (!p) throw new Error('web-probe: the canvas is not on the page for the right-click');
+        console.log(`  … right-click (contextmenu) at ${Math.round(p.x)}, ${Math.round(p.y)}`);
+        await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: p.x, y: p.y, button: 'right', buttons: 2, clickCount: 1 });
+        await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: p.x, y: p.y, button: 'right', buttons: 0, clickCount: 1 });
+        await checkActivation();
+      }
+    } else if (item.startsWith('hc:')) {
+      // issue 058 (F37) — the HELD-INPUT focus-loss probe (the
+      // operator's "held input dies"'s second suspect): a CDP keyDown
+      // held for MS, a RIGHT-CLICK at the 50% mark (the context menu's
+      // appearance's focus steal — if it takes the window's focus the
+      // 032 release-on-blur fold fires LostFocus and releases every
+      // held input; the focus counters' blur half + the port's state
+      // are the observables), then the keyUp. The post-step report's
+      // `focus:` counters say whether the right-click ever blurred the
+      // window (a headless context menu that does NOT take focus is
+      // the honest negative: the probe says so, and the suppression's
+      // defaultPrevented half is the measurement either way).
+      await ensureCmListener();
+      const hparts = item.slice(3).split(';');
+      const hkey = hparts[0];
+      const hdur = Number(hparts[1] || 2000);
+      const hcode = hkey.length === 1 ? `Key${hkey.toUpperCase()}` : hkey;
+      const hvk = VK[hkey] ?? (hkey.length === 1 ? hkey.toUpperCase().charCodeAt(0) : 0);
+      console.log(`  … holding ${hkey} for ${hdur} ms, right-click at the 50% mark`);
+      await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: hkey, code: hcode, windowsVirtualKeyCode: hvk, nativeVirtualKeyCode: hvk, text: hkey.length === 1 ? hkey : undefined });
+      await sleep(Math.round(hdur / 2));
+      const pr = await send('Runtime.evaluate', { expression: `JSON.stringify({ x: window.innerWidth / 2, y: window.innerHeight / 2 })`, returnByValue: true });
+      const p = JSON.parse(pr.result?.result?.value ?? 'null');
+      await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: p.x, y: p.y, button: 'right', buttons: 2, clickCount: 1 });
+      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: p.x, y: p.y, button: 'right', buttons: 0, clickCount: 1 });
+      await sleep(Math.round(hdur / 2));
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: hkey, code: hcode, windowsVirtualKeyCode: hvk, nativeVirtualKeyCode: hvk });
+      await checkActivation();
     } else if (item.startsWith('s:')) {
       // issue 054 — the per-step screenshot (the docs above): the
       // evidence's stills (the operator-visible halves of the items),
@@ -583,6 +785,34 @@ console.log(`  user activation : ${userActivation
   });
   console.log(`  focus counters: ${r.result?.result?.value ?? '(unreadable)'}`);
 }
+// issue 058 (F37) — the context-menu verdict (the F37 suppression's
+// measurement: the browser's own `defaultPrevented` on the page's
+// contextmenu events — the canvas / document's PREVENTED (no menu
+// appears), the #ime's NOT (the exclusion). With `--expect-cm` the
+// verdict is a gate: a canvas contextmenu must have been prevented
+// and no #ime one (a missing canvas event — the right-click not
+// reaching the page — is a FAIL, not a pass: the probe measured
+// nothing). The long-press's contextmenu (the mobile half) arrives
+// through the same log (the `t:` held touch's browser synthesis).
+const cmEntries = [];
+{
+  // The __cmlog (the undrained array — the step checks drain the
+  // __keylog, so the verdict's source is the dedicated one).
+  const r = await send('Runtime.evaluate', { expression: 'JSON.stringify(window.__cmlog || [])', returnByValue: true });
+  try { cmEntries.push(...JSON.parse(r.result?.result?.value ?? '[]')); } catch { /* the read failed — nothing measured */ }
+}
+let cmOk = true;
+if (argv.includes('--expect-cm')) {
+  const canvasPrevented = cmEntries.some((l) => !l.startsWith('cm:ime') && l.endsWith('/prev:true'));
+  const imePrevented = cmEntries.some((l) => l.startsWith('cm:ime') && l.endsWith('/prev:true'));
+  cmOk = canvasPrevented && !imePrevented;
+}
+console.log(`  context menu  : ${cmEntries.length ? cmEntries.join(' | ') : '(no contextmenu event reached the page)'}`);
+if (argv.includes('--expect-cm')) {
+  console.log(`  (gate)          : ${cmOk
+    ? 'PASS — the canvas / document contextmenu was prevented (no menu appears) and the #ime\'s was not (the exclusion)'
+    : 'FAIL — ' + (cmEntries.length ? 'the prevention shape is wrong (want: canvas prev:true, ime prev:false)' : 'no contextmenu event was measured (the right-click did not reach the page\'s listener)')}`);
+}
 console.log(`  probe         : ${await stateOf() ?? '(Module.status not reachable via evaluate)'}`);
 console.log(`  screenshot    : ${shotPath}`);
 console.log(`  non-200       : ${bad.length ? bad.join(' | ') : 'none'}`);
@@ -592,4 +822,4 @@ chrome.kill('SIGKILL');
 
 const realErrors = errors.filter((e) => !/favicon/i.test(e));
 const realBad = bad.filter((b) => !/favicon/.test(b));
-process.exit(boots.length > 0 && realErrors.length === 0 && realBad.length === 0 ? 0 : 1);
+process.exit(boots.length > 0 && realErrors.length === 0 && realBad.length === 0 && (!argv.includes('--expect-cm') || cmOk) ? 0 : 1);

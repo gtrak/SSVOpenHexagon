@@ -238,9 +238,10 @@ jobs:
         # resolve — do not "fix" them into absolute paths.
         # OPERATOR-SIDE (the workflow cannot set it): Settings -> Pages
         # -> Source = "Deploy a branch", branch gh-pages, folder /
-        # (root). has_pages is false today — nothing serves until the
-        # operator flips it (a wrong pairing, e.g. "GitHub Actions",
-        # is a silent 404).
+        # (root). The page is LIVE (the operator flipped it — lane 058
+        # measured HTTP 200 on gtrak.github.io/SSVOpenHexagon/); if it is
+        # ever re-paired to a wrong source (e.g. "GitHub Actions"), the
+        # failure is a SILENT 404, so keep this note with the deploy.
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}

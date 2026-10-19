@@ -451,6 +451,97 @@ impl RenderWindowSize {
     }
 }
 
+/// issue 058 — the C++ `window.hasFocus()` / `window.getMousePosition()`
+/// (the window-pixel space) behind the `MenuWindow` seam's
+/// `has_focus` / `mouse_pixel`: the `MenuGame::overlayMouseOverlap`
+/// gate + hit-test's window-side terms (MenuGame.cpp:3657-3662). The
+/// C++ reads the live window object at each call; the port refreshes
+/// the slot once per frame in `tick_fields` — the frame's events (the
+/// focus folds + the `MouseMoved`'s `mouse_pixel` write) have all
+/// landed by then, so the slot IS the frame's window state at the
+/// `menu_draw`'s read.
+pub struct WindowMouseProbe {
+    state: std::sync::RwLock<(bool, Vec2)>,
+}
+
+impl Default for WindowMouseProbe {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WindowMouseProbe {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            // The C++ desktop window's focused state (the port's
+            // `Window` starts focused too — window.rs's `focus: true`
+            // ctor default) + the C++'s off-window pointer position.
+            state: std::sync::RwLock::new((true, Vec2::new(0.0, 0.0))),
+        }
+    }
+    /// The per-frame refresh (a no-op when unchanged).
+    pub fn update(&self, has_focus: bool, mouse_pixel: Vec2) {
+        let mut s = self.state.write().expect("window-mouse-probe poisoned");
+        if s.0 != has_focus || s.1 != mouse_pixel {
+            *s = (has_focus, mouse_pixel);
+        }
+    }
+    #[must_use]
+    pub fn has_focus(&self) -> bool {
+        self.state.read().expect("window-mouse-probe poisoned").0
+    }
+    #[must_use]
+    pub fn mouse_pixel(&self) -> Vec2 {
+        self.state.read().expect("window-mouse-probe poisoned").1
+    }
+}
+
+/// 29u1 + the lane-058 follow-up — the C++'s menu-state cursor handlers'
+/// per-frame observation (MenuGame.cpp:274-307): any `KeyPressed` hides
+/// the cursor (:278), a `MouseMoved` that actually moved re-shows it
+/// (:295). The port observes these PER FRAME (the menu-state event
+/// feed's once-per-frame approximation of the C++'s per-event handlers
+/// — the documented 025c/025f note): a key newly pressed this frame
+/// (the `input` snapshot's bitset vs the previous frame's) hides; a
+/// changed raw mouse pixel re-shows (the hide-then-show order makes a
+/// same-frame key+move resolve to "show" — the mouse presence is the
+/// cursor's intent). The `cursor_last_mouse`'s `Some((0.0, 0.0))` start
+/// (NOT `None`) mirrors the C++'s `lastMouseMovedPosition{}`
+/// (MenuGame.hpp:274 — the `sf::Vector2i`'s value-initialization is
+/// `{0, 0}`): the FIRST move at a position ≠ (0, 0) is an `actuallyMoved`
+/// one in the C++ (its re-show), so the first frame's pixel — the
+/// window's own initial `mouse_pixel` (the `Window` ctor's (0, 0),
+/// window.rs) — is a REAL previous position, not an absent one. A
+/// `None` start skipped the first frame: after a key-press-hide, the
+/// first click-without-prior-move (whose position arrives with the
+/// press — the port's `pointerdown` fold's own `MouseMoved`, the C++'
+/// SFML live-position read's equivalent) kept the cursor hidden → the
+/// hover gate (the `MenuMouse`'s cursor-visible half) stayed closed →
+/// the click died at the gate (the 29m acceptance measurement's
+/// no-op's root cause, the lane-058 follow-up's finding).
+fn menu_cursor_frame(
+    cursor_visible: &std::cell::Cell<bool>,
+    cursor_last_mouse: &std::cell::Cell<Option<Vec2>>,
+    cursor_last_keys: &std::cell::Cell<[bool; oh_render::input::KEY_BITS]>,
+    cur_keys: &[bool; oh_render::input::KEY_BITS],
+    mp: Vec2,
+) {
+    let last_keys = cursor_last_keys.get();
+    if cur_keys.iter().zip(last_keys.iter()).any(|(c, l)| *c && !l) {
+        cursor_visible.set(false); // C++ :278 — KeyPressed → hide
+    }
+    cursor_last_keys.set(*cur_keys);
+    // Only a REAL change from the previous frame re-shows (the C++
+    // `actuallyMoved` = the delta != 0): the previous frame's pixel is
+    // always `Some` (the docs' `Some((0.0, 0.0))` start — the C++'
+    // `lastMouseMovedPosition`'s same shape).
+    if cursor_last_mouse.get() != Some(mp) {
+        cursor_visible.set(true); // C++ :295 — MouseMoved → show
+    }
+    cursor_last_mouse.set(Some(mp));
+}
+
 /// issue 025g — the menu's `MenuWindow` seam over the [`RenderWindowSize`]
 /// slot (the C++ ctor's `window` reference's size half —
 /// `MenuGame::getWindowWidth()` / `getWindowHeight()` read
@@ -467,6 +558,13 @@ struct MenuWindowSource {
     /// read. Created in `WindowedClient::build` (the C++ ctor's
     /// `setMouseCursorVisible(true)`).
     cursor: std::rc::Rc<std::cell::Cell<bool>>,
+    /// issue 058 — the window-side mouse state (the `has_focus` /
+    /// `mouse_pixel` seam methods' source — the `WindowMouseProbe`
+    /// doc: the C++'s `window.hasFocus()` / `getMousePosition()`
+    /// reads) + the cursor flag's read-back (the C++'s
+    /// `isMouseCursorVisible()` — the menu's own flag, the 29u1 cell's
+    /// read side).
+    mouse: std::sync::Arc<WindowMouseProbe>,
 }
 
 impl MenuWindow for MenuWindowSource {
@@ -478,6 +576,15 @@ impl MenuWindow for MenuWindowSource {
     }
     fn set_mouse_cursor_visible(&self, visible: bool) {
         self.cursor.set(visible);
+    }
+    fn is_mouse_cursor_visible(&self) -> bool {
+        self.cursor.get()
+    }
+    fn has_focus(&self) -> bool {
+        self.mouse.has_focus()
+    }
+    fn mouse_pixel(&self) -> Vec2 {
+        self.mouse.mouse_pixel()
     }
 }
 
@@ -1801,6 +1908,14 @@ struct MenuSlotAdapter {
     /// (the game slot's take is the apply's home; a `Down` on them in
     /// the menu is not consumed, so no edge is produced there either).
     touch_overlay: std::sync::Arc<std::sync::RwLock<oh_additions::touch_overlay::TouchOverlay>>,
+    /// issue 058 — the frame's input snapshot (the port's `sf::Mouse`
+    /// / `sf::Keyboard` state at the frame body): stashed by
+    /// `refresh_input` (the frame's first input hook — the C++'s
+    /// `runEvents` position) so the frame's `draw` (the C++'s
+    /// `MenuGame::draw` head's `sf::Mouse::isButtonPressed(Left)` read,
+    /// MenuGame.cpp:5755-5756) gets the SAME frame's state — the C++'s
+    /// live read at the same loop position.
+    last_input: std::cell::Cell<oh_render::input::InputState>,
 }
 
 impl GameState for MenuSlotAdapter {
@@ -1812,11 +1927,23 @@ impl GameState for MenuSlotAdapter {
 
     fn draw(&self, target: &mut dyn DrawTarget) {
         // C++ MenuGame.cpp:259 (`game.onDraw += [this] { draw(); }`) —
-        // the full C++ `MenuGame::draw` surface (issue-013b).
-        crate::menu_draw::draw(&self.menu, &mut self.menu_draw.borrow_mut(), target);
+        // the full C++ `MenuGame::draw` surface (issue-013b), fed the
+        // frame's input snapshot (issue 058 — the draw head's
+        // `sf::Mouse::isButtonPressed(Left)` read, MenuGame.cpp:
+        // 5755-5756; the `last_input` field's docs).
+        crate::menu_draw::draw(
+            &self.menu,
+            &mut self.menu_draw.borrow_mut(),
+            target,
+            &self.last_input.get(),
+        );
     }
 
     fn refresh_input(&self, input: &InputState) {
+        // issue 058 — the frame's input snapshot (the `draw`'s
+        // `sf::Mouse::isButtonPressed(Left)` read's source — the
+        // `last_input` field's docs).
+        self.last_input.set(*input);
         // C++ `checkCloseBootScreens` (MenuGame.cpp:360-380) via the
         // `onEvent` handlers (MenuGame.cpp:519-535 `KeyReleased`,
         // :616-629 `MouseButtonReleased`, :673-686
@@ -2174,14 +2301,25 @@ fn register_menu_binds(mgr: &mut Manager, menu: &Rc<MenuGame>, config: &Arc<RwLo
     let trigger_of = |tid: Tid| config.read().expect("config poisoned").trigger_copy(tid);
 
     // C++ `if(!mouseHovering) leftAction()/rightAction()` (MenuGame.cpp:
-    // 923-938): the port's mouse-hover surface is issue 13b's menu-draw
-    // lane (the `mouseHovering` state is unported — no menu item tracking
-    // exists yet); the actions run unguarded.
+    // 924-938): the port's `mouseHovering` (issue 058) is the PREVIOUS
+    // frame's draw's hover computation (the `menu_draw`'s draw-head
+    // `mouseHovering = false` + the item-draw sites' set, MenuGame.cpp:
+    // 5753 / :3673 — the C++'s input actions also read the previous
+    // frame's value: they fire during the update burst, BEFORE this
+    // frame's draw). The gate wraps the two bodies HERE — not in
+    // `left_action` / `right_action` themselves — because the C++ gates
+    // only the `Tid`-trigger path: the joystick / touch-grid dispatches
+    // call `leftAction()` / `rightAction()` unguarded (MenuGame.cpp:
+    // 2756 / :2802-2835).
     {
         let m = menu.clone();
         mgr.add_input(
             trigger_of(Tid::RotateCCW),
-            move |_ft| m.left_action(),
+            move |_ft| {
+                if !m.mouse_hovering() {
+                    m.left_action();
+                }
+            },
             |_| {},
             Type::Once,
             Tid::RotateCCW as i32,
@@ -2192,7 +2330,11 @@ fn register_menu_binds(mgr: &mut Manager, menu: &Rc<MenuGame>, config: &Arc<RwLo
         let m = menu.clone();
         mgr.add_input(
             trigger_of(Tid::RotateCW),
-            move |_ft| m.right_action(),
+            move |_ft| {
+                if !m.mouse_hovering() {
+                    m.right_action();
+                }
+            },
             |_| {},
             Type::Once,
             Tid::RotateCW as i32,
@@ -2575,6 +2717,11 @@ pub struct WindowedClient {
     /// menu's `MenuWindow` seam reads; `tick_fields` refreshes it every
     /// frame from the window's current size).
     render_size: std::sync::Arc<RenderWindowSize>,
+    /// issue 058 — the window-side mouse state slot (the
+    /// `WindowMouseProbe`'s docs — the C++'s `window.hasFocus()` /
+    /// `getMousePosition()` reads behind the `MenuWindow` seam; the
+    /// frame's events all land before `tick_fields` refreshes it).
+    window_mouse: std::sync::Arc<WindowMouseProbe>,
     /// 29u1 — the menu's cursor-visibility flag (the C++
     /// `MenuGame::mouseCursorVisible`, MenuGame.hpp:273): the single
     /// source of truth the menu's `play_selected_level` (hide, the seam
@@ -2590,8 +2737,10 @@ pub struct WindowedClient {
     /// 29u1 — the cursor's last-frame detection state (the frame loop's
     /// key-press-hide / mouse-move-show diff, held here so the static
     /// `tick_fields` can read/write it through references): the previous
-    /// frame's raw mouse pixel (`Option::None` before the first frame)
-    /// + the previous frame's key-pressed bitset (`InputState::get_keys`).
+    /// frame's raw mouse pixel (the `menu_cursor_frame`'s docs' C++
+    /// `lastMouseMovedPosition{}` = {0, 0} mirror — `Some((0.0, 0.0))`
+    /// at boot, the window's own initial `mouse_pixel`) + the previous
+    /// frame's key-pressed bitset (`InputState::get_keys`).
     cursor_last_mouse: std::cell::Cell<Option<Vec2>>,
     cursor_last_keys: std::cell::Cell<[bool; oh_render::input::KEY_BITS]>,
     /// 053 — the resolution the live window last FOLLOWED (the C++'
@@ -3099,6 +3248,13 @@ impl WindowedClient {
         // (the key-press-hide / mouse-move-show + the per-frame window sync).
         let cursor_visible = std::rc::Rc::new(std::cell::Cell::new(true));
 
+        // issue 058 — the window-side mouse state slot (the
+        // `WindowMouseProbe`'s docs) — the `MenuWindowSource` seam's
+        // `has_focus` / `mouse_pixel` source; `tick_fields` refreshes
+        // it every frame (the C++'s live window reads' per-frame
+        // equivalent).
+        let window_mouse = std::sync::Arc::new(WindowMouseProbe::new());
+
         let menu_audio: Rc<dyn AudioSink> = {
             // issue 041: the REAL audio sink on every target (desktop /
             // Android / web) — the web's no-op `NoopAudioSink` is gone now
@@ -3122,6 +3278,7 @@ impl WindowedClient {
             Rc::new(MenuWindowSource {
                 size: render_size.clone(),
                 cursor: cursor_visible.clone(),
+                mouse: window_mouse.clone(),
             }),
             new_game_cb,
             trigger_refresh_cb,
@@ -3223,6 +3380,7 @@ impl WindowedClient {
             // `Exit` edge drain + apply, the `menu_active` gate's
             // per-frame feed below).
             touch_overlay: touch_overlay.clone(),
+            last_input: Cell::new(oh_render::input::InputState::new()),
         });
         let game_adapter: Rc<dyn GameState> = Rc::new(GameSlotAdapter {
             game: game.clone(),
@@ -3273,8 +3431,9 @@ impl WindowedClient {
             timer,
             menu,
             render_size,
+            window_mouse,
             cursor_visible,
-            cursor_last_mouse: std::cell::Cell::new(None),
+            cursor_last_mouse: std::cell::Cell::new(Some(Vec2::new(0.0, 0.0))),
             cursor_last_keys: std::cell::Cell::new([false; oh_render::input::KEY_BITS]),
             // 053 — the first frame's followed value = the boot config's
             // resolution (the C++'s boot: the window is created at it,
@@ -3502,6 +3661,7 @@ impl WindowedClient {
             _app_draw: app_draw,
             ilc,
             render_size,
+            window_mouse,
             cursor_visible,
             cursor_last_mouse,
             cursor_last_keys,
@@ -3562,6 +3722,7 @@ impl WindowedClient {
                     &config,
                     &ilc,
                     &render_size,
+                    &window_mouse,
                     &cursor_visible,
                     &cursor_last_mouse,
                     &cursor_last_keys,
@@ -3615,6 +3776,7 @@ impl WindowedClient {
             _app_draw,
             ilc,
             render_size,
+            window_mouse,
             cursor_visible,
             cursor_last_mouse,
             cursor_last_keys,
@@ -3679,6 +3841,7 @@ impl WindowedClient {
                 &config,
                 &ilc,
                 &render_size,
+                &window_mouse,
                 &cursor_visible,
                 &cursor_last_mouse,
                 &cursor_last_keys,
@@ -3708,6 +3871,7 @@ impl WindowedClient {
             &self.config,
             &self.ilc,
             &self.render_size,
+            &self.window_mouse,
             &self.cursor_visible,
             &self.cursor_last_mouse,
             &self.cursor_last_keys,
@@ -3737,6 +3901,7 @@ impl WindowedClient {
             &self.config,
             &self.ilc,
             &self.render_size,
+            &self.window_mouse,
             &self.cursor_visible,
             &self.cursor_last_mouse,
             &self.cursor_last_keys,
@@ -3797,6 +3962,11 @@ impl WindowedClient {
         config: &Arc<RwLock<Config>>,
         ilc: &IlcSlot,
         render_size: &std::sync::Arc<RenderWindowSize>,
+        // issue 058 — the window-side mouse state slot (the
+        // `WindowMouseProbe`'s docs): the frame's focus / pointer state
+        // the `menu_draw`'s `overlayMouseOverlap` gate + hit-test read
+        // (the C++'s `window.hasFocus()` / `getMousePosition()` reads).
+        window_mouse: &std::sync::Arc<WindowMouseProbe>,
         // 29u1 — the menu's cursor-visibility flag (the C++
         // `MenuGame::mouseCursorVisible`): the frame's key-press-hide /
         // mouse-move-show (the C++'s other two cursor handlers,
@@ -3883,6 +4053,12 @@ impl WindowedClient {
         // 9-zone grid's thirds + `refresh_camera`'s view math + the
         // `drawOnlineStatus` identity view) reads it.
         render_size.update(window.get_width(), window.get_height());
+        // issue 058 — the window-side mouse state (the `menu_draw`'
+        // `overlayMouseOverlap`'s window-side terms — the C++'s
+        // `window.hasFocus()` / `getMousePosition()` live reads):
+        // this frame's events (the focus folds + the `MouseMoved`'
+        // `mouse_pixel` write) have all landed by the frame body.
+        window_mouse.update(window.has_focus(), window.mouse_pixel());
         // 053 — the C++'s LIVE resolution change (the 025g /
         // creation-frozen-surface deviation's closure), at the C++'
         // loop-head position (before update / draw), desktop + MENU
@@ -4054,34 +4230,19 @@ impl WindowedClient {
         let ms_update_start = std::time::Instant::now();
         let input = window.get_input_state();
         // 29u1 — the C++'s menu-state cursor handlers (MenuGame.cpp:274-
-        // 307): any `KeyPressed` hides the cursor (:278), a `MouseMoved`
-        // that actually moved re-shows it (:295). The port observes these
-        // PER FRAME (the menu-state event feed's once-per-frame
-        // approximation of the C++'s per-event handlers — the documented
-        // 025c/025f note): a key newly pressed this frame (the `input`
-        // snapshot vs the previous frame's bitset) hides; a changed raw
-        // mouse pixel re-shows (the hide-then-show order makes a same-frame
-        // key+move resolve to "show" — the mouse presence is the cursor's
-        // intent). Menu-state only — the C++'s handlers are on the menu
+        // 307): the `menu_cursor_frame`'s docs (the per-frame
+        // observation's semantics + the first-move's `Some((0.0, 0.0))`
+        // start). Menu-state only — the C++'s handlers are on the menu
         // state's event bus (the game state never re-shows, so a started
         // level's hidden cursor persists, exactly the C++ behavior).
         if engine.current() == GameSlot::Menu {
-            let cur_keys = input.get_keys();
-            let last_keys = cursor_last_keys.get();
-            if cur_keys.iter().zip(last_keys.iter()).any(|(c, l)| *c && !l) {
-                cursor_visible.set(false); // C++ :278 — KeyPressed → hide
-            }
-            cursor_last_keys.set(*cur_keys);
-            let mp = window.mouse_pixel();
-            // Only a REAL change from the previous frame re-shows (the
-            // C++ `actuallyMoved` = the delta != 0): the first frame has
-            // no previous pixel (`None`) — not a move, so no show.
-            if let Some(last) = cursor_last_mouse.get() {
-                if last != mp {
-                    cursor_visible.set(true); // C++ :295 — MouseMoved → show
-                }
-            }
-            cursor_last_mouse.set(Some(mp));
+            menu_cursor_frame(
+                cursor_visible,
+                cursor_last_mouse,
+                cursor_last_keys,
+                input.get_keys(),
+                window.mouse_pixel(),
+            );
         }
         // issue 31 — the gameplay touch overlay's per-frame feed + gate
         // (spec §2b/§5): the pointer feed is the frame-to-frame diff of
@@ -4530,6 +4691,7 @@ mod tests {
             touch_overlay: std::sync::Arc::new(std::sync::RwLock::new(
                 oh_additions::touch_overlay::TouchOverlay::new(),
             )),
+            last_input: Cell::new(oh_render::input::InputState::new()),
         };
 
         // The C++ ctor body holds the boot gate (MenuGame.cpp:358).
@@ -4631,6 +4793,7 @@ mod tests {
             touch_overlay: std::sync::Arc::new(std::sync::RwLock::new(
                 oh_additions::touch_overlay::TouchOverlay::new(),
             )),
+            last_input: Cell::new(oh_render::input::InputState::new()),
         };
         let mut window = Window::headless(800, 480);
         window.set_released_edges_sink(released_edges.clone());
@@ -4731,6 +4894,7 @@ mod tests {
             touch_overlay: std::sync::Arc::new(std::sync::RwLock::new(
                 oh_additions::touch_overlay::TouchOverlay::new(),
             )),
+            last_input: Cell::new(oh_render::input::InputState::new()),
         };
         let mut window = Window::headless(800, 480);
         window.set_released_edges_sink(released_edges.clone());
@@ -4835,6 +4999,7 @@ mod tests {
             touch_overlay: std::sync::Arc::new(std::sync::RwLock::new(
                 oh_additions::touch_overlay::TouchOverlay::new(),
             )),
+            last_input: Cell::new(oh_render::input::InputState::new()),
         };
         let mut window = Window::headless(800, 480);
         window.set_wheel_events_sink(wheel_events.clone());
@@ -4957,6 +5122,7 @@ mod tests {
             touch_overlay: std::sync::Arc::new(std::sync::RwLock::new(
                 oh_additions::touch_overlay::TouchOverlay::new(),
             )),
+            last_input: Cell::new(oh_render::input::InputState::new()),
         };
 
         // The boot state is not a text-entry state — no call (the latch
@@ -5095,6 +5261,7 @@ mod tests {
             ignore_all_pending: Rc::new(Cell::new(None)),
             was_entering_text: Cell::new(false),
             touch_overlay: overlay,
+            last_input: Cell::new(oh_render::input::InputState::new()),
         };
 
         // Boot to the level selection (the operator's stuck state —
@@ -5135,5 +5302,193 @@ mod tests {
         adapter.update_input(&InputState::new(), 0.016);
         assert_eq!(beeps(&audio), 1, "the edge fired exactly once");
         assert_eq!(adapter.menu.state(), States::SMain);
+    }
+    // issue 058 (row 29m) — the C++'s `if(!mouseHovering)` gate on the
+    // `Tid::RotateCCW` / `Tid::RotateCW` INPUT actions (MenuGame.cpp:
+    // 924-938): with the previous frame's draw's `mouseHovering` set,
+    // the LMB / RMB rotate triggers' callbacks do NOT fire (the
+    // joystick / touch-grid dispatches' `leftAction()` / `rightAction()`
+    // calls stay unguarded — the C++'s structure, :2756 / :2802-2835).
+    // The C++'s trigger defaults (Config.cpp's `btn_combo(LEFT)` /
+    // `btn_combo(RIGHT)`) make the LMB / RMB themselves the left /
+    // right actions' triggers — so on the C++ desktop the mouse's
+    // LEFT / RIGHT buttons drive the menu rotation EXCEPT while the
+    // pointer hovers an item (the click's job, the `mustUseMenuItem`'s
+    // click edge).
+    #[test]
+    fn the_mouse_hover_gates_the_left_right_input_triggers() {
+        let assets = FakeAssets::new();
+        assets.add_pack("pack1", &["A", "B", "C"]);
+        let menu = Rc::new(MenuGame::new(
+            assets,
+            FakeConfig::new(),
+            Rc::new(NoopNetwork),
+            oh_menu::RecordingAudio::new(),
+            Rc::new(NoopTouch),
+            Rc::new(oh_menu::NoMenuJoystick),
+            oh_menu::FakeWindow::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Rc::new(LinearFontHeight),
+        ));
+        // LevelSelection: the left / right actions' `changeDifficulty`'s
+        // (the C++'s `leftAction`'s LevelSelection arm, :1870-1874 — the
+        // difficulty mult's index, NOT the level index) — a
+        // `diff_mult_idx` change is the observable (the boot's
+        // `setIndex(0)`'s re-derivation: the fixture level's default
+        // 1.0 mult's index, 1).
+        menu.shared()
+            .borrow_mut()
+            .change_state_to(States::LevelSelection);
+        let starting_diff = menu.shared().borrow().diff_mult_idx;
+        assert_eq!(starting_diff, 1);
+        let config = Arc::new(RwLock::new(Config::default()));
+        let mgr = Rc::new(RefCell::new(Manager::new()));
+        register_menu_binds(&mut mgr.borrow_mut(), &menu, &config);
+
+        let mut input = InputState::new();
+        // The production frame's input half (`MenuSlotAdapter::
+        // refresh_input`'s `manager.refresh` + `update_input`'s
+        // `manager.update` — the `Type::Once`'s release-latch re-arm
+        // rides the `refresh`): one frame per call.
+        let frame = |mgr: &Rc<RefCell<Manager>>, input: &InputState| {
+            mgr.borrow_mut().refresh(input);
+            mgr.borrow_mut().update(input, 1.0 / 60.0);
+        };
+        // The un-gated baseline: the RMB's (the `RotateCW` trigger's
+        // default's `btn_combo(RIGHT)` half) down frame fires the
+        // right action — the difficulty mult's index up (0 → 1).
+        input.set_button_pressed(oh_config::Button::RIGHT, true);
+        frame(&mgr, &input);
+        assert_eq!(
+            menu.shared().borrow().diff_mult_idx,
+            starting_diff + 1,
+            "the un-gated RMB's right action"
+        );
+
+        // The release (the `Type::Once`'s edge's reset) + the hover
+        // (the previous frame's draw's value — set directly here, as
+        // the `menu_draw`'s item-draw sites do): the next RMB down is
+        // the C++'s `mouseHovering`-true frame — no right action.
+        input.set_button_pressed(oh_config::Button::RIGHT, false);
+        frame(&mgr, &input);
+        menu.shared().borrow_mut().mouse_hovering = true;
+        input.set_button_pressed(oh_config::Button::RIGHT, true);
+        frame(&mgr, &input);
+        assert_eq!(
+            menu.shared().borrow().diff_mult_idx,
+            starting_diff + 1,
+            "the hovered RMB's right action's gate (MenuGame.cpp:934)"
+        );
+        // The LMB's (the `RotateCCW` trigger's `btn_combo(LEFT)` half)
+        // gate (MenuGame.cpp:925) — the same structure.
+        input.set_button_pressed(oh_config::Button::RIGHT, false);
+        frame(&mgr, &input);
+        input.set_button_pressed(oh_config::Button::LEFT, true);
+        frame(&mgr, &input);
+        assert_eq!(
+            menu.shared().borrow().diff_mult_idx,
+            starting_diff + 1,
+            "the hovered LMB's left action's gate"
+        );
+
+        // The gate lifted (the pointer left the items — the draw head's
+        // false): the same LMB down (a new edge after the release)
+        // fires the left action again (back to the start).
+        menu.shared().borrow_mut().mouse_hovering = false;
+        input.set_button_pressed(oh_config::Button::LEFT, false);
+        frame(&mgr, &input);
+        input.set_button_pressed(oh_config::Button::LEFT, true);
+        frame(&mgr, &input);
+        assert_eq!(
+            menu.shared().borrow().diff_mult_idx,
+            starting_diff,
+            "the un-gated LMB's left action"
+        );
+    }
+
+    #[test]
+    fn the_first_mouse_frame_re_shows_the_cursor_the_cpp_first_move_semantics() {
+        // The C++ `lastMouseMovedPosition{}` (MenuGame.hpp:274 — the
+        // `sf::Vector2i`'s value-initialization is `{0, 0}`): the FIRST
+        // `MouseMoved` event at P ≠ (0, 0) has a non-zero delta →
+        // `actuallyMoved` → the cursor re-shows (MenuGame.cpp:282-297).
+        // The port's per-frame approximation starts `cursor_last_mouse`
+        // from the window's own initial pixel (0, 0), so the first
+        // frame's pixel P ≠ (0, 0) re-shows exactly the C++ way. A
+        // `None` start (the lane-058 follow-up's finding) skipped the
+        // first frame: after a key-press-hide, the first click-without-
+        // prior-move (the position arriving with the press — the port's
+        // `pointerdown` fold's own `MouseMoved`) kept the cursor hidden
+        // → the hover gate closed → the click died at the gate (the
+        // 29m acceptance measurement's no-op root cause).
+        let visible = std::cell::Cell::new(false); // the key-press-hide's state
+        let last_mouse = std::cell::Cell::new(Some(Vec2::new(0.0, 0.0)));
+        let last_keys = std::cell::Cell::new([false; oh_render::input::KEY_BITS]);
+        let none_keys = [false; oh_render::input::KEY_BITS];
+        // The first frame's mouse at (1470, 3424) (the SMain's
+        // OPTIONS row's center, the phone viewport's device-pixel
+        // space — the `Window`'s initial (0, 0)'s successor):
+        // the C++'s first-move event's re-show.
+        menu_cursor_frame(
+            &visible,
+            &last_mouse,
+            &last_keys,
+            &none_keys,
+            Vec2::new(1470.0, 3424.0),
+        );
+        assert!(
+            visible.get(),
+            "the first move (at P ≠ (0,0)) re-shows — the C++'s `lastMouseMovedPosition{{}}`'s first-event semantics"
+        );
+        // The stationary cursor stays shown (no key press, no move —
+        // the per-frame delta is zero, the C++'s per-event delta's
+        // same).
+        menu_cursor_frame(
+            &visible,
+            &last_mouse,
+            &last_keys,
+            &none_keys,
+            Vec2::new(1470.0, 3424.0),
+        );
+        assert!(visible.get(), "the stationary cursor stays shown");
+        // A key press hides again;
+        let mut enter = [false; oh_render::input::KEY_BITS];
+        enter[oh_config::Key::ENTER.0 as usize] = true;
+        menu_cursor_frame(
+            &visible,
+            &last_mouse,
+            &last_keys,
+            &enter,
+            Vec2::new(1470.0, 3424.0),
+        );
+        assert!(!visible.get(), "the key press hides (C++ :278)");
+        // and the STATIONARY cursor then stays hidden (the re-show is
+        // move-driven in both — a click without a move does not re-show
+        // in the C++ either: the `MouseMoved` handler is the only
+        // re-show besides the wheel / the menu's own writes, so a
+        // stationary cursor after a key-press keeps the hover gate
+        // closed in the C++ too — the faithful half of the
+        // first-observation).
+        menu_cursor_frame(
+            &visible,
+            &last_mouse,
+            &last_keys,
+            &enter,
+            Vec2::new(1470.0, 3424.0),
+        );
+        assert!(!visible.get(), "the stationary cursor stays hidden after the key-press (the C++'s same — the re-show is move-driven only)");
+        // A move re-shows (the usual path):
+        menu_cursor_frame(
+            &visible,
+            &last_mouse,
+            &last_keys,
+            &none_keys,
+            Vec2::new(1470.0, 3567.0),
+        );
+        assert!(visible.get(), "the move re-shows (C++ :295)");
     }
 }

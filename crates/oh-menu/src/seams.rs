@@ -689,6 +689,30 @@ pub trait MenuWindow {
     /// handlers, :278 / :295) run on the composition's window directly
     /// (the menu has no per-event key/mouse-move seam).
     fn set_mouse_cursor_visible(&self, visible: bool);
+    /// C++ `MenuGame::isMouseCursorVisible` (MenuGame.cpp:3648-3650) —
+    /// the menu's own cursor-visibility member (MenuGame.hpp:273),
+    /// written by every `setMouseCursorVisible` call site. The
+    /// `overlayMouseOverlap` gate reads it (MenuGame.cpp:3657) — issue
+    /// 058: the port's cursor flag (the composition's 29u1 cell, this
+    /// impl's single source of truth) is the C++ member, so the read-back
+    /// IS the C++'s `mouseCursorVisible` read.
+    fn is_mouse_cursor_visible(&self) -> bool;
+    /// C++ `window.hasFocus()` (MenuGame.cpp:3657 — the
+    /// `overlayMouseOverlap` gate's second term): the SFML window's
+    /// focus state at the call. The port's composition refreshes a
+    /// per-frame slot from the window's own flag (the `Window::has_focus`
+    /// doc: the C++'s `hasFocus()`);
+    /// `FakeWindow` reports focused (the C++ desktop window's state —
+    /// a focused window is the mouse path's precondition).
+    fn has_focus(&self) -> bool;
+    /// C++ `window.getMousePosition()` in the window's PIXEL space —
+    /// the input to the `overlayMouseOverlap`'s
+    /// `overlayCamera.getMousePosition(window)` map (MenuGame.cpp:3662):
+    /// the raw pointer position in the window's current render-target
+    /// pixels (the port's `Window::mouse_pixel` doc — the C++
+    /// `MouseMoved` event's raw position, NOT view-mapped; the view map
+    /// is the caller's, in the layout space the overlay camera runs in).
+    fn mouse_pixel(&self) -> Vec2;
 }
 
 // ---------------------------------------------------------------------------
@@ -1026,6 +1050,11 @@ impl MenuAssets for FakeAssets {
 pub struct FakeWindow {
     size: RefCell<(f32, f32)>,
     cursor: RefCell<bool>,
+    /// issue 058 — the C++ `window.getMousePosition()` half (the
+    /// `MenuWindow::mouse_pixel` seam): the tests' mouse position in
+    /// window pixels; `(0, 0)` (no pointer — the C++'s off-window
+    /// state, where no overlay overlap can hold).
+    mouse: RefCell<Vec2>,
 }
 
 impl FakeWindow {
@@ -1035,11 +1064,16 @@ impl FakeWindow {
             size: RefCell::new((800.0, 450.0)),
             // The C++ ctor's `setMouseCursorVisible(true)` (MenuGame.cpp:245).
             cursor: RefCell::new(true),
+            mouse: RefCell::new(Vec2::new(0.0, 0.0)),
         })
     }
     /// A test-side window resize (the C++'s `onRecreation` size half).
     pub fn set_size(&self, width: f32, height: f32) {
         *self.size.borrow_mut() = (width, height);
+    }
+    /// issue 058 — a test-side pointer position (window pixels).
+    pub fn set_mouse_pixel(&self, position: Vec2) {
+        *self.mouse.borrow_mut() = position;
     }
     #[must_use]
     pub fn size(&self) -> (f32, f32) {
@@ -1061,6 +1095,18 @@ impl MenuWindow for FakeWindow {
     }
     fn set_mouse_cursor_visible(&self, visible: bool) {
         *self.cursor.borrow_mut() = visible;
+    }
+    fn is_mouse_cursor_visible(&self) -> bool {
+        *self.cursor.borrow()
+    }
+    // issue 058 — the C++ desktop window's focused state (the tests' mouse
+    // path's precondition; a focus loss is the C++'s `hasFocus`-false gate
+    // — the overlay overlaps then return false, MenuGame.cpp:3657-3661).
+    fn has_focus(&self) -> bool {
+        true
+    }
+    fn mouse_pixel(&self) -> Vec2 {
+        *self.mouse.borrow()
     }
 }
 

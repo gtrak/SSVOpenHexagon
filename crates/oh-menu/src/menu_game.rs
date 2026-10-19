@@ -21,7 +21,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use oh_rng::Pcg32Fast;
 
@@ -232,7 +232,54 @@ pub struct Shared {
     pub login_username: String,
     pub login_password: String,
     pub delete_account_password: String,
-    // ---- mouse-driven menu exec ----
+    // ---- mouse (C++ `MenuGame.hpp:264-273` — the `MenuGame`'s mouse
+    // members; issue 058) ----
+    // The C++'s draw-side writes (the `MenuGame::draw` head, MenuGame.cpp:
+    // 5753-5756, + the item-draw `overlayMouseOverlapAndUpdateHover` /
+    // click-edge sites) land here every frame; the C++'s update-side reads
+    // (the `MenuGame::update`'s mouse-driven action block, MenuGame.cpp:
+    // 2681-2733) consume them NEXT frame — the C++'s one-frame lag (the
+    // input actions + `update` run before the frame's `draw`).
+    /// C++ `mouseHovering` (hpp:265) — the frame's draw found the pointer
+    /// over a menu item (the `overlayMouseOverlapAndUpdateHover` sites);
+    /// gates the left / right INPUT actions (MenuGame.cpp:925 / :934 —
+    /// the `Tid::RotateCCW` / `Tid::RotateCW` callbacks; the joystick /
+    /// touch-grid paths call `leftAction` / `rightAction` unguarded,
+    /// the C++'s structure).
+    pub mouse_hovering: bool,
+    /// C++ `mouseWasPressed` (hpp:266) — the previous frame's
+    /// `mousePressed` (the draw head's `mouseWasPressed = mousePressed`,
+    /// MenuGame.cpp:5754).
+    pub mouse_was_pressed: bool,
+    /// C++ `mousePressed` (hpp:267) — this frame's draw-head sample
+    /// (`(ignoreInputs == 0) && sf::Mouse::isButtonPressed(Left)`,
+    /// MenuGame.cpp:5755-5756).
+    pub mouse_pressed: bool,
+    /// C++ `lastMouseClick` (hpp:264, `HRClock::now()` — the port's
+    /// steady-clock `Instant`; the C++'s default-constructed time-point
+    /// is the port's `None`) — the last left-button rising edge (the
+    /// draw tail, MenuGame.cpp:5974-5977); the level-body
+    /// double-click-to-play's 160 ms window (MenuGame.cpp:5066-5069).
+    pub last_mouse_click: Option<Instant>,
+    /// C++ `mustFavorite` (hpp:268) — the favorite-button click edge
+    /// (MenuGame.cpp:5526-5529) pending for the `update`'s
+    /// `addRemoveFavoriteLevel` (MenuGame.cpp:2702-2707).
+    pub must_favorite: bool,
+    /// C++ `mustPlay` (hpp:269) — the level-body double-click edge
+    /// (MenuGame.cpp:5064-5069) pending for the `update`'s
+    /// `playSelectedLevel` (MenuGame.cpp:2708-2712).
+    pub must_play: bool,
+    /// C++ `mustChangeIndexTo` (hpp:270) — the level-body single-click
+    /// edge's index (MenuGame.cpp:5071-5074) pending for the `update`'
+    /// `setIndex` (MenuGame.cpp:2714-2723).
+    pub must_change_index_to: Option<i32>,
+    /// C++ `mustChangePackIndexTo` (hpp:271) — the pack-label click edge's
+    /// pack index (MenuGame.cpp:5189-5193) pending for the `update`'
+    /// `changePackTo` (MenuGame.cpp:2725-2733).
+    pub must_change_pack_index_to: Option<i32>,
+    /// C++ `mustUseMenuItem` (hpp:272) — the main-menu-item click edge's
+    /// item index (MenuGame.cpp:3757-3761) pending for the `update`'
+    /// item exec (MenuGame.cpp:2681-2698).
     pub must_use_menu_item: Option<i32>,
     /// `window.stop()` (the main-menu / welcome "EXIT" items).
     pub quit_requested: bool,
@@ -368,6 +415,18 @@ impl Shared {
             login_username: String::new(),
             login_password: String::new(),
             delete_account_password: String::new(),
+            // issue 058 — the C++ ctor's mouse-member defaults
+            // (MenuGame.hpp:264-272: every `false` / `nullopt`; the
+            // `mouseCursorVisible` `true` is the composition's 29u1
+            // cursor cell, not a `Shared` field).
+            mouse_hovering: false,
+            mouse_was_pressed: false,
+            mouse_pressed: false,
+            last_mouse_click: None,
+            must_favorite: false,
+            must_play: false,
+            must_change_index_to: None,
+            must_change_pack_index_to: None,
             must_use_menu_item: None,
             quit_requested: false,
             assets,
@@ -3020,6 +3079,86 @@ impl MenuGame {
             }
         }
 
+        // C++ `MenuGame::update`'s mouse-driven action block (MenuGame
+        // .cpp:2681-2733, the C++'s "TODO (P2): cleanup mouse control"
+        // pair) — issue 058: the PREVIOUS frame's draw's click edges
+        // (the port's `menu_draw` item-draw sites set the `must*` flags
+        // on the left-button rising edge, the C++'s
+        // `mouseLeftRisingEdge()`; the C++ consumes them here, NEXT
+        // frame — the one-frame lag: the input actions + `update` run
+        // before the frame's `draw`).
+        //
+        // C++ :2681-2698 — the main-menu-item click: the C++'s
+        // `getCurrentMenu()` is the port's `current_menu()`; the
+        // `items.size() > *mustUseMenuItem` index guard + the
+        // `isEnabled()` no-exec (no beep either) are the C++'s.
+        if matches!(
+            self.state(),
+            States::SMain | States::MOpts | States::MOnline | States::SLPSelect
+        ) && self.shared.borrow().must_use_menu_item.is_some()
+        {
+            if let Some(menu) = self.current_menu() {
+                let idx = self.shared.borrow().must_use_menu_item.unwrap();
+                let items = menu.get_items();
+                if items.len() > (idx as usize) {
+                    let enabled = items[idx as usize].borrow().is_enabled();
+                    if enabled {
+                        self.shared.borrow_mut().play_sound_override("beep.ogg");
+                        items[idx as usize].borrow_mut().exec();
+                    }
+                }
+            }
+            self.shared.borrow_mut().must_use_menu_item = None;
+        }
+
+        // C++ :2702-2733 — the level-selection click: the favorite
+        // toggle, the double-click play, the single-click index change,
+        // the pack-label pack change — the C++'s `else if` chain (at
+        // most ONE fires per frame).
+        // The flags' values are read up front: the C++'s member
+        // reads, the port's `Ref`'s — held across the dispatch's
+        // `borrow_mut`'s would be the C++'s structure with the
+        // port's borrow-checker's teeth (the `if let`'s scrutinee
+        // `Ref` lives to the statement's end).
+        let must_favorite = self.shared.borrow().must_favorite;
+        let must_play = self.shared.borrow().must_play;
+        let must_change_index_to = self.shared.borrow().must_change_index_to;
+        let must_change_pack_index_to = self.shared.borrow().must_change_pack_index_to;
+        if self.state() == States::LevelSelection
+            && self.shared.borrow().pack_change_state == PackChange::Rest
+        {
+            if must_favorite {
+                self.add_remove_favorite_level();
+                self.shared.borrow_mut().must_favorite = false;
+            } else if must_play {
+                let mut s = self.shared.borrow_mut();
+                s.play_selected_level();
+                s.must_play = false;
+            } else if let Some(idx) = must_change_index_to {
+                let mut s = self.shared.borrow_mut();
+                // C++ `lvlDrawer` — the active drawer (the port's
+                // `favorites_active` picks it, as the C++'s `lvlDrawer`
+                // pointer does).
+                let current = if s.favorites_active {
+                    s.fav_slct.current_index
+                } else {
+                    s.lvl_slct.current_index
+                };
+                if current != idx {
+                    s.play_sound_override("beep.ogg");
+                    s.set_index(idx);
+                }
+                s.must_change_index_to = None;
+            } else if let Some(idx) = must_change_pack_index_to {
+                let mut s = self.shared.borrow_mut();
+                if s.lvl_slct.pack_idx != idx {
+                    s.play_sound_override("beep.ogg");
+                    s.change_pack_to(idx);
+                }
+                s.must_change_pack_index_to = None;
+            }
+        }
+
         if let Some(m) = menu {
             m.update();
         }
@@ -3218,6 +3357,22 @@ impl MenuGame {
     /// snapshot feeds the equivalent (`MenuSlotAdapter::refresh_input`).
     pub fn set_shift_held(&self, held: bool) {
         self.shared.borrow_mut().shift_held = held;
+    }
+
+    /// C++ `MenuGame::mouseHovering` (MenuGame.hpp:265) — issue 058: the
+    /// hover computation as of the PREVIOUS frame (the `menu_draw`'s
+    /// draw-head `mouseHovering = false` + the item-draw sites' set,
+    /// MenuGame.cpp:5753 / :3673; the input actions run before that
+    /// frame's draw, so this IS the C++'s read at the action site). The
+    /// left / right INPUT actions' gate (MenuGame.cpp:925 / :934 — the
+    /// `Tid::RotateCCW` / `Tid::RotateCW` callbacks, where the port's
+    /// `windowed`'s `register_menu_binds` wraps the two bodies); the
+    /// joystick / touch-grid dispatches do NOT gate on it (the C++'s
+    /// structure — they call `leftAction` / `rightAction` directly,
+    /// MenuGame.cpp:2756 / :2802-2835).
+    #[must_use]
+    pub fn mouse_hovering(&self) -> bool {
+        self.shared.borrow().mouse_hovering
     }
 
     /// C++ `MenuGame::onEvent(sf::Event::EventType::MouseWheelScrolled)`

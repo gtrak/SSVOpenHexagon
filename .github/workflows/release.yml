@@ -76,11 +76,12 @@ name: Release
 #
 # GH-PAGES OPERATOR-SIDE SETTING (cannot be set from this file):
 #   Settings -> Pages -> Build and deployment -> Source: "Deploy a
-#   branch", Branch: `gh-pages`, folder: / (root). Then the game is
-#   served from https://gtrak.github.io/SSVOpenHexagon/ — the page and
-#   its wasm/data artifacts live in the SAME directory (inline, no
-#   external CDN). has_pages is false today — nothing serves until the
-#   operator flips it.
+#   branch", Branch: `gh-pages`, folder: / (root). The game is served
+#   from https://gtrak.github.io/SSVOpenHexagon/ — the page and its
+#   wasm/data artifacts live in the SAME directory (inline, no external
+#   CDN). The page is LIVE (the operator flipped it — lane 058 measured
+#   HTTP 200 on the project URL); a re-pairing to a wrong source (e.g.
+#   "GitHub Actions") would be a SILENT 404, so keep this note here.
 #
 # GH-PAGES PUBLISHERS (issue 040): this job is no longer the only one.
 # ci.yml's pages job also writes the gh-pages branch, on every
